@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getClient, session } from '$lib/stores/session';
-  import type { Job, SystemStatus, WorkerSession } from '$lib/api/types';
+  import type { Job, KvStoreOverview, SystemStatus, WorkerSession } from '$lib/api/types';
   import { formatCount, formatDate, statusTone } from '$lib/utils/format';
 
   let status: SystemStatus | null = $session.systemStatus;
   let jobs: Job[] = [];
   let workers: WorkerSession[] = [];
+  let kvstore: KvStoreOverview | null = null;
   let loading = true;
   let actionError: string | null = null;
   let spawnCapability = 'segment';
@@ -17,15 +18,17 @@
       const client = getClient();
       if (!client) return;
       try {
-        const [nextStatus, nextJobs, nextWorkers] = await Promise.all([
+        const [nextStatus, nextJobs, nextWorkers, nextKvstore] = await Promise.all([
           client.systemStatus(),
           client.listJobs(),
-          client.listWorkers()
+          client.listWorkers(),
+          client.kvStoreOverview().catch(() => null)
         ]);
         if (!cancelled) {
           status = nextStatus;
           jobs = nextJobs;
           workers = nextWorkers;
+          kvstore = nextKvstore;
           loading = false;
         }
       } catch (error) {
@@ -86,6 +89,21 @@
           : String(error);
     }
   }
+
+  function kvstorePayloadBytes(): number | null {
+    const value = status?.kvstore?.total_stored_payload_bytes;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  function formatGigabytes(value: number | null): string {
+    if (value === null) return 'Unknown';
+    return `${(value / 1024 ** 3).toFixed(2)} GB`;
+  }
 </script>
 
 <div class="page-grid">
@@ -113,11 +131,15 @@
       </div>
       <div class="metric">
         <span>Queued</span>
-        <strong>{formatCount(status?.queue?.queued)}</strong>
+        <strong>{formatCount(status?.queue?.queued)} <small>/ {formatCount(status?.queue?.succeeded)}</small></strong>
       </div>
       <div class="metric">
         <span>Running workers</span>
-        <strong>{formatCount(status?.workers?.running)}</strong>
+        <strong>{formatCount(status?.workers?.busy)} <small>/ {formatCount(status?.workers?.online)}</small></strong>
+      </div>
+      <div class="metric">
+        <span>KVStore size</span>
+        <strong>{formatGigabytes(kvstorePayloadBytes())}</strong>
       </div>
     </div>
 
@@ -158,8 +180,8 @@
             <tr>
               <td>{worker.worker_id ?? worker.id}</td>
               <td><span class="status-dot {statusTone(worker.status)}"></span>{worker.status ?? 'unknown'}</td>
-              <td>{worker.capability ?? 'any'}</td>
-              <td>{formatDate(worker.last_heartbeat_at)}</td>
+              <td>{worker.capabilities ?? 'any'}</td>
+              <td>{formatDate(worker.last_heartbeat)}</td>
               <td class="actions">
                 <button class="ghost" type="button" on:click={() => shutdownWorker(worker)} disabled={worker.shutdown_requested}>
                   {worker.shutdown_requested ? 'Requested' : 'Shutdown'}

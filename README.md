@@ -89,7 +89,7 @@ The app is organized around four tabs:
 
 - `Status`: polls `/system/status`, `/jobs`, and `/workers`; supports job pause, resume, retry, and worker shutdown where backend endpoints exist.
 - `Ingestion`: browses server-side files through `GET /live/files`, queues video paths through `POST /ingestion/videos`, and supports selected paths and manual batch entry.
-- `Segmentation`: lists assets and frames, previews framedata through `/assets/{asset_id}/framedata/{frame_num}`, runs non-persisting live segmentation through `POST /live/segment`, can save a frame through `POST /segmentation/frames/{frame_id}`, and queues asset segmentation through `POST /segmentation/jobs`.
+- `Segmentation`: lists assets and frames, previews framedata through `/assets/{asset_id}/framedata/{frame_num}`, runs non-persisting live segmentation through `GET /live/segment`, can save a frame through `POST /segmentation/frames/{frame_id}`, and queues asset segmentation through `POST /segmentation/jobs`.
 - `Event Log`: polls `/jobs/events` and renders recent job events as a readable timeline.
 
 ## API Approach
@@ -112,7 +112,7 @@ POST /jobs/{job_id}/retry
 GET  /workers
 POST /workers/{worker_id}/shutdown
 GET  /live/files
-POST /live/segment
+GET  /live/segment
 GET  /assets
 GET  /assets/{asset_id}/frames
 GET  /assets/{asset_id}/framedata/{frame_num}

@@ -11,6 +11,15 @@ export type SystemStatus = {
   workers?: Record<string, number>;
 };
 
+export type KvStoreOverview = {
+  root_path?: string;
+  configured_hash_algorithm?: string;
+  configured_prefix_length?: number;
+  total_stored_payload_bytes?: number;
+  status?: Record<string, unknown>;
+  health?: Record<string, unknown>;
+};
+
 export type Job = {
   id: string;
   stage?: string;
@@ -32,8 +41,10 @@ export type WorkerSession = {
   worker_id?: string;
   status?: string;
   capability?: string;
+  capabilities?: string | string[];
   current_job_id?: string | null;
   shutdown_requested?: boolean;
+  last_heartbeat?: string | null;
   last_heartbeat_at?: string | null;
   started_at?: string | null;
   metadata?: Record<string, unknown>;
@@ -48,6 +59,7 @@ export type RawAsset = {
   size_bytes?: number;
   checksum?: string;
   media_count?: number | null;
+  frame_count?: number;
   created_at?: string;
   metadata?: Record<string, unknown>;
 };
@@ -57,6 +69,7 @@ export type FrameSummary = {
   asset_id?: string;
   run_id?: string | null;
   frame_num?: number;
+  frame_index?: number;
   width?: number | null;
   height?: number | null;
   shape?: number[] | null;
@@ -68,12 +81,18 @@ export type DetectionSummary = {
   id?: string;
   frame_id?: string;
   roi_index?: number;
-  bbox_x?: number;
-  bbox_y?: number;
-  bbox_w?: number;
-  bbox_h?: number;
+  bbox_x?: number | string;
+  bbox_y?: number | string;
+  bbox_w?: number | string;
+  bbox_h?: number | string;
+  bbox?: Array<number | string>;
+  crop_bbox_x?: number | string;
+  crop_bbox_y?: number | string;
+  crop_bbox_w?: number | string;
+  crop_bbox_h?: number | string;
   area?: number;
   perimeter?: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type JobEvent = {

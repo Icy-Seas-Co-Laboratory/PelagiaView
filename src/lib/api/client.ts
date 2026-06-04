@@ -6,6 +6,7 @@ import type {
   HealthResponse,
   Job,
   JobEvent,
+  KvStoreOverview,
   RawAsset,
   SegmentationOptions,
   SystemStatus,
@@ -75,6 +76,10 @@ export class PelagiaApiClient {
     return this.get<Record<string, unknown>>('/system/use', undefined, 15000);
   }
 
+  async kvStoreOverview(): Promise<KvStoreOverview> {
+    return this.get<KvStoreOverview>('/kvstore', undefined, 1500);
+  }
+
   async listJobs(limit = 100): Promise<Job[]> {
     const response = await this.get<{ jobs: Job[] }>('/jobs', { limit }, 1500);
     return response.jobs ?? [];
@@ -126,17 +131,27 @@ export class PelagiaApiClient {
     return response.assets ?? [];
   }
 
-  async listFrames(assetId: string, limit = 500): Promise<FrameSummary[]> {
-    const response = await this.get<{ frames: FrameSummary[] }>(`/assets/${encodeURIComponent(assetId)}/frames`, { limit }, 2500);
+  async getAsset(assetId: string): Promise<RawAsset> {
+    const response = await this.get<{ asset: RawAsset }>(`/assets/${encodeURIComponent(assetId)}`, undefined, 2500);
+    return response.asset;
+  }
+
+  async listFrames(
+    assetId: string,
+    limit = 500,
+    startFrame?: number,
+    endFrame?: number
+  ): Promise<FrameSummary[]> {
+    const response = await this.get<{ frames: FrameSummary[] }>(
+      `/assets/${encodeURIComponent(assetId)}/frames`,
+      { limit, start_frame: startFrame, end_frame: endFrame },
+      2500
+    );
     return response.frames ?? [];
   }
 
-  frameImageUrl(assetId: string, frameNum: number, format = 'preview', previewMaxDim = 900): string {
-    return this.url(`/assets/${encodeURIComponent(assetId)}/framedata/${frameNum}`, {
-      format,
-      preview_max_dim: previewMaxDim,
-      t: Date.now()
-    });
+  frameImageUrl(assetId: string, frameNum: number): string {
+    return this.url(`/assets/${encodeURIComponent(assetId)}/framedata/${frameNum}`);
   }
 
   async listDetections(assetId: string, frameId?: string): Promise<DetectionSummary[]> {
@@ -165,7 +180,7 @@ export class PelagiaApiClient {
     return this.post(`/segmentation/frames/${encodeURIComponent(frameId)}`, compact(options));
   }
 
-  async liveSegmentFrame(frameId: string, options: SegmentationOptions, includePayloads = false): Promise<{
+  async liveSegmentFrame(frameId: string, options: SegmentationOptions): Promise<{
     frame_id: string;
     run_id?: string;
     asset_id?: string;
@@ -173,10 +188,9 @@ export class PelagiaApiClient {
     detection_count: number;
     detections: DetectionSummary[];
   }> {
-    return this.post('/live/segment', {
+    return this.get('/live/segment', {
       frame_id: frameId,
-      ...compact(options),
-      include_payloads: includePayloads
+      ...compact(options)
     });
   }
 
