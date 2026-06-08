@@ -10,7 +10,6 @@
   let kvstore: KvStoreOverview | null = null;
   let loading = true;
   let actionError: string | null = null;
-  let spawnCapability = 'segment';
 
   onMount(() => {
     let cancelled = false;
@@ -75,23 +74,8 @@
     }
   }
 
-  async function spawnWorker() {
-    const client = getClient();
-    if (!client) return;
-    actionError = null;
-    try {
-      await client.spawnWorker(spawnCapability);
-      workers = await client.listWorkers();
-    } catch (error) {
-      actionError =
-        error instanceof Error
-          ? `${error.message}. Suggested backend endpoint: POST /workers with a capability payload to spawn a managed worker.`
-          : String(error);
-    }
-  }
-
   function kvstorePayloadBytes(): number | null {
-    const value = status?.kvstore?.total_stored_payload_bytes;
+    const value = kvstore?.total_sqlite_file_bytes;
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string') {
       const parsed = Number(value);
@@ -131,7 +115,7 @@
       </div>
       <div class="metric">
         <span>Queued</span>
-        <strong>{formatCount(status?.queue?.queued)} <small>/ {formatCount(status?.queue?.succeeded)}</small></strong>
+        <strong>{formatCount(status?.queue?.leased)} <small>/ {formatCount(status?.queue?.queued)}</small></strong>
       </div>
       <div class="metric">
         <span>Running workers</span>
@@ -153,14 +137,6 @@
       <div>
         <p class="eyebrow">Workers</p>
         <h2>Sessions</h2>
-      </div>
-      <div class="inline-controls">
-        <select bind:value={spawnCapability} aria-label="Worker capability">
-          <option value="segment">segment</option>
-          <option value="extract_frames">extract frames</option>
-          <option value="all">all</option>
-        </select>
-        <button type="button" on:click={spawnWorker}>Spawn</button>
       </div>
     </div>
 

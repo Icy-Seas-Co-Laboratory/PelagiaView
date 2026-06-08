@@ -1,27 +1,35 @@
 <script lang="ts">
   import EventLogPage from './EventLogPage.svelte';
+  import DatasetQueuePage from './DatasetQueuePage.svelte';
   import IngestionPage from './IngestionPage.svelte';
-  import SegmentationPage from './SegmentationPage.svelte';
+  import RoiBrowserPage from './RoiBrowserPage.svelte';
+  import ExplorerPage from './SegmentationPage.svelte';
   import StatusPage from './StatusPage.svelte';
   import { disconnectSession, session } from '$lib/stores/session';
 
-  type Tab = 'status' | 'ingestion' | 'segmentation' | 'logs';
+  type Tab = 'status' | 'ingestion' | 'preprocessing' | 'segmentation' | 'explorer' | 'rois' | 'logs';
 
   let activeTab: Tab = 'status';
 
   const tabs: { id: Tab; label: string; detail: string }[] = [
     { id: 'status', label: 'Status', detail: 'queue and workers' },
     { id: 'ingestion', label: 'Ingestion', detail: 'server assets' },
-    { id: 'segmentation', label: 'Segmentation', detail: 'frames and ROIs' },
+    { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep' },
+    { id: 'segmentation', label: 'Segmentation', detail: 'queue ROI jobs' },
+    { id: 'explorer', label: 'Explorer', detail: 'live preview' },
+    { id: 'rois', label: 'ROI Browser', detail: 'detections gallery' },
     { id: 'logs', label: 'Event Log', detail: 'job events' }
   ];
 </script>
 
 <main class="app-shell">
   <header class="topbar">
-    <div>
-      <p class="eyebrow">PelagiaView session</p>
-      <h1>Pelagia Dashboard</h1>
+    <div class="dashboard-brand">
+      <img class="brand-icon" src="/brand/pelagia_icon.png" alt="" aria-hidden="true" />
+      <div>
+        <p class="eyebrow">PelagiaView session</p>
+        <h1>Pelagia Dashboard</h1>
+      </div>
     </div>
     <div class="session-controls">
       <span class="endpoint-pill">{$session.baseUrl}</span>
@@ -47,8 +55,14 @@
       <StatusPage />
     {:else if activeTab === 'ingestion'}
       <IngestionPage />
+    {:else if activeTab === 'preprocessing'}
+      <DatasetQueuePage mode="preprocessing" />
     {:else if activeTab === 'segmentation'}
-      <SegmentationPage />
+      <DatasetQueuePage mode="segmentation" />
+    {:else if activeTab === 'explorer'}
+      <ExplorerPage />
+    {:else if activeTab === 'rois'}
+      <RoiBrowserPage />
     {:else}
       <EventLogPage />
     {/if}

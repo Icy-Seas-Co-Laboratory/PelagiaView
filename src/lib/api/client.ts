@@ -1,14 +1,22 @@
 import type {
+  AssetDetectionStats,
+  CollectionSummary,
+  DetectionFilters,
   DetectionSummary,
   DirectoryEntry,
   DirectoryListing,
+  FramePreprocessOptions,
+  FramePreprocessResponse,
   FrameSummary,
   HealthResponse,
   Job,
   JobEvent,
   KvStoreOverview,
+  LivePreprocessResponse,
+  LogEntry,
   RawAsset,
   SegmentationOptions,
+  SystemConfigResponse,
   SystemStatus,
   WorkerSession
 } from './types';
@@ -16,6 +24,26 @@ import type {
 type CacheRecord<T> = {
   expiresAt: number;
   value: T;
+};
+
+type FrameImageOptions = {
+  format?: string;
+  scale?: string | number;
+  flatfield_correction?: boolean | null;
+  flatfield_q?: number | null;
+  flatfield_axis?: number | null;
+  background_correction?: boolean | null;
+  preview_max_dim?: number | null;
+};
+
+type FrameEndpointOptions = {
+  frame_id?: string | null;
+  asset_id?: string | null;
+  frame_num?: number | null;
+  format?: string;
+  scale?: string | number;
+  preview_max_dim?: number | null;
+  cache_bust?: number | null;
 };
 
 export class ApiError extends Error {
@@ -76,6 +104,10 @@ export class PelagiaApiClient {
     return this.get<Record<string, unknown>>('/system/use', undefined, 15000);
   }
 
+  async systemConfig(): Promise<SystemConfigResponse> {
+    return this.get<SystemConfigResponse>('/system/config', undefined, 15000);
+  }
+
   async kvStoreOverview(): Promise<KvStoreOverview> {
     return this.get<KvStoreOverview>('/kvstore', undefined, 1500);
   }
@@ -88,6 +120,11 @@ export class PelagiaApiClient {
   async listJobEvents(afterId?: number, limit = 150): Promise<JobEvent[]> {
     const response = await this.get<{ events: JobEvent[] }>('/jobs/events', { after_id: afterId, limit });
     return response.events ?? [];
+  }
+
+  async listLogs(afterId?: number, limit = 150): Promise<LogEntry[]> {
+    const response = await this.get<{ logs: LogEntry[] }>('/logs', { after_id: afterId, limit });
+    return response.logs ?? [];
   }
 
   async pauseJob(jobId: string): Promise<Job> {
@@ -121,14 +158,18 @@ export class PelagiaApiClient {
     return response.worker;
   }
 
-  async spawnWorker(capability: string): Promise<WorkerSession> {
-    const response = await this.post<{ worker: WorkerSession }>('/workers', { capability });
-    return response.worker;
-  }
-
   async listAssets(kind?: string, limit = 200): Promise<RawAsset[]> {
     const response = await this.get<{ assets: RawAsset[] }>('/assets', { kind, limit }, 2500);
     return response.assets ?? [];
+  }
+
+  async listCollections(limit = 200): Promise<CollectionSummary[]> {
+    const response = await this.get<{ collections: CollectionSummary[] }>('/collections', { limit }, 5000);
+    return response.collections ?? [];
+  }
+
+  async assetDetectionStats(kind = 'video', limit = 500): Promise<AssetDetectionStats> {
+    return this.get<AssetDetectionStats>('/assets/detections', { kind, limit }, 2500);
   }
 
   async getAsset(assetId: string): Promise<RawAsset> {
@@ -150,8 +191,23 @@ export class PelagiaApiClient {
     return response.frames ?? [];
   }
 
-  frameImageUrl(assetId: string, frameNum: number): string {
-    return this.url(`/assets/${encodeURIComponent(assetId)}/framedata/${frameNum}`);
+  frameImageUrl(assetId: string, frameNum: number, options: FrameImageOptions = {}): string {
+    const { format = 'jpg', scale = '0.5', ...frameOptions } = options;
+    return this.url(`/assets/${encodeURIComponent(assetId)}/framedata/${frameNum}`, {
+      format,
+      scale,
+      ...frameOptions
+    });
+  }
+
+  originalFrameUrl(options: FrameEndpointOptions): string {
+    const { format = 'jpg', scale = '0.5', ...frameOptions } = options;
+    return this.url('/frame/original', { format, scale, ...frameOptions });
+  }
+
+  preprocessedFrameUrl(options: FrameEndpointOptions): string {
+    const { format = 'jpg', scale = '0.5', ...frameOptions } = options;
+    return this.url('/frame/preprocessed', { format, scale, ...frameOptions });
   }
 
   async listDetections(assetId: string, frameId?: string): Promise<DetectionSummary[]> {
@@ -160,6 +216,15 @@ export class PelagiaApiClient {
       { frame_id: frameId, limit: 500 }
     );
     return response.detections ?? [];
+  }
+
+  async searchDetections(filters: DetectionFilters = {}): Promise<DetectionSummary[]> {
+    const response = await this.get<{ detections: DetectionSummary[] }>('/detections', compact(filters), 1500);
+    return response.detections ?? [];
+  }
+
+  detectionImageUrl(detectionId: string, format = 'jpg'): string {
+    return this.url(`/detections/${encodeURIComponent(detectionId)}/framedata`, { format });
   }
 
   async queueVideo(sourcePath: string, options: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -185,13 +250,55 @@ export class PelagiaApiClient {
     run_id?: string;
     asset_id?: string;
     saved: boolean;
+    frame_payload_kind?: string;
+    apply_preprocessing?: boolean;
+    apply_mask?: boolean;
+    crop_enabled?: boolean;
+    background_correction?: boolean;
+    background_percentile?: number;
+    intensity_inverted?: boolean;
     detection_count: number;
     detections: DetectionSummary[];
   }> {
-    return this.get('/live/segment', {
+    return this.get('/live/segmentation', {
       frame_id: frameId,
       ...compact(options)
     });
+  }
+
+  async preprocessFrame(options: FramePreprocessOptions): Promise<FramePreprocessResponse> {
+    return this.post('/frame/preprocess', compact(options));
+  }
+
+  async queuePreprocessJob(body: FramePreprocessOptions & {
+    run_id?: string | null;
+    frame_ids?: string[];
+    start_frame?: number | null;
+    end_frame?: number | null;
+    limit?: number | null;
+    priority?: number | null;
+    depends_on?: string[];
+  }): Promise<{ job: Job }> {
+    return this.post('/frame/preprocess/jobs', compact(body));
+  }
+
+  async livePreprocessFrame(
+    frameId: string,
+    options: FramePreprocessOptions = {}
+  ): Promise<LivePreprocessResponse> {
+    const { encoding = 'png', ...preprocessOptions } = options;
+    const value = await this.request<LivePreprocessResponse>(
+      this.url('/live/preprocess', {
+        frame_id: frameId,
+        encoding,
+        ...compact(preprocessOptions)
+      }),
+      {
+        method: 'POST'
+      }
+    );
+    this.cache.clear();
+    return value;
   }
 
   async queueSegmentationJob(body: Record<string, unknown>): Promise<{ job: Job }> {

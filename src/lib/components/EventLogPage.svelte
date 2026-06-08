@@ -1,10 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getClient } from '$lib/stores/session';
-  import type { JobEvent } from '$lib/api/types';
+  import type { LogEntry } from '$lib/api/types';
   import { formatDate } from '$lib/utils/format';
 
-  let events: JobEvent[] = [];
+  let events: LogEntry[] = [];
   let paused = false;
   let error: string | null = null;
 
@@ -17,7 +17,7 @@
       if (!client) return;
       try {
         const latestId = events.reduce((max, event) => Math.max(max, Number(event.id ?? 0)), 0);
-        const next = await client.listJobEvents(latestId || undefined, 150);
+        const next = await client.listLogs(latestId || undefined, 150);
         if (!cancelled && next.length) {
           const merged = [...next, ...events].sort((a, b) => Number(b.id) - Number(a.id));
           events = merged.slice(0, 250);
@@ -40,12 +40,10 @@
   <div class="panel-heading">
     <div>
       <p class="eyebrow">Events</p>
-      <h2>Job event stream</h2>
+      <h2>Event stream</h2>
     </div>
     <button class="ghost" type="button" on:click={() => (paused = !paused)}>{paused ? 'Resume' : 'Pause'}</button>
   </div>
-
-  <p class="callout">Currently polling <code>GET /jobs/events</code>. Suggested live endpoint: <code>GET /live/logs</code> with job, worker, API, and processing messages in a single stream.</p>
 
   {#if error}<p class="form-error">{error}</p>{/if}
 
@@ -53,10 +51,10 @@
     {#each events as event}
       <article class="log-entry">
         <div class="log-meta">
-          <strong>{event.event_type ?? 'event'}</strong>
+          <strong>{event.event_type ?? event.level ?? 'event'}</strong>
           <span>{formatDate(event.created_at)}</span>
         </div>
-        <p>{event.message ?? event.job_id ?? 'No message payload'}</p>
+        <p>{event.message ?? event.job_id ?? event.logger ?? 'No message payload'}</p>
         {#if event.payload}
           <pre>{JSON.stringify(event.payload, null, 2)}</pre>
         {/if}

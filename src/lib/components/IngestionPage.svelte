@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getClient } from '$lib/stores/session';
-  import type { DirectoryEntry, DirectoryListing } from '$lib/api/types';
+  import type { DirectoryEntry, DirectoryListing, SystemConfigResponse } from '$lib/api/types';
+  import { numberDefault, processingSection } from '$lib/utils/configDefaults';
   import { formatBytes } from '$lib/utils/format';
 
   let listing: DirectoryListing | null = null;
@@ -11,11 +12,24 @@
   let loading = true;
   let message: string | null = null;
   let error: string | null = null;
-  let enqueueSegment = false;
   let nTile = 2;
   let collections = '';
+  let metadataText = '';
+  const metadataPlaceholder = '{"cruise":"SKQ2026","station":"A01"}';
 
-  onMount(loadDirectory);
+  onMount(async () => {
+    const client = getClient();
+    if (client) {
+      const config = await client.systemConfig().catch(() => null);
+      applyConfigDefaults(config);
+    }
+    await loadDirectory();
+  });
+
+  function applyConfigDefaults(config: SystemConfigResponse | null) {
+    const videoIngest = processingSection(config, 'video_ingest');
+    nTile = numberDefault(videoIngest, 'n_tile', nTile);
+  }
 
   async function loadDirectory(path = currentPath) {
     const client = getClient();
@@ -58,13 +72,20 @@
     }
     message = null;
     error = null;
+    let metadata: Record<string, unknown>;
+    try {
+      metadata = parseMetadata();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      return;
+    }
     let queued = 0;
     for (const path of paths) {
       try {
         await client.queueVideo(path, {
-          enqueue_segment: enqueueSegment,
           n_tile: nTile,
-          collections: collections || undefined
+          collections: collections || undefined,
+          metadata
         });
         queued += 1;
       } catch (err) {
@@ -74,6 +95,16 @@
     }
     message = `Queued ${queued} ingestion job${queued === 1 ? '' : 's'}.`;
     await loadDirectory(currentPath);
+  }
+
+  function parseMetadata(): Record<string, unknown> {
+    const trimmed = metadataText.trim();
+    if (!trimmed) return {};
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Metadata must be a JSON object, for example {"cruise":"SKQ2026"}.');
+    }
+    return parsed as Record<string, unknown>;
   }
 </script>
 
@@ -127,8 +158,8 @@
   <section class="panel controls-panel">
     <div class="panel-heading">
       <div>
-        <p class="eyebrow">Batch operation</p>
-        <h2>Queue ingestion</h2>
+        <p class="eyebrow">File ingestion</p>
+        <h2>Queue frame extraction</h2>
       </div>
     </div>
 
@@ -148,9 +179,9 @@
       </label>
     </div>
 
-    <label class="check-row">
-      <input type="checkbox" bind:checked={enqueueSegment} />
-      Queue segmentation after frame extraction
+    <label>
+      Metadata JSON
+      <textarea bind:value={metadataText} rows="5" placeholder={metadataPlaceholder}></textarea>
     </label>
 
     <button type="button" on:click={queueIngestion}>Queue selected paths</button>

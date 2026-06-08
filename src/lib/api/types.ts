@@ -11,11 +11,25 @@ export type SystemStatus = {
   workers?: Record<string, number>;
 };
 
+export type SystemConfigResponse = {
+  effective?: {
+    processing?: {
+      segmentation?: Record<string, unknown>;
+      flatfield?: Record<string, unknown>;
+      preprocessing?: Record<string, unknown>;
+      video_ingest?: Record<string, unknown>;
+      frame_storage?: Record<string, unknown>;
+    };
+    [key: string]: unknown;
+  };
+  defaults?: Record<string, unknown>;
+};
+
 export type KvStoreOverview = {
   root_path?: string;
   configured_hash_algorithm?: string;
   configured_prefix_length?: number;
-  total_stored_payload_bytes?: number;
+  total_sqlite_file_bytes?: number;
   status?: Record<string, unknown>;
   health?: Record<string, unknown>;
 };
@@ -58,6 +72,7 @@ export type RawAsset = {
   kind?: string;
   size_bytes?: number;
   checksum?: string;
+  collections?: string[];
   media_count?: number | null;
   frame_count?: number;
   created_at?: string;
@@ -74,12 +89,38 @@ export type FrameSummary = {
   height?: number | null;
   shape?: number[] | null;
   dtype?: string | null;
+  has_preprocessed_payload?: boolean;
   created_at?: string;
+};
+
+export type CollectionSummary = {
+  collection: string;
+  asset_count?: number;
+};
+
+export type AssetDetectionStats = {
+  summary?: {
+    total_asset_count?: number;
+    identified_asset_count?: number;
+    total_detection_count?: number;
+  };
+  assets?: Array<{
+    asset_id: string;
+    run_id?: string | null;
+    filename?: string;
+    kind?: string;
+    collections?: string[];
+    frame_count?: number;
+    detection_count?: number;
+  }>;
 };
 
 export type DetectionSummary = {
   id?: string;
   frame_id?: string;
+  asset_id?: string;
+  asset_filename?: string;
+  frame_index?: number;
   roi_index?: number;
   bbox_x?: number | string;
   bbox_y?: number | string;
@@ -92,7 +133,34 @@ export type DetectionSummary = {
   crop_bbox_h?: number | string;
   area?: number;
   perimeter?: number;
+  roi_encoding?: string | null;
+  roi_format?: string | null;
+  roi_payload_bytes?: number;
+  mask_payload_bytes?: number;
   metadata?: Record<string, unknown>;
+};
+
+export type DetectionFilters = {
+  run_id?: string | null;
+  asset_id?: string | null;
+  collection?: string | null;
+  frame_id?: string | null;
+  start_frame?: number | null;
+  end_frame?: number | null;
+  min_bbox_w?: number | null;
+  max_bbox_w?: number | null;
+  min_bbox_h?: number | null;
+  max_bbox_h?: number | null;
+  min_area?: number | null;
+  max_area?: number | null;
+  min_perimeter?: number | null;
+  max_perimeter?: number | null;
+  roi_encoding?: string | null;
+  roi_format?: string | null;
+  sort_by?: 'area' | 'byte_size' | 'id' | 'asset_frame' | null;
+  sort_dir?: 'asc' | 'desc' | null;
+  limit?: number | null;
+  offset?: number | null;
 };
 
 export type JobEvent = {
@@ -101,6 +169,22 @@ export type JobEvent = {
   run_id?: string | null;
   event_type?: string;
   message?: string | null;
+  created_at?: string;
+  payload?: Record<string, unknown>;
+};
+
+export type LogEntry = {
+  id: number;
+  event_type?: string;
+  message?: string | null;
+  level?: string;
+  logger?: string;
+  run_id?: string | null;
+  asset_id?: string | null;
+  job_id?: string | null;
+  worker_id?: string | null;
+  request_id?: string | null;
+  duration_ms?: number | null;
   created_at?: string;
   payload?: Record<string, unknown>;
 };
@@ -124,9 +208,70 @@ export type DirectoryListing = {
 
 export type SegmentationOptions = {
   threshold?: number | null;
+  frame_payload_kind?: 'original' | 'preprocessed' | null;
+  apply_preprocessing?: boolean | null;
+  background_correction?: boolean | null;
+  background_percentile?: number | null;
+  flatfield_axis?: number | null;
+  apply_mask?: boolean | null;
+  crop_enabled?: boolean | null;
+  crop_x?: number | null;
+  crop_y?: number | null;
+  crop_w?: number | null;
+  crop_h?: number | null;
+  invert_intensity?: boolean | null;
   min_perimeter?: number | null;
   max_perimeter?: number | null;
   padding?: number | null;
+  flatfield_correction?: boolean | null;
+  flatfield_q?: number | null;
   roi_encoding?: 'png' | 'raw' | 'zstd' | 'auto' | null;
   zstd_min_bytes?: number | null;
+};
+
+export type FramePreprocessOptions = {
+  frame_id?: string | null;
+  asset_id?: string | null;
+  frame_num?: number | null;
+  flatfield_correction?: boolean | null;
+  flatfield_q?: number | null;
+  flatfield_axis?: number | null;
+  apply_mask?: boolean | null;
+  crop_enabled?: boolean | null;
+  crop_x?: number | null;
+  crop_y?: number | null;
+  crop_w?: number | null;
+  crop_h?: number | null;
+  background_correction?: boolean | null;
+  background_percentile?: number | null;
+  invert_intensity?: boolean | null;
+  store?: boolean;
+  encoding?: 'png' | 'jpg' | 'raw' | 'zstd' | null;
+  response_format?: 'metadata' | 'matrix';
+};
+
+export type FramePreprocessResponse = {
+  frame_id: string;
+  asset_id?: string;
+  frame_num?: number;
+  stored: boolean;
+  dtype?: string;
+  shape?: number[];
+  preprocessing?: Record<string, unknown>;
+  frame?: FrameSummary;
+  data?: unknown;
+};
+
+export type LivePreprocessResponse = {
+  status?: string;
+  saved?: boolean;
+  frame_id: string;
+  run_id?: string | null;
+  asset_id?: string | null;
+  old_preprocessed_key?: string | null;
+  new_preprocessed_key?: string | null;
+  old_preprocessed_deleted?: boolean;
+  old_preprocessed_missing?: boolean;
+  preprocessing?: Record<string, unknown>;
+  frame?: FrameSummary;
 };

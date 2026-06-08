@@ -17,7 +17,7 @@
 <main class="landing">
   <section class="landing-panel">
     <div class="brand-lockup">
-      <div class="mark">P</div>
+      <img class="brand-logo" src="/brand/pelagia_logo.png" alt="Pelagia" />
       <div>
         <p class="eyebrow">PelagiaView</p>
         <h1>Connect to a Pelagia server</h1>
