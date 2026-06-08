@@ -85,12 +85,14 @@ export type FrameSummary = {
   run_id?: string | null;
   frame_num?: number;
   frame_index?: number;
+  captured_at?: string | null;
   width?: number | null;
   height?: number | null;
   shape?: number[] | null;
   dtype?: string | null;
   has_preprocessed_payload?: boolean;
   created_at?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type CollectionSummary = {

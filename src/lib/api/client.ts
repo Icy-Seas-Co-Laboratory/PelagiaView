@@ -210,10 +210,10 @@ export class PelagiaApiClient {
     return this.url('/frame/preprocessed', { format, scale, ...frameOptions });
   }
 
-  async listDetections(assetId: string, frameId?: string): Promise<DetectionSummary[]> {
+  async listDetections(assetId: string, frameId?: string, limit = 500, offset = 0): Promise<DetectionSummary[]> {
     const response = await this.get<{ detections: DetectionSummary[] }>(
       `/assets/${encodeURIComponent(assetId)}/detections`,
-      { frame_id: frameId, limit: 500 }
+      { frame_id: frameId, limit, offset }
     );
     return response.detections ?? [];
   }

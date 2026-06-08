@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import { getClient } from '$lib/stores/session';
   import type { DetectionSummary, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
   import {
@@ -8,6 +9,12 @@
     numberDefault,
     processingSection
   } from '$lib/utils/configDefaults';
+  import {
+    frameCaption,
+    isFrameDisplayInverted,
+    payloadKindForDisplay,
+    type FrameDisplayMode
+  } from '$lib/utils/frameDisplay';
 
   let assets: RawAsset[] = [];
   let frames: FrameSummary[] = [];
@@ -20,7 +27,6 @@
   let imageNaturalWidth = 0;
   let imageNaturalHeight = 0;
   let threshold: number | null = null;
-  type FrameDisplayMode = 'original' | 'preprocessed' | 'preprocessed-inverted';
   let frameDisplayMode: FrameDisplayMode = 'original';
   let preprocessedReloadKey = 0;
   let backgroundCorrection = false;
@@ -49,7 +55,7 @@
 
   $: selectedFrame = findFrameByNumber(selectedFrameNum);
   $: framePayloadKind = payloadKindForDisplay(frameDisplayMode);
-  $: imageInverted = frameDisplayMode === 'preprocessed-inverted';
+  $: imageInverted = isFrameDisplayInverted(frameDisplayMode);
   $: imageUrl =
     selectedAssetId && selectedFrameNum > 0
       ? framePreviewUrl(frameDisplayMode, preprocessedReloadKey)
@@ -169,16 +175,6 @@
       crop_h: cropEnabled ? cropH : undefined,
       invert_intensity: invertIntensity
     };
-  }
-
-  function payloadKindForDisplay(mode: FrameDisplayMode): 'original' | 'preprocessed' {
-    return mode === 'original' ? 'original' : 'preprocessed';
-  }
-
-  function frameCaption(mode: FrameDisplayMode): string {
-    if (mode === 'preprocessed-inverted') return 'Preprocessed frame, inverted';
-    if (mode === 'preprocessed') return 'Preprocessed frame';
-    return 'Original frame';
   }
 
   function framePreviewUrl(mode: FrameDisplayMode, reloadKey: number): string {
@@ -500,29 +496,7 @@
       <span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span>
     </div>
 
-    <div class="frame-type-toggle" aria-label="Frame preview source">
-      <button
-        type="button"
-        class:active={frameDisplayMode === 'original'}
-        on:click={() => (frameDisplayMode = 'original')}
-      >
-        Original
-      </button>
-      <button
-        type="button"
-        class:active={frameDisplayMode === 'preprocessed'}
-        on:click={() => (frameDisplayMode = 'preprocessed')}
-      >
-        Preprocessed
-      </button>
-      <button
-        type="button"
-        class:active={frameDisplayMode === 'preprocessed-inverted'}
-        on:click={() => (frameDisplayMode = 'preprocessed-inverted')}
-      >
-        Preprocessed inverted
-      </button>
-    </div>
+    <FrameDisplayToggle bind:value={frameDisplayMode} />
 
     <div class="frame-stage comparison-stage">
       {#if imageUrl}

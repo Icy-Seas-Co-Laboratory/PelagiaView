@@ -4,6 +4,14 @@ import { PelagiaApiClient, normalizeBaseUrl } from '$lib/api/client';
 import type { HealthResponse, SystemStatus } from '$lib/api/types';
 
 const STORAGE_KEY = 'pelagia-view-session';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+type StoredSession = {
+  baseUrl?: string;
+  active?: boolean;
+  connectedAt?: string | null;
+  expiresAt?: string | null;
+};
 
 export type SessionState = {
   baseUrl: string;
@@ -15,12 +23,14 @@ export type SessionState = {
   connectedAt: string | null;
 };
 
-const initialBaseUrl = browser ? readStoredBaseUrl() : 'http://127.0.0.1:8000';
+const initialStoredSession = browser ? readStoredSession() : null;
+const initialBaseUrl = initialStoredSession?.baseUrl ?? 'http://127.0.0.1:8000';
+const initialShouldRestore = shouldRestoreStoredSession(initialStoredSession);
 
 export const session = writable<SessionState>({
   baseUrl: initialBaseUrl,
   connected: false,
-  connecting: false,
+  connecting: initialShouldRestore,
   error: null,
   health: null,
   systemStatus: null,
@@ -39,6 +49,28 @@ export function getClient(): PelagiaApiClient | null {
 }
 
 export async function connectSession(baseUrl: string): Promise<void> {
+  await establishSession(baseUrl, { persistActive: true });
+}
+
+export async function restoreSession(): Promise<void> {
+  if (!browser) return;
+  const stored = readStoredSession();
+  if (!shouldRestoreStoredSession(stored) || !stored?.baseUrl) {
+    session.update((state) => ({ ...state, connecting: false }));
+    persistStoredSession({ baseUrl: stored?.baseUrl ?? get(session).baseUrl, active: false });
+    return;
+  }
+  try {
+    await establishSession(stored.baseUrl, { persistActive: true, restoring: true });
+  } catch {
+    persistStoredSession({ baseUrl: stored.baseUrl, active: false });
+  }
+}
+
+async function establishSession(
+  baseUrl: string,
+  options: { persistActive: boolean; restoring?: boolean }
+): Promise<void> {
   const normalized = normalizeBaseUrl(baseUrl);
   session.update((state) => ({ ...state, baseUrl: normalized, connecting: true, error: null }));
   const nextClient = new PelagiaApiClient(normalized);
@@ -49,6 +81,7 @@ export async function connectSession(baseUrl: string): Promise<void> {
       nextClient.systemStatus().catch(() => null)
     ]);
     client = nextClient;
+    const connectedAt = new Date().toISOString();
     session.set({
       baseUrl: normalized,
       connected: true,
@@ -56,10 +89,15 @@ export async function connectSession(baseUrl: string): Promise<void> {
       error: null,
       health,
       systemStatus,
-      connectedAt: new Date().toISOString()
+      connectedAt
     });
-    if (browser) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ baseUrl: normalized }));
+    if (browser && options.persistActive) {
+      persistStoredSession({
+        baseUrl: normalized,
+        active: true,
+        connectedAt,
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      });
     }
   } catch (error) {
     session.update((state) => ({
@@ -71,6 +109,9 @@ export async function connectSession(baseUrl: string): Promise<void> {
       systemStatus: null,
       connectedAt: null
     }));
+    if (browser && !options.restoring) {
+      persistStoredSession({ baseUrl: normalized, active: false });
+    }
     throw error;
   }
 }
@@ -86,15 +127,34 @@ export function disconnectSession(): void {
     systemStatus: null,
     connectedAt: null
   }));
+  if (browser) {
+    persistStoredSession({ baseUrl: get(session).baseUrl, active: false });
+  }
 }
 
-function readStoredBaseUrl(): string {
+function readStoredSession(): StoredSession | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return 'http://127.0.0.1:8000';
-    const parsed = JSON.parse(stored) as { baseUrl?: string };
-    return parsed.baseUrl ?? 'http://127.0.0.1:8000';
+    if (!stored) return null;
+    return JSON.parse(stored) as StoredSession;
   } catch {
-    return 'http://127.0.0.1:8000';
+    return null;
   }
+}
+
+function shouldRestoreStoredSession(stored: StoredSession | null): boolean {
+  if (!stored?.active || !stored.baseUrl || !stored.expiresAt) return false;
+  return new Date(stored.expiresAt).getTime() > Date.now();
+}
+
+function persistStoredSession(stored: StoredSession): void {
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      baseUrl: stored.baseUrl ?? 'http://127.0.0.1:8000',
+      active: Boolean(stored.active),
+      connectedAt: stored.connectedAt ?? null,
+      expiresAt: stored.expiresAt ?? null
+    })
+  );
 }

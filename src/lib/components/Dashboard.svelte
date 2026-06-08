@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from '$app/stores';
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
   import IngestionPage from './IngestionPage.svelte';
@@ -6,20 +7,17 @@
   import ExplorerPage from './SegmentationPage.svelte';
   import StatusPage from './StatusPage.svelte';
   import { disconnectSession, session } from '$lib/stores/session';
+  import {
+    dashboardViewDefinition,
+    dashboardViewFromParam,
+    dashboardViewHref,
+    dashboardViews,
+    type DashboardView
+  } from '$lib/utils/dashboardNavigation';
 
-  type Tab = 'status' | 'ingestion' | 'preprocessing' | 'segmentation' | 'explorer' | 'rois' | 'logs';
-
-  let activeTab: Tab = 'status';
-
-  const tabs: { id: Tab; label: string; detail: string }[] = [
-    { id: 'status', label: 'Status', detail: 'queue and workers' },
-    { id: 'ingestion', label: 'Ingestion', detail: 'server assets' },
-    { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep' },
-    { id: 'segmentation', label: 'Segmentation', detail: 'queue ROI jobs' },
-    { id: 'explorer', label: 'Explorer', detail: 'live preview' },
-    { id: 'rois', label: 'ROI Browser', detail: 'detections gallery' },
-    { id: 'logs', label: 'Event Log', detail: 'job events' }
-  ];
+  let activeTab: DashboardView = 'status';
+  $: activeTab = dashboardViewFromParam($page.url.searchParams.get('view'));
+  $: activeTabMeta = dashboardViewDefinition(activeTab);
 </script>
 
 <main class="app-shell">
@@ -37,16 +35,21 @@
     </div>
   </header>
 
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
+    <a href={dashboardViewHref('status', $page.url)}>Dashboard</a>
+    <span aria-hidden="true">/</span>
+    <span aria-current="page">{activeTabMeta.label}</span>
+  </nav>
+
   <nav class="tabbar" aria-label="Dashboard sections">
-    {#each tabs as tab}
-      <button
-        type="button"
+    {#each dashboardViews as tab}
+      <a
+        href={dashboardViewHref(tab.id, $page.url)}
         class:active={activeTab === tab.id}
-        on:click={() => (activeTab = tab.id)}
       >
         <span>{tab.label}</span>
         <small>{tab.detail}</small>
-      </button>
+      </a>
     {/each}
   </nav>
 
