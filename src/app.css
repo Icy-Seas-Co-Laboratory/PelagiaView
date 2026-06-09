@@ -389,6 +389,11 @@ h2 {
   grid-column: 1 / -1;
 }
 
+.panel-bottom {
+  align-self: end;
+  margin-top: auto;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

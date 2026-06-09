@@ -126,6 +126,30 @@ export type AssetDetectionStats = {
   }>;
 };
 
+export type AssetProcessingState = {
+  summary?: {
+    total_asset_count?: number;
+    total_frame_count?: number;
+    total_preprocessed_frame_count?: number;
+    total_detected_frame_count?: number;
+    total_detection_count?: number;
+  };
+  assets?: Array<{
+    asset_id: string;
+    run_id?: string | null;
+    filename?: string;
+    kind?: string;
+    collections?: string[];
+    frame_count?: number;
+    preprocessed_frame_count?: number;
+    detected_frame_count?: number;
+    detection_count?: number;
+    preprocessing_state?: string;
+    detection_state?: string;
+  }>;
+  page?: PageMetadata;
+};
+
 export type PageMetadata = {
   limit?: number | null;
   offset?: number;

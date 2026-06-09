@@ -1,5 +1,6 @@
 import type {
   AssetDetectionStats,
+  AssetProcessingState,
   CollectionSummary,
   DetectionListResponse,
   DetectionFilters,
@@ -184,8 +185,12 @@ export class PelagiaApiClient {
     return response.collections ?? [];
   }
 
-  async assetDetectionStats(kind = 'video', limit = 500): Promise<AssetDetectionStats> {
+  async assetDetectionStats(kind?: string, limit = 500): Promise<AssetDetectionStats> {
     return this.get<AssetDetectionStats>('/assets/detections', { kind, limit }, 2500);
+  }
+
+  async assetProcessingState(kind?: string, limit = 1000): Promise<AssetProcessingState> {
+    return this.get<AssetProcessingState>('/assets/processing-state', { kind, limit }, 3000);
   }
 
   async getAsset(assetId: string): Promise<RawAsset> {

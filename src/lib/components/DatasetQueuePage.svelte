@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getClient } from '$lib/stores/session';
-  import type { AssetDetectionStats, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
+  import { getClient, session } from '$lib/stores/session';
+  import type { AssetProcessingState, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
   import {
     booleanDefault,
     nullableNumberDefault,
@@ -20,6 +20,8 @@
     preprocessedCount: number;
     detectionCount: number;
     collections: string[];
+    preprocessingState?: string;
+    detectionState?: string;
   };
 
   type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection';
@@ -34,6 +36,8 @@
   let queueing = false;
   let message: string | null = null;
   let error: string | null = null;
+  let catalogStatus = 'Catalog not loaded yet.';
+  let lastCatalogKey = '';
 
   let startFrame: number | null = null;
   let endFrame: number | null = null;
@@ -66,16 +70,9 @@
   const title = mode === 'preprocessing' ? 'Queue preprocessing' : 'Queue segmentation';
   const eyebrow = mode === 'preprocessing' ? 'Preprocessing' : 'Segmentation';
   const actionLabel = mode === 'preprocessing' ? 'Queue preprocessing jobs' : 'Queue segmentation jobs';
-  const preprocessStateOptions = [
-    { id: 'needs-preprocessed', label: 'No preprocessed data' },
-    { id: 'has-preprocessed', label: 'Has preprocessed data' }
-  ];
-  const detectionStateOptions = [
-    { id: 'needs-detections', label: 'No detections' },
-    { id: 'has-detections', label: 'Has detections' }
-  ];
-
   $: filteredDatasets = datasets.filter((dataset) => matchesDataset(dataset));
+  $: preprocessStateOptions = stateOptions(datasets.map((dataset) => dataset.preprocessingState));
+  $: detectionStateOptions = stateOptions(datasets.map((dataset) => dataset.detectionState));
   $: prospectiveAssetCount = filteredDatasets.length;
   $: prospectiveFrameCount = filteredDatasets.reduce((total, dataset) => total + dataset.frameCount, 0);
   $: prospectivePreprocessedCount = filteredDatasets.reduce(
@@ -88,49 +85,116 @@
     framePayloadKind === 'preprocessed' &&
     filteredDatasets.some((dataset) => dataset.preprocessedCount === 0);
 
-  onMount(loadCatalog);
+  $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${mode}`;
+  $: if ($session.connected && catalogKey !== lastCatalogKey) {
+    lastCatalogKey = catalogKey;
+    void loadCatalog();
+  }
+
+  onMount(() => {
+    if ($session.connected) void loadCatalog();
+  });
 
   async function loadCatalog() {
     const client = getClient();
-    if (!client) return;
+    if (!client) {
+      loading = false;
+      catalogStatus = 'No active API session.';
+      return;
+    }
     loading = true;
     error = null;
+    catalogStatus = 'Loading dataset catalog.';
     try {
-      const [assets, detectionStats, collections, config] = await Promise.all([
-        client.listAssets('video', 500),
-        client.assetDetectionStats('video', 500).catch(() => ({}) as AssetDetectionStats),
+      const [processingState, collections, config] = await Promise.all([
+        client.assetProcessingState(undefined, 1000).catch(() => null),
         client.listCollections(500).catch(() => []),
         client.systemConfig().catch(() => null)
       ]);
       applyConfigDefaults(config);
-      const detectionByAsset = new Map(
-        (detectionStats.assets ?? []).map((asset) => [asset.asset_id, Number(asset.detection_count ?? 0)])
-      );
-      datasets = await Promise.all(
-        assets.map(async (asset) => {
-          const fullAsset = await client.getAsset(asset.id).catch(() => asset);
-          const frameCount = Number(fullAsset.frame_count ?? asset.frame_count ?? 0);
-          const frames =
-            frameCount > 0 ? await client.listFrames(asset.id, Math.max(frameCount, 1)).catch(() => []) : [];
-          return {
-            asset: { ...asset, ...fullAsset },
-            frames,
-            frameCount: frameCount || frames.length,
-            preprocessedCount: frames.filter((frame) => frame.has_preprocessed_payload).length,
-            detectionCount: detectionByAsset.get(asset.id) ?? 0,
-            collections: assetCollections({ ...asset, ...fullAsset })
-          };
-        })
-      );
+      datasets = processingState ? datasetsFromProcessingState(processingState) : await loadCatalogFallback();
+      catalogStatus = processingState
+        ? `Loaded ${formatCount(datasets.length)} assets from processing state.`
+        : `Loaded ${formatCount(datasets.length)} assets from fallback catalog.`;
       collectionOptions = uniqueStrings([
         ...collections.map((collection) => collection.collection),
         ...datasets.flatMap((dataset) => dataset.collections)
       ]);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+      catalogStatus = 'Dataset catalog failed to load.';
     } finally {
       loading = false;
     }
+  }
+
+  async function loadCatalogFallback(): Promise<Dataset[]> {
+    const client = getClient();
+    if (!client) return [];
+    const assets = await client.listAssets(undefined, 500);
+    const detectionStats = await client.assetDetectionStats(undefined, 500).catch(() => ({}) as AssetProcessingState);
+    const detectionByAsset = new Map(
+      (detectionStats.assets ?? []).map((asset) => [asset.asset_id, Number(asset.detection_count ?? 0)])
+    );
+    return Promise.all(
+      assets.map(async (asset) => {
+        const fullAsset = await client.getAsset(asset.id).catch(() => asset);
+        const frameCount = Number(fullAsset.frame_count ?? asset.frame_count ?? 0);
+        const frames =
+          frameCount > 0 ? await client.listFrames(asset.id, Math.max(frameCount, 1)).catch(() => []) : [];
+        return {
+          asset: { ...asset, ...fullAsset },
+          frames,
+          frameCount: frameCount || frames.length,
+          preprocessedCount: frames.filter((frame) => frame.has_preprocessed_payload).length,
+          detectionCount: detectionByAsset.get(asset.id) ?? 0,
+          collections: assetCollections({ ...asset, ...fullAsset }),
+          preprocessingState: frames.some((frame) => frame.has_preprocessed_payload)
+            ? 'partially-preprocessed'
+            : 'needs-preprocessed',
+          detectionState: (detectionByAsset.get(asset.id) ?? 0) > 0 ? 'partially-detected' : 'needs-detections'
+        };
+      })
+    );
+  }
+
+  function datasetsFromProcessingState(processingState: AssetProcessingState): Dataset[] {
+    return (processingState.assets ?? []).map((entry) => {
+      const asset = {
+        id: entry.asset_id,
+        run_id: entry.run_id,
+        filename: entry.filename,
+        kind: entry.kind,
+        collections: entry.collections ?? []
+      } satisfies RawAsset;
+      return {
+        asset,
+        frames: [],
+        frameCount: Number(entry.frame_count ?? 0),
+        preprocessedCount: Number(entry.preprocessed_frame_count ?? 0),
+        detectionCount: Number(entry.detection_count ?? 0),
+        collections: assetCollections(asset),
+        preprocessingState: entry.preprocessing_state ?? inferredPreprocessingState(entry),
+        detectionState: entry.detection_state ?? inferredDetectionState(entry)
+      };
+    });
+  }
+
+  function inferredPreprocessingState(entry: NonNullable<AssetProcessingState['assets']>[number]): string {
+    const frameCount = Number(entry.frame_count ?? 0);
+    const preprocessedCount = Number(entry.preprocessed_frame_count ?? 0);
+    if (frameCount > 0 && preprocessedCount >= frameCount) return 'fully-preprocessed';
+    if (preprocessedCount > 0) return 'partially-preprocessed';
+    return 'needs-preprocessed';
+  }
+
+  function inferredDetectionState(entry: NonNullable<AssetProcessingState['assets']>[number]): string {
+    const frameCount = Number(entry.frame_count ?? 0);
+    const detectedCount = Number(entry.detected_frame_count ?? 0);
+    const detectionCount = Number(entry.detection_count ?? 0);
+    if (frameCount > 0 && detectedCount >= frameCount) return 'fully-detected';
+    if (detectionCount > 0) return 'partially-detected';
+    return 'needs-detections';
   }
 
   function applyConfigDefaults(config: SystemConfigResponse | null) {
@@ -186,22 +250,27 @@
     const collections = overrides.collections ?? selectedCollections;
     const preprocessStates = overrides.preprocessStates ?? selectedPreprocessStates;
     const detectionStates = overrides.detectionStates ?? selectedDetectionStates;
+    const preprocessingState = dataset.preprocessingState;
+    const detectionState = dataset.detectionState;
 
     if (assetIds.size && !assetIds.has(dataset.asset.id)) return false;
     if (collections.size && !dataset.collections.some((collection) => collections.has(collection))) return false;
-    if (preprocessStates.size && !preprocessStates.has(preprocessState(dataset))) return false;
-    if (mode === 'segmentation' && detectionStates.size && !detectionStates.has(detectionState(dataset))) {
+    if (preprocessStates.size && (!preprocessingState || !preprocessStates.has(preprocessingState))) return false;
+    if (mode === 'segmentation' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
       return false;
     }
     return true;
   }
 
-  function preprocessState(dataset: Dataset): string {
-    return dataset.preprocessedCount > 0 ? 'has-preprocessed' : 'needs-preprocessed';
+  function stateOptions(states: Array<string | undefined>): Array<{ id: string; label: string }> {
+    return uniqueStrings(states).map((state) => ({ id: state, label: stateLabel(state) }));
   }
 
-  function detectionState(dataset: Dataset): string {
-    return dataset.detectionCount > 0 ? 'has-detections' : 'needs-detections';
+  function stateLabel(state: string): string {
+    return state
+      .split('-')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
   }
 
   function optionCount(group: FilterGroup, value?: string): number {
@@ -441,6 +510,8 @@
         </div>
       {/if}
     </div>
+    
+    <p class="soft panel-bottom">{catalogStatus}</p>
   </section>
 
   <section class="panel controls-panel">
