@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getClient, session } from '$lib/stores/session';
-  import type { AssetProcessingState, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
+  import type {
+    AssetProcessingState,
+    FrameProcessingState,
+    FrameSummary,
+    RawAsset,
+    SystemConfigResponse
+  } from '$lib/api/types';
   import {
     booleanDefault,
     nullableNumberDefault,
@@ -16,6 +22,7 @@
   type Dataset = {
     asset: RawAsset;
     frames: FrameSummary[];
+    frameIds: string[];
     frameCount: number;
     preprocessedCount: number;
     detectionCount: number;
@@ -24,9 +31,37 @@
     detectionState?: string;
   };
 
+  type FrameCatalogRow = {
+    frameId: string;
+    runId?: string | null;
+    assetId: string;
+    frameIndex?: number;
+    assetFilename?: string;
+    kind?: string;
+    collections: string[];
+    hasPreprocessedPayload: boolean;
+    detectionCount: number;
+    preprocessingState: string;
+    detectionState: string;
+  };
+
+  type FrameBatch = {
+    assetId: string;
+    runId?: string | null;
+    frameIds: string[];
+  };
+
   type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection';
 
+  type FrameFilters = {
+    assetIds: Set<string>;
+    collections: Set<string>;
+    preprocessStates: Set<string>;
+    detectionStates: Set<string>;
+  };
+
   let datasets: Dataset[] = [];
+  let frameRows: FrameCatalogRow[] = [];
   let collectionOptions: string[] = [];
   let selectedAssetIds = new Set<string>();
   let selectedCollections = new Set<string>();
@@ -39,9 +74,7 @@
   let catalogStatus = 'Catalog not loaded yet.';
   let lastCatalogKey = '';
 
-  let startFrame: number | null = null;
-  let endFrame: number | null = null;
-  let frameLimit: number | null = null;
+  let frameBatchSize = 100;
   let priority: number | null = null;
 
   let flatfieldCorrection = false;
@@ -70,20 +103,33 @@
   const title = mode === 'preprocessing' ? 'Queue preprocessing' : 'Queue segmentation';
   const eyebrow = mode === 'preprocessing' ? 'Preprocessing' : 'Segmentation';
   const actionLabel = mode === 'preprocessing' ? 'Queue preprocessing jobs' : 'Queue segmentation jobs';
-  $: filteredDatasets = datasets.filter((dataset) => matchesDataset(dataset));
-  $: preprocessStateOptions = stateOptions(datasets.map((dataset) => dataset.preprocessingState));
-  $: detectionStateOptions = stateOptions(datasets.map((dataset) => dataset.detectionState));
-  $: prospectiveAssetCount = filteredDatasets.length;
-  $: prospectiveFrameCount = filteredDatasets.reduce((total, dataset) => total + dataset.frameCount, 0);
-  $: prospectivePreprocessedCount = filteredDatasets.reduce(
-    (total, dataset) => total + dataset.preprocessedCount,
-    0
-  );
-  $: prospectiveDetectionCount = filteredDatasets.reduce((total, dataset) => total + dataset.detectionCount, 0);
+  $: activeFilters = {
+    assetIds: selectedAssetIds,
+    collections: selectedCollections,
+    preprocessStates: selectedPreprocessStates,
+    detectionStates: selectedDetectionStates
+  };
+  $: matchingFrames = frameRows.filter((frame) => matchesFrame(frame, activeFilters));
+  $: filteredFrames = matchingFrames;
+  $: filteredDatasets = datasets.filter((dataset) => filteredFrames.some((frame) => frame.assetId === dataset.asset.id));
+  $: preprocessStateOptions = stateOptions(frameRows.map((frame) => frame.preprocessingState));
+  $: detectionStateOptions = stateOptions(frameRows.map((frame) => frame.detectionState));
+  $: assetFrameCounts = frameCountMap('asset', datasets.map((dataset) => dataset.asset.id), activeFilters);
+  $: collectionFrameCounts = frameCountMap('collection', collectionOptions, activeFilters);
+  $: preprocessFrameCounts = frameCountMap('preprocess', preprocessStateOptions.map((option) => option.id), activeFilters);
+  $: detectionFrameCounts = frameCountMap('detection', detectionStateOptions.map((option) => option.id), activeFilters);
+  $: assetAnyFrameCount = sumFrameCounts(assetFrameCounts);
+  $: collectionAnyFrameCount = sumFrameCounts(collectionFrameCounts);
+  $: preprocessAnyFrameCount = sumFrameCounts(preprocessFrameCounts);
+  $: detectionAnyFrameCount = sumFrameCounts(detectionFrameCounts);
+  $: prospectiveFrameCount = filteredFrames.length;
+  $: prospectivePreprocessedCount = filteredFrames.filter((frame) => frame.hasPreprocessedPayload).length;
+  $: prospectiveDetectionCount = filteredFrames.reduce((total, frame) => total + frame.detectionCount, 0);
+  $: prospectiveBatchCount = frameBatches(filteredFrames, frameBatchSize).length;
   $: preprocessedSourceWarning =
     mode === 'segmentation' &&
     framePayloadKind === 'preprocessed' &&
-    filteredDatasets.some((dataset) => dataset.preprocessedCount === 0);
+    filteredFrames.some((frame) => !frame.hasPreprocessedPayload);
 
   $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${mode}`;
   $: if ($session.connected && catalogKey !== lastCatalogKey) {
@@ -107,18 +153,19 @@
     catalogStatus = 'Loading dataset catalog.';
     try {
       const [processingState, collections, config] = await Promise.all([
-        client.assetProcessingState(undefined, 1000).catch(() => null),
+        loadFrameProcessingRows(client).catch(() => null),
         client.listCollections(500).catch(() => []),
         client.systemConfig().catch(() => null)
       ]);
       applyConfigDefaults(config);
-      datasets = processingState ? datasetsFromProcessingState(processingState) : await loadCatalogFallback();
+      frameRows = processingState ?? (await loadCatalogFallback());
+      datasets = datasetsFromFrames(frameRows);
       catalogStatus = processingState
-        ? `Loaded ${formatCount(datasets.length)} assets from processing state.`
-        : `Loaded ${formatCount(datasets.length)} assets from fallback catalog.`;
+        ? `Loaded ${formatCount(frameRows.length)} frames from processing state.`
+        : `Loaded ${formatCount(frameRows.length)} frames from fallback catalog.`;
       collectionOptions = uniqueStrings([
         ...collections.map((collection) => collection.collection),
-        ...datasets.flatMap((dataset) => dataset.collections)
+        ...frameRows.flatMap((frame) => frame.collections)
       ]);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -128,7 +175,22 @@
     }
   }
 
-  async function loadCatalogFallback(): Promise<Dataset[]> {
+  async function loadFrameProcessingRows(client: NonNullable<ReturnType<typeof getClient>>): Promise<FrameCatalogRow[]> {
+    const rows: FrameCatalogRow[] = [];
+    let offset = 0;
+    const limit = 10000;
+    while (true) {
+      const page = await client.frameProcessingState({ limit, offset });
+      rows.push(...frameRowsFromProcessingState(page));
+      const nextOffset = page.page?.next_offset;
+      if (nextOffset === null || nextOffset === undefined) break;
+      offset = Number(nextOffset);
+      if (!Number.isFinite(offset) || offset <= rows.length - limit) break;
+    }
+    return rows;
+  }
+
+  async function loadCatalogFallback(): Promise<FrameCatalogRow[]> {
     const client = getClient();
     if (!client) return [];
     const assets = await client.listAssets(undefined, 500);
@@ -136,65 +198,86 @@
     const detectionByAsset = new Map(
       (detectionStats.assets ?? []).map((asset) => [asset.asset_id, Number(asset.detection_count ?? 0)])
     );
-    return Promise.all(
-      assets.map(async (asset) => {
+    const nested = await Promise.all(
+      assets.map(async (asset): Promise<FrameCatalogRow[]> => {
         const fullAsset = await client.getAsset(asset.id).catch(() => asset);
         const frameCount = Number(fullAsset.frame_count ?? asset.frame_count ?? 0);
         const frames =
           frameCount > 0 ? await client.listFrames(asset.id, Math.max(frameCount, 1)).catch(() => []) : [];
-        return {
-          asset: { ...asset, ...fullAsset },
-          frames,
-          frameCount: frameCount || frames.length,
-          preprocessedCount: frames.filter((frame) => frame.has_preprocessed_payload).length,
-          detectionCount: detectionByAsset.get(asset.id) ?? 0,
-          collections: assetCollections({ ...asset, ...fullAsset }),
-          preprocessingState: frames.some((frame) => frame.has_preprocessed_payload)
-            ? 'partially-preprocessed'
-            : 'needs-preprocessed',
-          detectionState: (detectionByAsset.get(asset.id) ?? 0) > 0 ? 'partially-detected' : 'needs-detections'
-        };
+        const assetWithDetails = { ...asset, ...fullAsset };
+        return frames.map((frame) => {
+          const hasPreprocessedPayload = Boolean(frame.has_preprocessed_payload);
+          const detectionCount = detectionByAsset.get(asset.id) ?? 0;
+          return {
+            frameId: frame.id,
+            runId: frame.run_id ?? assetWithDetails.run_id,
+            assetId: asset.id,
+            frameIndex: frame.frame_num ?? frame.frame_index,
+            assetFilename: assetWithDetails.filename,
+            kind: assetWithDetails.kind,
+            collections: assetCollections(assetWithDetails),
+            hasPreprocessedPayload,
+            detectionCount,
+            preprocessingState: hasPreprocessedPayload ? 'fully-preprocessed' : 'needs-preprocessed',
+            detectionState: detectionCount > 0 ? 'fully-detected' : 'needs-detections'
+          };
+        });
       })
     );
+    return nested.flat();
   }
 
-  function datasetsFromProcessingState(processingState: AssetProcessingState): Dataset[] {
-    return (processingState.assets ?? []).map((entry) => {
+  function frameRowsFromProcessingState(processingState: FrameProcessingState): FrameCatalogRow[] {
+    return (processingState.frames ?? []).map((entry) => ({
+      frameId: entry.frame_id,
+      runId: entry.run_id,
+      assetId: entry.asset_id ?? '',
+      frameIndex: entry.frame_index ?? entry.frame_num,
+      assetFilename: entry.asset_filename,
+      kind: entry.kind,
+      collections: entry.collections ?? [],
+      hasPreprocessedPayload: Boolean(entry.has_preprocessed_payload),
+      detectionCount: Number(entry.detection_count ?? 0),
+      preprocessingState: entry.preprocessing_state ?? inferredFramePreprocessingState(entry),
+      detectionState: entry.detection_state ?? inferredFrameDetectionState(entry)
+    })).filter((frame) => Boolean(frame.frameId && frame.assetId));
+  }
+
+  function datasetsFromFrames(frames: FrameCatalogRow[]): Dataset[] {
+    const byAsset = new Map<string, FrameCatalogRow[]>();
+    for (const frame of frames) {
+      byAsset.set(frame.assetId, [...(byAsset.get(frame.assetId) ?? []), frame]);
+    }
+    return [...byAsset.entries()].map(([assetId, assetFrames]) => {
+      const first = assetFrames[0];
       const asset = {
-        id: entry.asset_id,
-        run_id: entry.run_id,
-        filename: entry.filename,
-        kind: entry.kind,
-        collections: entry.collections ?? []
+        id: assetId,
+        run_id: first?.runId,
+        filename: first?.assetFilename,
+        kind: first?.kind,
+        collections: first?.collections ?? []
       } satisfies RawAsset;
       return {
         asset,
         frames: [],
-        frameCount: Number(entry.frame_count ?? 0),
-        preprocessedCount: Number(entry.preprocessed_frame_count ?? 0),
-        detectionCount: Number(entry.detection_count ?? 0),
+        frameIds: assetFrames.map((frame) => frame.frameId),
+        frameCount: assetFrames.length,
+        preprocessedCount: assetFrames.filter((frame) => frame.hasPreprocessedPayload).length,
+        detectionCount: assetFrames.reduce((total, frame) => total + frame.detectionCount, 0),
         collections: assetCollections(asset),
-        preprocessingState: entry.preprocessing_state ?? inferredPreprocessingState(entry),
-        detectionState: entry.detection_state ?? inferredDetectionState(entry)
+        preprocessingState: uniqueStrings(assetFrames.map((frame) => frame.preprocessingState)).join(', '),
+        detectionState: uniqueStrings(assetFrames.map((frame) => frame.detectionState)).join(', ')
       };
     });
   }
 
-  function inferredPreprocessingState(entry: NonNullable<AssetProcessingState['assets']>[number]): string {
-    const frameCount = Number(entry.frame_count ?? 0);
-    const preprocessedCount = Number(entry.preprocessed_frame_count ?? 0);
-    if (frameCount > 0 && preprocessedCount >= frameCount) return 'fully-preprocessed';
-    if (preprocessedCount > 0) return 'partially-preprocessed';
-    return 'needs-preprocessed';
+  function inferredFramePreprocessingState(entry: NonNullable<FrameProcessingState['frames']>[number]): string {
+    return entry.has_preprocessed_payload ? 'fully-preprocessed' : 'needs-preprocessed';
   }
 
-  function inferredDetectionState(entry: NonNullable<AssetProcessingState['assets']>[number]): string {
-    const frameCount = Number(entry.frame_count ?? 0);
-    const detectedCount = Number(entry.detected_frame_count ?? 0);
+  function inferredFrameDetectionState(entry: NonNullable<FrameProcessingState['frames']>[number]): string {
     const detectionCount = Number(entry.detection_count ?? 0);
-    if (frameCount > 0 && detectedCount >= frameCount) return 'fully-detected';
-    if (detectionCount > 0) return 'partially-detected';
-    return 'needs-detections';
+    return detectionCount > 0 ? 'fully-detected' : 'needs-detections';
   }
 
   function applyConfigDefaults(config: SystemConfigResponse | null) {
@@ -237,24 +320,16 @@
     );
   }
 
-  function matchesDataset(
-    dataset: Dataset,
-    overrides: Partial<{
-      assetIds: Set<string>;
-      collections: Set<string>;
-      preprocessStates: Set<string>;
-      detectionStates: Set<string>;
-    }> = {}
-  ): boolean {
-    const assetIds = overrides.assetIds ?? selectedAssetIds;
-    const collections = overrides.collections ?? selectedCollections;
-    const preprocessStates = overrides.preprocessStates ?? selectedPreprocessStates;
-    const detectionStates = overrides.detectionStates ?? selectedDetectionStates;
-    const preprocessingState = dataset.preprocessingState;
-    const detectionState = dataset.detectionState;
+  function matchesFrame(frame: FrameCatalogRow, filters: FrameFilters): boolean {
+    const assetIds = filters.assetIds;
+    const collections = filters.collections;
+    const preprocessStates = filters.preprocessStates;
+    const detectionStates = filters.detectionStates;
+    const preprocessingState = frame.preprocessingState;
+    const detectionState = frame.detectionState;
 
-    if (assetIds.size && !assetIds.has(dataset.asset.id)) return false;
-    if (collections.size && !dataset.collections.some((collection) => collections.has(collection))) return false;
+    if (assetIds.size && !assetIds.has(frame.assetId)) return false;
+    if (collections.size && !frame.collections.some((collection) => collections.has(collection))) return false;
     if (preprocessStates.size && (!preprocessingState || !preprocessStates.has(preprocessingState))) return false;
     if (mode === 'segmentation' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
       return false;
@@ -273,24 +348,56 @@
       .join(' ');
   }
 
-  function optionCount(group: FilterGroup, value?: string): number {
-    const overrides: Parameters<typeof matchesDataset>[1] = {};
-    if (group === 'asset') overrides.assetIds = value ? new Set([value]) : new Set();
-    if (group === 'collection') overrides.collections = value ? new Set([value]) : new Set();
-    if (group === 'preprocess') overrides.preprocessStates = value ? new Set([value]) : new Set();
-    if (group === 'detection') overrides.detectionStates = value ? new Set([value]) : new Set();
-    return datasets.filter((dataset) => matchesDataset(dataset, overrides)).length;
+  function frameCountMap(group: FilterGroup, values: string[], filters: FrameFilters): Map<string, number> {
+    return new Map(values.map((value) => [value, framesForOption(group, value, filters).length]));
   }
 
-  function optionFrameCount(group: FilterGroup, value?: string): number {
-    const overrides: Parameters<typeof matchesDataset>[1] = {};
-    if (group === 'asset') overrides.assetIds = value ? new Set([value]) : new Set();
-    if (group === 'collection') overrides.collections = value ? new Set([value]) : new Set();
-    if (group === 'preprocess') overrides.preprocessStates = value ? new Set([value]) : new Set();
-    if (group === 'detection') overrides.detectionStates = value ? new Set([value]) : new Set();
-    return datasets
-      .filter((dataset) => matchesDataset(dataset, overrides))
-      .reduce((total, dataset) => total + dataset.frameCount, 0);
+  function sumFrameCounts(counts: Map<string, number>): number {
+    return [...counts.values()].reduce((total, count) => total + count, 0);
+  }
+
+  function countFor(counts: Map<string, number>, value: string): number {
+    return counts.get(value) ?? 0;
+  }
+
+  function framesForOption(group: FilterGroup, value: string, filters: FrameFilters): FrameCatalogRow[] {
+    const optionFilters: FrameFilters = {
+      assetIds: group === 'asset' ? new Set([value]) : filters.assetIds,
+      collections: group === 'collection' ? new Set([value]) : filters.collections,
+      preprocessStates: group === 'preprocess' ? new Set([value]) : filters.preprocessStates,
+      detectionStates: group === 'detection' ? new Set([value]) : filters.detectionStates
+    };
+    return frameRows.filter((frame) => matchesFrame(frame, optionFilters));
+  }
+
+  function boundedFrameBatchSize(): number {
+    return Math.min(1000, Math.max(100, Math.round(Number(frameBatchSize) || 100)));
+  }
+
+  function frameBatches(frames: FrameCatalogRow[], batchSize: number): FrameBatch[] {
+    const boundedBatchSize = Math.min(1000, Math.max(100, Math.round(Number(batchSize) || 100)));
+    const grouped = new Map<string, FrameCatalogRow[]>();
+    for (const frame of frames) {
+      const key = `${frame.assetId}:${frame.runId ?? ''}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), frame]);
+    }
+    const batches: FrameBatch[] = [];
+    for (const group of grouped.values()) {
+      group.sort((a, b) => {
+        const frameDelta = Number(a.frameIndex ?? 0) - Number(b.frameIndex ?? 0);
+        return frameDelta || a.frameId.localeCompare(b.frameId);
+      });
+      for (let index = 0; index < group.length; index += boundedBatchSize) {
+        const batch = group.slice(index, index + boundedBatchSize);
+        if (!batch.length) continue;
+        batches.push({
+          assetId: batch[0].assetId,
+          runId: batch[0].runId,
+          frameIds: batch.map((frame) => frame.frameId)
+        });
+      }
+    }
+    return batches;
   }
 
   function toggleAsset(assetId: string) {
@@ -325,20 +432,19 @@
 
   async function queueJobs() {
     const client = getClient();
-    if (!client || filteredDatasets.length === 0) return;
+    const batches = frameBatches(filteredFrames, boundedFrameBatchSize());
+    if (!client || batches.length === 0) return;
     queueing = true;
     message = null;
     error = null;
     let queued = 0;
-    for (const dataset of filteredDatasets) {
+    for (const batch of batches) {
       try {
         if (mode === 'preprocessing') {
           await client.queuePreprocessJob({
-            asset_id: dataset.asset.id,
-            run_id: dataset.asset.run_id,
-            start_frame: startFrame,
-            end_frame: endFrame,
-            limit: frameLimit,
+            asset_id: batch.assetId,
+            run_id: batch.runId,
+            frame_ids: batch.frameIds,
             priority,
             flatfield_correction: flatfieldCorrection,
             flatfield_q: flatfieldCorrection ? flatfieldQ : undefined,
@@ -356,11 +462,9 @@
           });
         } else {
           await client.queueSegmentationJob({
-            asset_id: dataset.asset.id,
-            run_id: dataset.asset.run_id,
-            start_frame: startFrame,
-            end_frame: endFrame,
-            limit: frameLimit,
+            asset_id: batch.assetId,
+            run_id: batch.runId,
+            frame_ids: batch.frameIds,
             priority,
             threshold,
             frame_payload_kind: framePayloadKind,
@@ -374,12 +478,12 @@
         }
         queued += 1;
       } catch (err) {
-        error = `Queued ${queued}/${filteredDatasets.length}. ${err instanceof Error ? err.message : String(err)}`;
+        error = `Queued ${queued}/${batches.length}. ${err instanceof Error ? err.message : String(err)}`;
         queueing = false;
         return;
       }
     }
-    message = `Queued ${queued} ${mode === 'preprocessing' ? 'preprocessing' : 'segmentation'} job${queued === 1 ? '' : 's'}.`;
+    message = `Queued ${queued} ${mode === 'preprocessing' ? 'preprocessing' : 'segmentation'} batch job${queued === 1 ? '' : 's'} covering ${formatCount(prospectiveFrameCount)} frame${prospectiveFrameCount === 1 ? '' : 's'}.`;
     queueing = false;
   }
 </script>
@@ -396,10 +500,6 @@
 
     <div class="metric-grid compact-metrics">
       <div class="metric">
-        <span>Matched assets</span>
-        <strong>{formatCount(prospectiveAssetCount)}</strong>
-      </div>
-      <div class="metric">
         <span>Matched frames</span>
         <strong>{formatCount(prospectiveFrameCount)}</strong>
       </div>
@@ -413,6 +513,10 @@
           <strong>{formatCount(prospectiveDetectionCount)}</strong>
         </div>
       {/if}
+      <div class="metric">
+        <span>Queued batches</span>
+        <strong>{formatCount(prospectiveBatchCount)}</strong>
+      </div>
     </div>
 
     <div class="queue-filter-grid">
@@ -422,9 +526,9 @@
           <strong>Original file name</strong>
         </div>
         <div class="compact-select-list">
-          <button class:active={selectedAssetIds.size === 0} type="button" on:click={() => clearGroup('asset')}>
+          <button class="wildcard-filter" class:active={selectedAssetIds.size === 0} type="button" on:click={() => clearGroup('asset')}>
             <span>Any asset</span>
-            <small>{formatCount(optionCount('asset'))} assets · {formatCount(optionFrameCount('asset'))} frames</small>
+            <small>{formatCount(assetAnyFrameCount)} frames</small>
           </button>
           {#each datasets as dataset}
             <button
@@ -433,7 +537,7 @@
               on:click={() => toggleAsset(dataset.asset.id)}
             >
               <span>{dataset.asset.filename ?? dataset.asset.id}</span>
-              <small>{formatCount(dataset.frameCount)} frames · {formatCount(dataset.preprocessedCount)} preprocessed</small>
+              <small>{formatCount(countFor(assetFrameCounts, dataset.asset.id))} frames</small>
             </button>
           {/each}
         </div>
@@ -445,9 +549,9 @@
           <strong>Collection tags</strong>
         </div>
         <div class="compact-select-list">
-          <button class:active={selectedCollections.size === 0} type="button" on:click={() => clearGroup('collection')}>
+          <button class="wildcard-filter" class:active={selectedCollections.size === 0} type="button" on:click={() => clearGroup('collection')}>
             <span>Any collection</span>
-            <small>{formatCount(optionCount('collection'))} assets · {formatCount(optionFrameCount('collection'))} frames</small>
+            <small>{formatCount(collectionAnyFrameCount)} frames</small>
           </button>
           {#each collectionOptions as collection}
             <button
@@ -456,7 +560,7 @@
               on:click={() => toggleCollection(collection)}
             >
               <span>{collection}</span>
-              <small>{formatCount(optionCount('collection', collection))} assets · {formatCount(optionFrameCount('collection', collection))} frames</small>
+              <small>{formatCount(countFor(collectionFrameCounts, collection))} frames</small>
             </button>
           {/each}
         </div>
@@ -468,9 +572,9 @@
           <strong>Preprocessing state</strong>
         </div>
         <div class="compact-select-list">
-          <button class:active={selectedPreprocessStates.size === 0} type="button" on:click={() => clearGroup('preprocess')}>
+          <button class="wildcard-filter" class:active={selectedPreprocessStates.size === 0} type="button" on:click={() => clearGroup('preprocess')}>
             <span>Any preprocessing state</span>
-            <small>{formatCount(optionCount('preprocess'))} assets · {formatCount(optionFrameCount('preprocess'))} frames</small>
+            <small>{formatCount(preprocessAnyFrameCount)} frames</small>
           </button>
           {#each preprocessStateOptions as option}
             <button
@@ -479,7 +583,7 @@
               on:click={() => togglePreprocessState(option.id)}
             >
               <span>{option.label}</span>
-              <small>{formatCount(optionCount('preprocess', option.id))} assets · {formatCount(optionFrameCount('preprocess', option.id))} frames</small>
+              <small>{formatCount(countFor(preprocessFrameCounts, option.id))} frames</small>
             </button>
           {/each}
         </div>
@@ -492,9 +596,9 @@
             <strong>Detection state</strong>
           </div>
           <div class="compact-select-list">
-            <button class:active={selectedDetectionStates.size === 0} type="button" on:click={() => clearGroup('detection')}>
+            <button class="wildcard-filter" class:active={selectedDetectionStates.size === 0} type="button" on:click={() => clearGroup('detection')}>
               <span>Any detection state</span>
-              <small>{formatCount(optionCount('detection'))} assets · {formatCount(optionFrameCount('detection'))} frames</small>
+              <small>{formatCount(detectionAnyFrameCount)} frames</small>
             </button>
             {#each detectionStateOptions as option}
               <button
@@ -503,7 +607,7 @@
                 on:click={() => toggleDetectionState(option.id)}
               >
                 <span>{option.label}</span>
-                <small>{formatCount(optionCount('detection', option.id))} assets · {formatCount(optionFrameCount('detection', option.id))} frames</small>
+                <small>{formatCount(countFor(detectionFrameCounts, option.id))} frames</small>
               </button>
             {/each}
           </div>
@@ -525,20 +629,13 @@
     <div class="form-section">
       <div class="section-heading">
         <p class="eyebrow">Scope</p>
-        <strong>Frame range</strong>
+        <strong>Frame batches</strong>
       </div>
       <div class="form-grid compact-grid">
-        <label>
-          Start frame
-          <input type="number" min="1" bind:value={startFrame} placeholder="any" />
-        </label>
-        <label>
-          End frame
-          <input type="number" min="1" bind:value={endFrame} placeholder="any" />
-        </label>
-        <label>
-          Limit
-          <input type="number" min="1" bind:value={frameLimit} placeholder="none" />
+        <label class="span-2">
+          Batch size
+          <input type="range" min="100" max="1000" step="50" bind:value={frameBatchSize} />
+          <span class="range-value">{boundedFrameBatchSize()} frames per job</span>
         </label>
         <label>
           Priority
@@ -701,11 +798,17 @@
       </div>
     {/if}
 
-    <button type="button" on:click={queueJobs} disabled={queueing || filteredDatasets.length === 0}>
+    <div class="selected-frame-summary">
+      <span>Currently selected</span>
+      <strong>{formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}</strong>
+      <small>{formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'}</small>
+    </div>
+
+    <button type="button" on:click={queueJobs} disabled={queueing || prospectiveBatchCount === 0}>
       {queueing ? 'Queueing' : actionLabel}
     </button>
     <p class="soft">
-      {formatCount(prospectiveAssetCount)} asset job{prospectiveAssetCount === 1 ? '' : 's'} covering about {formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}.
+      {formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'} covering {formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}.
     </p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}

@@ -602,6 +602,11 @@ button.job-action-muted:hover:not(:disabled) {
   text-align: left;
 }
 
+.compact-select-list button.wildcard-filter {
+  border-color: #c9ddd6;
+  background: #f1f8f5;
+}
+
 .compact-select-list button:hover,
 .compact-select-list button.active {
   color: #ffffff;
@@ -801,6 +806,27 @@ button.job-action-muted:hover:not(:disabled) {
   font-size: 0.9rem;
 }
 
+.selected-frame-summary {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #bed7ce;
+  border-radius: 7px;
+  background: #f5faf8;
+}
+
+.selected-frame-summary span,
+.selected-frame-summary small {
+  color: #60746c;
+  font-size: 0.78rem;
+}
+
+.selected-frame-summary strong {
+  color: #17201b;
+  font-size: 1.35rem;
+  line-height: 1.15;
+}
+
 .file-list {
   display: grid;
   gap: 0.45rem;
@@ -879,6 +905,10 @@ button.job-action-muted:hover:not(:disabled) {
   display: grid;
   grid-template-columns: 1fr 1.4fr;
   gap: 0.8rem;
+}
+
+.span-2 {
+  grid-column: span 2;
 }
 
 .form-section {
@@ -1658,5 +1688,9 @@ button.job-action-muted:hover:not(:disabled) {
 
   .compact-grid {
     grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: span 1;
   }
 }

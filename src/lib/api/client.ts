@@ -10,6 +10,7 @@ import type {
   FrameContextResponse,
   FramePreprocessOptions,
   FramePreprocessResponse,
+  FrameProcessingState,
   FrameSummary,
   HealthResponse,
   Job,
@@ -191,6 +192,22 @@ export class PelagiaApiClient {
 
   async assetProcessingState(kind?: string, limit = 1000): Promise<AssetProcessingState> {
     return this.get<AssetProcessingState>('/assets/processing-state', { kind, limit }, 3000);
+  }
+
+  async frameProcessingState(options: {
+    run_id?: string | null;
+    asset_id?: string | null;
+    collection?: string | null;
+    kind?: string | null;
+    filename?: string | null;
+    preprocessing_state?: string | null;
+    detection_state?: string | null;
+    start_frame?: number | null;
+    end_frame?: number | null;
+    limit?: number | null;
+    offset?: number | null;
+  } = {}): Promise<FrameProcessingState> {
+    return this.get<FrameProcessingState>('/frames/processing-state', options, 3000);
   }
 
   async getAsset(assetId: string): Promise<RawAsset> {

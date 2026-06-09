@@ -150,6 +150,31 @@ export type AssetProcessingState = {
   page?: PageMetadata;
 };
 
+export type FrameProcessingState = {
+  summary?: {
+    total_frame_count?: number | string;
+    total_preprocessed_frame_count?: number | string;
+    total_detected_frame_count?: number | string;
+    total_detection_count?: number | string;
+  };
+  frames?: Array<{
+    frame_id: string;
+    run_id?: string | null;
+    asset_id?: string;
+    frame_index?: number;
+    frame_num?: number;
+    captured_at?: string | null;
+    asset_filename?: string;
+    kind?: string;
+    collections?: string[];
+    has_preprocessed_payload?: boolean;
+    detection_count?: number | string;
+    preprocessing_state?: string;
+    detection_state?: string;
+  }>;
+  page?: PageMetadata;
+};
+
 export type PageMetadata = {
   limit?: number | null;
   offset?: number;
