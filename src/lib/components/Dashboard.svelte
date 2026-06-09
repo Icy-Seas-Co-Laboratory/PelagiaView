@@ -4,7 +4,7 @@
   import DatasetQueuePage from './DatasetQueuePage.svelte';
   import IngestionPage from './IngestionPage.svelte';
   import RoiBrowserPage from './RoiBrowserPage.svelte';
-  import ExplorerPage from './SegmentationPage.svelte';
+  import ExplorerPage from './ExplorerPage.svelte';
   import StatusPage from './StatusPage.svelte';
   import { disconnectSession, session } from '$lib/stores/session';
   import {

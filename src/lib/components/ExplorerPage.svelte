@@ -1,8 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
+  import ImageCanvas from '$lib/components/ImageCanvas.svelte';
   import { getClient } from '$lib/stores/session';
-  import type { DetectionSummary, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
+  import type {
+    DetectionSummary,
+    FrameSummary,
+    RawAsset,
+    SegmentationOptions,
+    SystemConfigResponse
+  } from '$lib/api/types';
   import {
     booleanDefault,
     nullableNumberDefault,
@@ -15,6 +22,7 @@
     payloadKindForDisplay,
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
+  import type { CanvasOverlayRect } from '$lib/utils/imageCanvas';
 
   let assets: RawAsset[] = [];
   let frames: FrameSummary[] = [];
@@ -24,8 +32,12 @@
   let selectedFrameNum = 1;
   let frameCount = 0;
   let hasLivePreview = false;
+  let bboxCoordinateBasis: BboxCoordinateBasis = 'original-frame';
   let imageNaturalWidth = 0;
   let imageNaturalHeight = 0;
+  let imageScaleX: number | null = null;
+  let imageScaleY: number | null = null;
+  let imageHeaderSerial = 0;
   let threshold: number | null = null;
   let frameDisplayMode: FrameDisplayMode = 'original';
   let preprocessedReloadKey = 0;
@@ -49,7 +61,7 @@
   let error: string | null = null;
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
-  const frameImageScale = 0.5;
+  const frameImageWidth = 1100;
   let lastFrameImageKey = '';
   let failedImageUrl = '';
 
@@ -58,11 +70,19 @@
   $: imageInverted = isFrameDisplayInverted(frameDisplayMode);
   $: imageUrl =
     selectedAssetId && selectedFrameNum > 0
-      ? framePreviewUrl(frameDisplayMode, preprocessedReloadKey)
+      ? framePreviewUrl(frameDisplayMode, preprocessedReloadKey, selectedFrame)
       : '';
   $: imageUnavailable = Boolean(imageUrl && failedImageUrl === imageUrl);
+  $: void loadFrameImageHeaders(imageUrl);
   $: boxes = detections.map(toCropBox).filter((box): box is BBox => box !== null);
   $: targetBoxes = detections.map(toTargetBox).filter((box): box is BBox => box !== null);
+  $: canvasOverlays = frameCanvasOverlays(
+    boxes,
+    targetBoxes,
+    imageUrl,
+    imageInverted,
+    bboxCoordinateBasis
+  );
   $: previewOptionsKey = optionsKey(
     frameDisplayMode,
     threshold,
@@ -133,6 +153,7 @@
     frames = frameCount > 0 ? await client.listFrames(selectedAssetId, frameCount) : [];
     selectedFrameNum = frameCount > 0 ? 1 : 0;
     detections = [];
+    bboxCoordinateBasis = 'original-frame';
     await loadDetections();
   }
 
@@ -143,9 +164,11 @@
     const frame = await ensureSelectedFrame();
     if (!frame?.id) {
       detections = [];
+      bboxCoordinateBasis = 'original-frame';
       return;
     }
     detections = await client.listDetections(selectedAssetId, frame.id);
+    bboxCoordinateBasis = 'original-frame';
   }
 
   function options() {
@@ -177,15 +200,20 @@
     };
   }
 
-  function framePreviewUrl(mode: FrameDisplayMode, reloadKey: number): string {
+  function framePreviewUrl(
+    mode: FrameDisplayMode,
+    reloadKey: number,
+    frame: FrameSummary | undefined
+  ): string {
     const client = getClient();
     if (!client || !selectedAssetId || selectedFrameNum < 1) return '';
     const kind = payloadKindForDisplay(mode);
     const base = {
-      asset_id: selectedAssetId,
-      frame_num: selectedFrameNum,
+      frame_id: frame?.id,
+      asset_id: frame?.id ? undefined : selectedAssetId,
+      frame_num: frame?.id ? undefined : selectedFrameNum,
       format: 'jpg',
-      scale: frameImageScale,
+      width: frameImageWidth,
       cache_bust: kind === 'preprocessed' && reloadKey ? reloadKey : undefined
     };
     return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
@@ -241,6 +269,7 @@
     if (lastFrameImageKey && key !== lastFrameImageKey) {
       hasLivePreview = false;
       detections = [];
+      bboxCoordinateBasis = 'original-frame';
     }
     lastFrameImageKey = key;
   }
@@ -254,6 +283,7 @@
     try {
       const result = await client.liveSegmentFrame(frame.id, options());
       detections = result.detections;
+      bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
       message = `Previewed frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} detected.`;
     } catch (err) {
@@ -278,6 +308,7 @@
       preprocessedReloadKey = Date.now();
       hasLivePreview = false;
       detections = [];
+      bboxCoordinateBasis = 'original-frame';
       message = `Applied preprocessing to frame ${selectedFrameNum} and reloaded the preprocessed image.`;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -293,6 +324,7 @@
     try {
       const result = await client.segmentFrame(frame.id, options());
       detections = result.detections;
+      bboxCoordinateBasis = segmentationOptionsBboxCoordinateBasis(options());
       message = `Saved segmentation for frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} stored.`;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -331,19 +363,74 @@
     return frame;
   }
 
-  function setImageNaturalSize(event: Event) {
-    const image = event.currentTarget as HTMLImageElement;
+  function setImageNaturalSize(dimensions: { width: number; height: number }) {
     failedImageUrl = '';
-    imageNaturalWidth = image.naturalWidth;
-    imageNaturalHeight = image.naturalHeight;
+    imageNaturalWidth = dimensions.width;
+    imageNaturalHeight = dimensions.height;
   }
 
   function markImageUnavailable() {
     failedImageUrl = imageUrl;
     imageNaturalWidth = 0;
     imageNaturalHeight = 0;
+    imageScaleX = null;
+    imageScaleY = null;
     hasLivePreview = false;
   }
+
+  async function loadFrameImageHeaders(url: string) {
+    const serial = ++imageHeaderSerial;
+    imageScaleX = null;
+    imageScaleY = null;
+    if (!url || typeof window === 'undefined') return;
+    try {
+      const headResponse = await fetch(url, { method: 'HEAD' });
+      if (serial !== imageHeaderSerial) return;
+      const headScale = scaleHeaders(headResponse);
+      if (headScale) {
+        imageScaleX = headScale.x;
+        imageScaleY = headScale.y;
+        return;
+      }
+
+      const imageResponse = await fetch(url);
+      if (serial !== imageHeaderSerial) {
+        await imageResponse.body?.cancel();
+        return;
+      }
+      const imageScale = scaleHeaders(imageResponse);
+      imageScaleX = imageScale?.x ?? null;
+      imageScaleY = imageScale?.y ?? null;
+      await imageResponse.body?.cancel();
+    } catch {
+      if (serial === imageHeaderSerial) {
+        imageScaleX = null;
+        imageScaleY = null;
+      }
+    }
+  }
+
+  function scaleHeaders(response: Response): { x: number; y: number } | null {
+    if (!response.ok) return null;
+    const uniformScale = headerNumber(response.headers, 'x-pelagia-scale');
+    const scaleX = headerNumber(response.headers, 'x-pelagia-scale-x') ?? uniformScale;
+    const scaleY = headerNumber(response.headers, 'x-pelagia-scale-y') ?? uniformScale;
+    return scaleX !== null && scaleY !== null ? { x: scaleX, y: scaleY } : null;
+  }
+
+  function headerNumber(headers: Headers, name: string): number | null {
+    const parsed = Number(headers.get(name));
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  type BboxCoordinateBasis = 'original-frame' | 'preprocessed-local';
+
+  type LiveSegmentationBasisResponse = {
+    frame_payload_kind?: string | null;
+    apply_preprocessing?: boolean | null;
+    bbox_coordinate_space?: string | null;
+    coordinate_space?: string | null;
+  };
 
   type BBox = {
     index: number;
@@ -365,21 +452,92 @@
 
   function readTargetTuple(detection: DetectionSummary): [number, number, number, number] | null {
     return (
+      tupleFromBBoxLike(detection.bbox) ??
       tupleFromValues(detection.bbox_x, detection.bbox_y, detection.bbox_w, detection.bbox_h) ??
-      tupleFromArray(detection.metadata?.object_bbox) ??
-      tupleFromArray(detection.bbox)
+      tupleFromBBoxLike(detection.metadata?.object_bbox) ??
+      tupleFromBBoxLike(detection.metadata?.bbox) ??
+      tupleFromBBoxLike(detection.metadata?.bounding_box) ??
+      tupleFromBBoxLike(detection.metadata?.object_bounds)
     );
   }
 
   function readCropTuple(detection: DetectionSummary): [number, number, number, number] | null {
     return (
+      tupleFromBBoxLike(detection.crop_bbox) ??
       tupleFromValues(
         detection.crop_bbox_x,
         detection.crop_bbox_y,
         detection.crop_bbox_w,
         detection.crop_bbox_h
-      ) ?? tupleFromArray(detection.metadata?.roi_bbox)
+      ) ??
+      tupleFromBBoxLike(detection.metadata?.roi_bbox) ??
+      tupleFromBBoxLike(detection.metadata?.crop_bbox) ??
+      tupleFromBBoxLike(detection.metadata?.crop_bounds)
     );
+  }
+
+  function tupleFromBBoxLike(value: unknown): [number, number, number, number] | null {
+    if (Array.isArray(value)) return tupleFromArray(value);
+    if (!value || typeof value !== 'object') return null;
+    const box = value as {
+      bbox?: unknown;
+      box?: unknown;
+      bounds?: unknown;
+      rect?: unknown;
+      xywh?: unknown;
+      xyxy?: unknown;
+      coordinates?: unknown;
+      x?: number | string | undefined;
+      y?: number | string | undefined;
+      w?: number | string | undefined;
+      h?: number | string | undefined;
+      width?: number | string | undefined;
+      height?: number | string | undefined;
+      left?: number | string | undefined;
+      top?: number | string | undefined;
+      right?: number | string | undefined;
+      bottom?: number | string | undefined;
+      x0?: number | string | undefined;
+      y0?: number | string | undefined;
+      x1?: number | string | undefined;
+      y1?: number | string | undefined;
+      xmin?: number | string | undefined;
+      ymin?: number | string | undefined;
+      xmax?: number | string | undefined;
+      ymax?: number | string | undefined;
+    };
+    const nested =
+      tupleFromArray(box.xywh) ??
+      tupleFromXYXY(box.xyxy) ??
+      tupleFromBBoxLike(box.bbox) ??
+      tupleFromBBoxLike(box.box) ??
+      tupleFromBBoxLike(box.bounds) ??
+      tupleFromBBoxLike(box.rect) ??
+      tupleFromBBoxLike(box.coordinates);
+    if (nested) return nested;
+
+    const x = numberValue(box.x ?? box.left ?? box.x0 ?? box.xmin);
+    const y = numberValue(box.y ?? box.top ?? box.y0 ?? box.ymin);
+    const w = numberValue(box.w ?? box.width);
+    const h = numberValue(box.h ?? box.height);
+    if (x !== null && y !== null && w !== null && h !== null) return [x, y, w, h];
+
+    const right = numberValue(box.right ?? box.x1 ?? box.xmax);
+    const bottom = numberValue(box.bottom ?? box.y1 ?? box.ymax);
+    if (x !== null && y !== null && right !== null && bottom !== null) {
+      return [x, y, right - x, bottom - y];
+    }
+    return null;
+  }
+
+  function tupleFromXYXY(value: unknown): [number, number, number, number] | null {
+    if (!Array.isArray(value) || value.length < 4) return null;
+    const x0 = numberValue(value[0]);
+    const y0 = numberValue(value[1]);
+    const x1 = numberValue(value[2]);
+    const y1 = numberValue(value[3]);
+    if (x0 === null || y0 === null || x1 === null || y1 === null) return null;
+    return [x0, y0, x1 - x0, y1 - y0];
   }
 
   function toBox(
@@ -421,8 +579,8 @@
   }
 
   function cropImageStyle(box: BBox): string {
-    if (!imageNaturalWidth || !imageNaturalHeight) return '';
-    const scaled = scaleBox(box);
+    if (!imageNaturalWidth || !imageNaturalHeight || imageScaleX === null || imageScaleY === null) return '';
+    const scaled = scaleBoxToDisplayedFrame(box, imageScaleX, imageScaleY, bboxCoordinateBasis);
     const scale = Math.min(
       12,
       Math.max(1.5, Math.min(cropPreviewWidth / Math.max(scaled.w, 1), cropPreviewHeight / Math.max(scaled.h, 1)))
@@ -436,30 +594,115 @@
     return `width: ${scaledWidth}px; height: ${scaledHeight}px; transform: translate(${translateX}px, ${translateY}px);`;
   }
 
-  function boxOverlayStyle(box: BBox): string {
-    const scaled = scaleBox(box);
-    return [
-      `left: ${scaled.x}px`,
-      `top: ${scaled.y}px`,
-      `width: ${scaled.w}px`,
-      `height: ${scaled.h}px`
-    ].join('; ');
-  }
-
-  function scaleBox(box: BBox): BBox {
+  function scaleBoxToDisplayedFrame(
+    box: BBox,
+    scaleX: number,
+    scaleY: number,
+    basis: BboxCoordinateBasis
+  ): BBox {
+    const origin = overlayOrigin(basis);
     return {
       ...box,
-      x: box.x * frameImageScale,
-      y: box.y * frameImageScale,
-      w: box.w * frameImageScale,
-      h: box.h * frameImageScale
+      x: (box.x - origin.x) * scaleX,
+      y: (box.y - origin.y) * scaleY,
+      w: box.w * scaleX,
+      h: box.h * scaleY
     };
   }
 
-  function overlaySizeStyle(): string {
-    return imageNaturalWidth && imageNaturalHeight
-      ? `width: ${imageNaturalWidth}px; height: ${imageNaturalHeight}px;`
-      : '';
+  function frameCanvasOverlays(
+    cropBoxes: BBox[],
+    targetBoxesForFrame: BBox[],
+    currentImageUrl: string,
+    currentImageInverted: boolean,
+    basis: BboxCoordinateBasis
+  ): CanvasOverlayRect[] {
+    if (imageScaleX === null || imageScaleY === null) return [];
+    const scaleX = imageScaleX;
+    const scaleY = imageScaleY;
+    return [
+      ...cropBoxes.map((box) => {
+        const scaled = scaleBoxToDisplayedFrame(box, scaleX, scaleY, basis);
+        return {
+          id: `crop-${box.index}`,
+          x: scaled.x,
+          y: scaled.y,
+          w: scaled.w,
+          h: scaled.h,
+          stroke: '#f5e642',
+          lineWidth: 2,
+          halo: 'rgba(17, 25, 22, 0.7)',
+          className: 'bbox-hotspot',
+          coordinateSpace: 'image' as const,
+          hoverPreview: {
+            imageUrl: currentImageUrl,
+            inverted: currentImageInverted,
+            imageStyle: cropImageStyle(box)
+          }
+        };
+      }),
+      ...targetBoxesForFrame.map((box) => {
+        const scaled = scaleBoxToDisplayedFrame(box, scaleX, scaleY, basis);
+        return {
+          id: `target-${box.index}`,
+          x: scaled.x,
+          y: scaled.y,
+          w: scaled.w,
+          h: scaled.h,
+          stroke: '#e2322e',
+          lineWidth: 3,
+          halo: 'rgba(255, 255, 255, 0.8)',
+          className: 'bbox-target',
+          coordinateSpace: 'image' as const,
+          selected: true
+        };
+      })
+    ];
+  }
+
+  function overlayOrigin(basis: BboxCoordinateBasis): { x: number; y: number } {
+    if (basis === 'preprocessed-local') return { x: 0, y: 0 };
+    return displayedFrameOrigin();
+  }
+
+  function liveBboxCoordinateBasis(result: LiveSegmentationBasisResponse): BboxCoordinateBasis {
+    const explicitSpace = String(result.bbox_coordinate_space ?? result.coordinate_space ?? '').toLowerCase();
+    if (explicitSpace.includes('preprocessed') && explicitSpace.includes('local')) return 'preprocessed-local';
+    if (explicitSpace.includes('original')) return 'original-frame';
+    return segmentationOptionsBboxCoordinateBasis({
+      frame_payload_kind:
+        result.frame_payload_kind === 'preprocessed' || result.frame_payload_kind === 'original'
+          ? result.frame_payload_kind
+          : framePayloadKind,
+      apply_preprocessing: result.apply_preprocessing ?? framePayloadKind === 'original'
+    });
+  }
+
+  function segmentationOptionsBboxCoordinateBasis(optionsValue: SegmentationOptions): BboxCoordinateBasis {
+    if (optionsValue.frame_payload_kind === 'preprocessed' && !optionsValue.apply_preprocessing) {
+      return 'preprocessed-local';
+    }
+    return 'original-frame';
+  }
+
+  function displayedFrameOrigin(): { x: number; y: number } {
+    if (framePayloadKind === 'preprocessed') {
+      const cropTuple =
+        tupleFromBBoxLike(selectedFrame?.preprocessed_metadata?.crop_bbox) ??
+        tupleFromBBoxLike(selectedFrame?.metadata?.crop_bbox);
+      if (cropTuple) return { x: cropTuple[0], y: cropTuple[1] };
+      if (cropEnabled && cropX !== null && cropY !== null) return { x: cropX, y: cropY };
+    }
+    return {
+      x: numberValue(selectedFrame?.bbox_x) ?? 0,
+      y: numberValue(selectedFrame?.bbox_y) ?? 0
+    };
+  }
+
+  function frameExportFilename(annotated = false): string {
+    const assetName = selectedAsset?.filename?.replace(/\.[^.]+$/, '') ?? selectedAssetId ?? 'asset';
+    const suffix = annotated ? 'boxed' : framePayloadKind;
+    return `${assetName}_frame_${selectedFrameNum}_${suffix}.png`;
   }
 </script>
 
@@ -468,7 +711,7 @@
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Frame data</p>
-        <h2>Live segmentation preview</h2>
+        <h2>Explorer preview</h2>
       </div>
       {#if loading}<span class="soft">Loading</span>{/if}
     </div>
@@ -513,31 +756,19 @@
               {/if}
             </div>
           {:else}
-            <div class="annotated-image">
-              {#key imageUrl}
-                <img
-                  class:inverted-frame={imageInverted}
-                  src={imageUrl}
-                  alt={hasLivePreview ? 'Selected frame with live segmentation bounding boxes' : 'Selected frame'}
-                  on:load={setImageNaturalSize}
-                  on:error={markImageUnavailable}
-                />
-              {/key}
-              {#if hasLivePreview && imageNaturalWidth && imageNaturalHeight}
-                <div class="bbox-overlay" style={overlaySizeStyle()} aria-hidden="true">
-                  {#each boxes as box}
-                    <div class="bbox-hotspot" style={boxOverlayStyle(box)}>
-                      <div class="bbox-hover-preview image-hover-preview">
-                        <img class:inverted-frame={imageInverted} src={imageUrl} alt="" style={cropImageStyle(box)} />
-                      </div>
-                    </div>
-                  {/each}
-                  {#each targetBoxes as box}
-                    <div class="bbox-target" style={boxOverlayStyle(box)}></div>
-                  {/each}
-                </div>
-              {/if}
-            </div>
+            {#key imageUrl}
+              <ImageCanvas
+                imageUrl={imageUrl}
+                alt={hasLivePreview ? 'Selected frame with explorer bounding boxes' : 'Selected frame'}
+                filename={frameExportFilename()}
+                annotatedFilename={frameExportFilename(true)}
+                overlays={canvasOverlays}
+                inverted={imageInverted}
+                onImageLoad={setImageNaturalSize}
+                onImageError={markImageUnavailable}
+                exportControls="menu"
+              />
+            {/key}
           {/if}
         </figure>
       {:else}
@@ -555,7 +786,7 @@
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Options</p>
-        <h2>Segmentation controls</h2>
+        <h2>Explorer controls</h2>
       </div>
     </div>
 
@@ -681,11 +912,8 @@
 
     <div class="button-row">
       <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Preview live</button>
-      <button class="ghost" type="button" on:click={saveSegmentation} disabled={frameCount < 1}>Save frame</button>
-      <button class="ghost" type="button" on:click={queueSegmentation} disabled={!selectedAssetId || frameCount < 1}>Queue asset</button>
-    </div>
+     </div>
 
-    <p class="callout">Live preview uses <code>GET /live/segmentation</code>. The preprocessing action uses <code>POST /frame/preprocess</code> and reloads <code>/frame/preprocessed</code>.</p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
   </section>

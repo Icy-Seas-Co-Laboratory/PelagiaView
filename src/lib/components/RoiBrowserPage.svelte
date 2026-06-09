@@ -2,8 +2,9 @@
   import { page } from '$app/stores';
   import { onMount, tick } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
+  import ImageCanvas from '$lib/components/ImageCanvas.svelte';
   import { getClient } from '$lib/stores/session';
-  import type { DetectionFilters, DetectionSummary, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
+  import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
   import { processingSection, stringDefault } from '$lib/utils/configDefaults';
   import { roiBrowserHref } from '$lib/utils/dashboardNavigation';
   import {
@@ -13,6 +14,7 @@
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
   import { formatBytes } from '$lib/utils/format';
+  import type { CanvasOverlayRect } from '$lib/utils/imageCanvas';
 
   let assets: RawAsset[] = [];
   let detections: DetectionSummary[] = [];
@@ -44,6 +46,7 @@
   let selectedDetection: DetectionSummary | null = null;
   let selectedParentAsset: RawAsset | null = null;
   let selectedParentFrame: FrameSummary | null = null;
+  let selectedFrameContext: FrameContextResponse | null = null;
   let frameDetections: DetectionSummary[] = [];
   let frameDetectionsLoading = false;
   let frameDetectionsComplete = false;
@@ -62,14 +65,28 @@
   const roiDisplayMaxHeight = 190;
   const modalRoiDisplayMaxWidth = 520;
   const modalRoiDisplayMaxHeight = 460;
-  const frameContextImageScale = 0.33;
+  const frameContextImageWidth = 380;
+  const fullFrameBboxScale = 0.5;
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
   $: visibleCount = detections.filter((detection) => detection.id).length;
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
   $: detailFrameImageInverted = isFrameDisplayInverted(detailFrameDisplayMode);
   $: detailFrameUrl = selectedDetection ? frameContextUrl(selectedDetection, detailFrameDisplayMode) : '';
-  $: detailFrameUnavailable = Boolean(detailFrameUrl && detailFrameFailedUrl === detailFrameUrl);
+  $: detailFrameSourceDimensions = parentFrameDimensions() ?? fallbackSourceDimensions(frameImageNaturalWidth, frameImageNaturalHeight);
+  $: detailFrameUnavailable = Boolean(
+    detailFramePayloadKind === 'preprocessed' && selectedFrameContext && !selectedFrameContext.image_urls?.preprocessed
+  ) || Boolean(detailFrameUrl && detailFrameFailedUrl === detailFrameUrl);
+  $: detailFrameCanvasOverlays = frameContextCanvasOverlays(
+    frameDetections,
+    selectedDetection,
+    detailFramePayloadKind,
+    selectedParentFrame,
+    frameImageNaturalWidth,
+    frameImageNaturalHeight,
+    detailFrameSourceDimensions
+  );
+  $: roiDetailCanvasOverlays = selectedDetection ? roiDetailCanvasOverlaysFor(selectedDetection) : [];
   $: resetFrameContextImage(detailFrameUrl);
   $: roiPreferenceSnapshot = {
     selectedAssetId,
@@ -117,11 +134,12 @@
     const offset = reset ? 0 : nextOffset;
     const serial = ++requestSerial;
     try {
-      const page = await client.searchDetections(currentFilters(offset));
+      const response = await client.searchDetectionsPage(currentFilters(offset));
+      const page = response.detections ?? [];
       if (serial !== requestSerial) return;
       detections = reset ? page : [...detections, ...withoutDuplicateDetections(page)];
-      nextOffset = offset + page.length;
-      hasMore = page.length >= pageSize;
+      nextOffset = response.page?.next_offset ?? offset + page.length;
+      hasMore = response.page?.next_offset !== null && response.page?.next_offset !== undefined;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -275,6 +293,7 @@
     selectedDetection = detection;
     selectedParentAsset = null;
     selectedParentFrame = null;
+    selectedFrameContext = null;
     frameDetections = detection.id ? [detection] : [];
     frameDetectionsLoading = true;
     frameDetectionsComplete = false;
@@ -288,40 +307,56 @@
       frameDetectionsLoading = false;
       return;
     }
-    void loadFrameDetectionBatches(detection, serial);
     try {
-      const frameIndex = numberValue(detection.frame_index);
-      const [asset, framesForParent] = await Promise.all([
-        client.getAsset(detection.asset_id).catch(() => null),
-        frameIndex === null
-          ? Promise.resolve([])
-          : client.listFrames(detection.asset_id, 1, frameIndex, frameIndex).catch(() => [])
-      ]);
+      const context = await client.frameContext(detection.frame_id, {
+        width: frameContextImageWidth,
+        include_detections: true,
+        detection_limit: frameDetectionBatchSize,
+        detection_offset: 0,
+        frame_payload_kind: detailFramePayloadKind
+      });
       if (serial !== frameDetectionLoadSerial) return;
-      selectedParentAsset = asset;
-      selectedParentFrame = framesForParent[0] ?? null;
+      selectedFrameContext = context;
+      selectedParentAsset = context.asset ?? null;
+      selectedParentFrame = context.frame ?? null;
+      const contextDetection = context.detections.find((candidate) => candidate.id && candidate.id === detection.id);
+      selectedDetection = contextDetection ? { ...detection, ...contextDetection } : detection;
+      frameDetections = frameDetectionsWithSelected(selectedDetection, context.detections);
+      const next = context.page?.next_offset ?? null;
+      frameDetectionsComplete = next === null;
+      if (next !== null) {
+        void loadFrameDetectionBatches(selectedDetection, serial, next);
+      } else {
+        frameDetectionsLoading = false;
+      }
     } catch (err) {
       detailError = err instanceof Error ? err.message : String(err);
+      frameDetectionsLoading = false;
     }
   }
 
-  async function loadFrameDetectionBatches(detection: DetectionSummary, serial: number) {
+  async function loadFrameDetectionBatches(detection: DetectionSummary, serial: number, startOffset = 0) {
     const client = getClient();
     if (!client || !detection.asset_id || !detection.frame_id) return;
-    let offset = 0;
+    let offset: number | null = startOffset;
     try {
-      while (serial === frameDetectionLoadSerial) {
-        const page = await client.listDetections(
-          detection.asset_id,
-          detection.frame_id,
-          frameDetectionBatchSize,
-          offset
-        );
+      while (serial === frameDetectionLoadSerial && offset !== null) {
+        const context = await client.frameContext(detection.frame_id, {
+          width: frameContextImageWidth,
+          include_detections: true,
+          detection_limit: frameDetectionBatchSize,
+          detection_offset: offset,
+          frame_payload_kind: detailFramePayloadKind
+        });
         if (serial !== frameDetectionLoadSerial) return;
+        selectedFrameContext = { ...context, detections: frameDetections };
+        selectedParentAsset = context.asset ?? selectedParentAsset;
+        selectedParentFrame = context.frame ?? selectedParentFrame;
+        const page = context.detections ?? [];
         const additions = withoutDuplicateFrameDetections(page);
         if (additions.length) frameDetections = [...frameDetections, ...additions];
-        if (page.length < frameDetectionBatchSize || (offset > 0 && additions.length === 0)) break;
-        offset += page.length;
+        offset = context.page?.next_offset ?? null;
+        if (offset !== null && additions.length === 0) break;
         await tick();
       }
       if (serial === frameDetectionLoadSerial) frameDetectionsComplete = true;
@@ -340,6 +375,7 @@
     selectedDetection = null;
     selectedParentAsset = null;
     selectedParentFrame = null;
+    selectedFrameContext = null;
     frameDetections = [];
     frameDetectionsLoading = false;
     frameDetectionsComplete = false;
@@ -359,20 +395,31 @@
     return page.filter((detection) => !detection.id || !existing.has(detection.id));
   }
 
+  function frameDetectionsWithSelected(selected: DetectionSummary, page: DetectionSummary[]): DetectionSummary[] {
+    if (!selected.id) return page.length ? page : [selected];
+    const rest = page.filter((detection) => detection.id !== selected.id);
+    return [selected, ...rest];
+  }
+
   function imageUrl(detection: DetectionSummary): string {
     const client = getClient();
     return client && detection.id ? client.detectionImageUrl(detection.id, imageFormat) : '';
   }
 
   function bboxLabel(detection: DetectionSummary): string {
-    const values = [detection.bbox_x, detection.bbox_y, detection.bbox_w, detection.bbox_h];
-    if (values.some((value) => value === undefined || value === null || value === '')) return 'bbox unavailable';
+    const values = [
+      bboxValue(detection, 'bbox', 'x'),
+      bboxValue(detection, 'bbox', 'y'),
+      bboxValue(detection, 'bbox', 'w'),
+      bboxValue(detection, 'bbox', 'h')
+    ];
+    if (values.some((value) => value === null)) return 'bbox unavailable';
     return `x=${values[0]}, y=${values[1]}, w=${values[2]}, h=${values[3]}`;
   }
 
   function cropImageStyle(detection: DetectionSummary, maxWidth = roiDisplayMaxWidth, maxHeight = roiDisplayMaxHeight): string {
-    const cropW = numberValue(detection.crop_bbox_w);
-    const cropH = numberValue(detection.crop_bbox_h);
+    const cropW = roiSourceWidth(detection);
+    const cropH = roiSourceHeight(detection);
     if (!cropW || !cropH) return '';
     const scale = roiDisplayScale(cropW, cropH, maxWidth, maxHeight);
     return [
@@ -381,39 +428,57 @@
     ].join('; ');
   }
 
-  function localBBoxStyle(detection: DetectionSummary): string {
-    const bboxX = numberValue(detection.bbox_x);
-    const bboxY = numberValue(detection.bbox_y);
-    const bboxW = numberValue(detection.bbox_w);
-    const bboxH = numberValue(detection.bbox_h);
-    const cropX = numberValue(detection.crop_bbox_x);
-    const cropY = numberValue(detection.crop_bbox_y);
-    const cropW = numberValue(detection.crop_bbox_w);
-    const cropH = numberValue(detection.crop_bbox_h);
+  function roiSourceWidth(detection: DetectionSummary): number | null {
+    return bboxValue(detection, 'crop_bbox', 'w');
+  }
+
+  function roiSourceHeight(detection: DetectionSummary): number | null {
+    return bboxValue(detection, 'crop_bbox', 'h');
+  }
+
+  function roiDetailCanvasOverlaysFor(detection: DetectionSummary): CanvasOverlayRect[] {
+    const bboxX = bboxValue(detection, 'bbox', 'x');
+    const bboxY = bboxValue(detection, 'bbox', 'y');
+    const bboxW = bboxValue(detection, 'bbox', 'w');
+    const bboxH = bboxValue(detection, 'bbox', 'h');
+    const cropX = bboxValue(detection, 'crop_bbox', 'x');
+    const cropY = bboxValue(detection, 'crop_bbox', 'y');
     if (
       bboxX === null ||
       bboxY === null ||
       bboxW === null ||
       bboxH === null ||
       cropX === null ||
-      cropY === null ||
-      !cropW ||
-      !cropH
+      cropY === null
     ) {
-      return '';
+      return [];
     }
-    const localX = bboxX - cropX;
-    const localY = bboxY - cropY;
     return [
-      `left: ${(localX / cropW) * 100}%`,
-      `top: ${(localY / cropH) * 100}%`,
-      `width: ${(bboxW / cropW) * 100}%`,
-      `height: ${(bboxH / cropH) * 100}%`
-    ].join('; ');
+      {
+        id: 'roi-local-bbox',
+        x: bboxX - cropX,
+        y: bboxY - cropY,
+        w: bboxW,
+        h: bboxH,
+        stroke: '#e2322e',
+        lineWidth: 3,
+        halo: 'rgba(255, 255, 255, 0.8)',
+        className: 'roi-local-bbox',
+        coordinateSpace: 'source',
+        selected: true
+      }
+    ];
   }
 
-  function hasLocalBBox(detection: DetectionSummary): boolean {
-    return Boolean(localBBoxStyle(detection));
+  function roiFilename(version = 'roi'): string {
+    const assetName =
+      selectedParentAsset?.filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_id ??
+      'asset';
+    const frame = selectedDetection?.frame_index ?? selectedDetection?.frame_id ?? 'frame';
+    const roi = selectedDetection?.roi_index ?? selectedDetection?.id ?? 'roi';
+    return `${assetName}_frame_${frame}_roi_${roi}_${version}.png`;
   }
 
   function numberValue(value: unknown): number | null {
@@ -422,47 +487,46 @@
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  function bboxValue(
+    detection: DetectionSummary,
+    kind: 'bbox' | 'crop_bbox',
+    field: 'x' | 'y' | 'w' | 'h'
+  ): number | null {
+    const nested = detection[kind];
+    if (nested && !Array.isArray(nested)) {
+      const value =
+        field === 'w'
+          ? nested.w ?? nested.width
+          : field === 'h'
+            ? nested.h ?? nested.height
+            : nested[field];
+      const parsed = numberValue(value);
+      if (parsed !== null) return parsed;
+    }
+    if (Array.isArray(nested)) {
+      const index = field === 'x' ? 0 : field === 'y' ? 1 : field === 'w' ? 2 : 3;
+      const parsed = numberValue(nested[index]);
+      if (parsed !== null) return parsed;
+    }
+    const prefix = kind === 'bbox' ? 'bbox' : 'crop_bbox';
+    return numberValue(detection[`${prefix}_${field}` as keyof DetectionSummary]);
+  }
+
   function roiDisplayScale(cropW: number, cropH: number, maxWidth = roiDisplayMaxWidth, maxHeight = roiDisplayMaxHeight): number {
     return Math.min(1, maxWidth / cropW, maxHeight / cropH);
-  }
-
-  function scaleBarLength(
-    detection: DetectionSummary,
-    maxWidth = roiDisplayMaxWidth,
-    maxHeight = roiDisplayMaxHeight
-  ): number | null {
-    const cropW = numberValue(detection.crop_bbox_w);
-    const cropH = numberValue(detection.crop_bbox_h);
-    if (!cropW || !cropH) return null;
-    const scale = roiDisplayScale(cropW, cropH, maxWidth, maxHeight);
-    return (
-      scaleBarLengths.find((length) => length <= cropW * 0.9 && length * scale <= 110 && length * scale >= 28) ??
-      scaleBarLengths.find((length) => length <= cropW * 0.9 && length * scale <= 140) ??
-      scaleBarLengths.slice().reverse().find((length) => length <= cropW) ??
-      null
-    );
-  }
-
-  function scaleBarStyle(
-    detection: DetectionSummary,
-    maxWidth = roiDisplayMaxWidth,
-    maxHeight = roiDisplayMaxHeight
-  ): string {
-    const cropW = numberValue(detection.crop_bbox_w);
-    const cropH = numberValue(detection.crop_bbox_h);
-    const length = scaleBarLength(detection, maxWidth, maxHeight);
-    if (!cropW || !cropH || !length) return '';
-    return `width: ${Math.max(10, Math.round(length * roiDisplayScale(cropW, cropH, maxWidth, maxHeight)))}px`;
   }
 
   function frameContextUrl(detection: DetectionSummary, mode: FrameDisplayMode): string {
     const client = getClient();
     if (!client || !detection.frame_id) return '';
     const kind = payloadKindForDisplay(mode);
+    const contextUrl = selectedFrameContext?.image_urls?.[kind];
+    if (contextUrl) return contextUrl;
+    if (selectedFrameContext && kind === 'preprocessed') return '';
     const base = {
       frame_id: detection.frame_id,
       format: 'jpg',
-      scale: frameContextImageScale
+      width: frameContextImageWidth
     };
     return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
   }
@@ -475,11 +539,10 @@
     detailFrameFailedUrl = '';
   }
 
-  function setFrameImageNaturalSize(event: Event) {
-    const image = event.currentTarget as HTMLImageElement;
+  function setFrameImageNaturalSize(dimensions: { width: number; height: number }) {
     detailFrameFailedUrl = '';
-    frameImageNaturalWidth = image.naturalWidth;
-    frameImageNaturalHeight = image.naturalHeight;
+    frameImageNaturalWidth = dimensions.width;
+    frameImageNaturalHeight = dimensions.height;
   }
 
   function markDetailFrameUnavailable() {
@@ -488,52 +551,42 @@
     frameImageNaturalHeight = 0;
   }
 
-  function fullFrameBBoxStyle(detection: DetectionSummary): string {
-    const bboxX = numberValue(detection.bbox_x);
-    const bboxY = numberValue(detection.bbox_y);
-    const bboxW = numberValue(detection.bbox_w);
-    const bboxH = numberValue(detection.bbox_h);
-    if (bboxX === null || bboxY === null || bboxW === null || bboxH === null) return '';
-    const dimensions = parentFrameDimensions();
-    if (dimensions) {
-      return [
-        `left: ${(bboxX / dimensions.width) * 100}%`,
-        `top: ${(bboxY / dimensions.height) * 100}%`,
-        `width: ${(bboxW / dimensions.width) * 100}%`,
-        `height: ${(bboxH / dimensions.height) * 100}%`
-      ].join('; ');
-    }
-    return [
-      `left: ${bboxX * frameContextImageScale}px`,
-      `top: ${bboxY * frameContextImageScale}px`,
-      `width: ${bboxW * frameContextImageScale}px`,
-      `height: ${bboxH * frameContextImageScale}px`
-    ].join('; ');
-  }
-
-  function fullFrameOverlayStyle(): string {
-    return frameImageNaturalWidth && frameImageNaturalHeight ? 'width: 100%; height: 100%;' : '';
-  }
-
   function isSelectedDetection(detection: DetectionSummary): boolean {
     return Boolean(selectedDetection?.id && detection.id === selectedDetection.id);
   }
 
   function parentFrameDimensions(): { width: number; height: number } | null {
+    if (detailFramePayloadKind === 'preprocessed') {
+      const preprocessedDimensions = dimensionsFromShape(
+        selectedParentFrame?.preprocessed_payload_shape ??
+          selectedParentFrame?.preprocessed_metadata?.shape ??
+          selectedParentFrame?.metadata?.preprocessed_payload_shape
+      );
+      if (preprocessedDimensions) return preprocessedDimensions;
+    }
     const width = numberValue(selectedParentFrame?.width);
     const height = numberValue(selectedParentFrame?.height);
     if (width && height) return { width, height };
-    const shape = selectedParentFrame?.shape;
+    const shapeDimensions = dimensionsFromShape(
+      selectedParentFrame?.payload_shape ??
+        selectedParentFrame?.shape ??
+        (Array.isArray(selectedParentFrame?.metadata?.shape) ? selectedParentFrame.metadata.shape : null)
+    );
+    if (shapeDimensions) return shapeDimensions;
+    if (frameImageNaturalWidth && frameImageNaturalHeight) {
+      return {
+        width: frameImageNaturalWidth,
+        height: frameImageNaturalHeight
+      };
+    }
+    return null;
+  }
+
+  function dimensionsFromShape(shape: unknown): { width: number; height: number } | null {
     if (Array.isArray(shape) && shape.length >= 2) {
       const shapeHeight = numberValue(shape[0]);
       const shapeWidth = numberValue(shape[1]);
       if (shapeWidth && shapeHeight) return { width: shapeWidth, height: shapeHeight };
-    }
-    if (frameImageNaturalWidth && frameImageNaturalHeight) {
-      return {
-        width: frameImageNaturalWidth / frameContextImageScale,
-        height: frameImageNaturalHeight / frameContextImageScale
-      };
     }
     return null;
   }
@@ -578,6 +631,124 @@
     if (Array.isArray(value)) return value.join(', ');
     if (typeof value === 'object') return JSON.stringify(value);
     return String(value);
+  }
+
+  function frameContextCanvasOverlays(
+    detectionsForFrame: DetectionSummary[],
+    selected: DetectionSummary | null,
+    _payloadKind: string,
+    _frame: FrameSummary | null,
+    displayWidth: number,
+    displayHeight: number,
+    sourceDimensions: { width: number; height: number } | null
+  ): CanvasOverlayRect[] {
+    if (!displayWidth || !displayHeight || !sourceDimensions) return [];
+    const others: CanvasOverlayRect[] = [];
+    const selectedOverlays: CanvasOverlayRect[] = [];
+    for (const detection of detectionsForFrame) {
+      const rect = frameContextOverlayRect(detection, displayWidth, displayHeight, sourceDimensions);
+      if (!rect) continue;
+      if (selected?.id && detection.id === selected.id) {
+        selectedOverlays.push({
+          ...rect,
+          stroke: '#e2322e',
+          lineWidth: 3,
+          halo: 'rgba(255, 255, 255, 0.8)',
+          className: 'roi-frame-selected',
+          selected: true
+        });
+      } else {
+        others.push({
+          ...rect,
+          stroke: '#f5e642',
+          lineWidth: 2,
+          halo: 'rgba(17, 25, 22, 0.7)',
+          className: 'roi-frame-other'
+        });
+      }
+    }
+    return [...others, ...selectedOverlays];
+  }
+
+  function frameContextOverlayRect(
+    detection: DetectionSummary,
+    displayWidth: number,
+    displayHeight: number,
+    sourceDimensions: { width: number; height: number } | null
+  ): Omit<CanvasOverlayRect, 'stroke'> | null {
+    const bboxX = bboxValue(detection, 'bbox', 'x');
+    const bboxY = bboxValue(detection, 'bbox', 'y');
+    const bboxW = bboxValue(detection, 'bbox', 'w');
+    const bboxH = bboxValue(detection, 'bbox', 'h');
+    if (bboxX === null || bboxY === null || bboxW === null || bboxH === null) return null;
+    if (!sourceDimensions) return null;
+    const origin = frameContextOrigin();
+    const scaleX = displayWidth / Math.max(sourceDimensions.width, 1);
+    const scaleY = displayHeight / Math.max(sourceDimensions.height, 1);
+    return {
+      x: (bboxX - origin.x) * scaleX,
+      y: (bboxY - origin.y) * scaleY,
+      w: bboxW * scaleX,
+      h: bboxH * scaleY,
+      coordinateSpace: 'image'
+    };
+  }
+
+  function fallbackSourceDimensions(displayWidth: number, displayHeight: number): { width: number; height: number } | null {
+    if (!displayWidth || !displayHeight) return null;
+    return {
+      width: displayWidth / fullFrameBboxScale,
+      height: displayHeight / fullFrameBboxScale
+    };
+  }
+
+  function frameContextOrigin(): { x: number; y: number } {
+    if (detailFramePayloadKind === 'preprocessed') {
+      const cropTuple =
+        tupleFromBBoxLike(selectedParentFrame?.preprocessed_metadata?.crop_bbox) ??
+        tupleFromBBoxLike(selectedParentFrame?.metadata?.crop_bbox);
+      if (cropTuple) return { x: cropTuple[0], y: cropTuple[1] };
+    }
+    return {
+      x: numberValue(selectedParentFrame?.bbox_x) ?? 0,
+      y: numberValue(selectedParentFrame?.bbox_y) ?? 0
+    };
+  }
+
+  function tupleFromBBoxLike(value: unknown): [number, number, number, number] | null {
+    if (Array.isArray(value) && value.length >= 4) {
+      return tupleFromValues(value[0], value[1], value[2], value[3]);
+    }
+    if (!value || typeof value !== 'object') return null;
+    const box = value as {
+      x?: number | string;
+      y?: number | string;
+      w?: number | string;
+      h?: number | string;
+      width?: number | string;
+      height?: number | string;
+    };
+    return tupleFromValues(box.x, box.y, box.w ?? box.width, box.h ?? box.height);
+  }
+
+  function tupleFromValues(
+    x: unknown,
+    y: unknown,
+    w: unknown,
+    h: unknown
+  ): [number, number, number, number] | null {
+    const values = [x, y, w, h].map(numberValue);
+    return values.every((value) => value !== null) ? (values as [number, number, number, number]) : null;
+  }
+
+  function frameContextFilename(annotated = false): string {
+    const assetName =
+      selectedParentAsset?.filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_id ??
+      'asset';
+    const suffix = annotated ? 'boxed' : detailFramePayloadKind;
+    return `${assetName}_frame_${frameNumberLabel()}_${suffix}.png`;
   }
 </script>
 
@@ -734,23 +905,18 @@
                 on:click={() => openRoiDetail(detection)}
               >
                 <div class="roi-image-frame">
-                  <div class="roi-image-wrap" style={cropImageStyle(detection)}>
-                    <img
-                      class:inverted-frame={invertImages}
-                      src={imageUrl(detection)}
-                      alt={`ROI ${detection.roi_index ?? ''}`}
-                      loading="lazy"
-                    />
-                    {#if hasLocalBBox(detection)}
-                      <div class="roi-local-bbox" style={localBBoxStyle(detection)} aria-hidden="true"></div>
-                    {/if}
-                  </div>
-                  {#if scaleBarLength(detection)}
-                    <div class="roi-scale-reference" aria-hidden="true">
-                      <span class="roi-scale-bar" style={scaleBarStyle(detection)}></span>
-                      <span>{scaleBarLength(detection)} px</span>
-                    </div>
-                  {/if}
+                  <ImageCanvas
+                    imageUrl={imageUrl(detection)}
+                    alt={`ROI ${detection.roi_index ?? ''}`}
+                    overlays={roiDetailCanvasOverlaysFor(detection)}
+                    inverted={invertImages}
+                    sourceWidth={roiSourceWidth(detection)}
+                    sourceHeight={roiSourceHeight(detection)}
+                    canvasStyle={cropImageStyle(detection)}
+                    exportControls="none"
+                    loading="lazy"
+                    scaleBar={{ enabled: true, placement: 'below', lengths: scaleBarLengths, maxPercent: 55 }}
+                  />
                 </div>
                 <div class="roi-tile-meta">
                   <strong>{detection.asset_filename ?? detection.asset_id ?? 'Unknown asset'}</strong>
@@ -799,22 +965,19 @@
 
       <div class="roi-detail-grid">
         <div class="roi-detail-image-panel">
-          <div class="roi-detail-image-wrap" style={cropImageStyle(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight)}>
-            <img
-              class:inverted-frame={invertImages}
-              src={imageUrl(selectedDetection)}
-              alt={`ROI ${selectedDetection.roi_index ?? ''}`}
-            />
-            {#if hasLocalBBox(selectedDetection)}
-              <div class="roi-local-bbox" style={localBBoxStyle(selectedDetection)} aria-hidden="true"></div>
-            {/if}
-          </div>
-          {#if scaleBarLength(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight)}
-            <div class="roi-scale-reference detail-scale-reference" aria-hidden="true">
-              <span class="roi-scale-bar" style={scaleBarStyle(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight)}></span>
-              <span>{scaleBarLength(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight)} px</span>
-            </div>
-          {/if}
+          <ImageCanvas
+            imageUrl={imageUrl(selectedDetection)}
+            alt={`ROI ${selectedDetection.roi_index ?? ''}`}
+            filename={roiFilename()}
+            annotatedFilename={roiFilename('boxed')}
+            overlays={roiDetailCanvasOverlays}
+            sourceWidth={roiSourceWidth(selectedDetection)}
+            sourceHeight={roiSourceHeight(selectedDetection)}
+            canvasStyle={cropImageStyle(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight)}
+            inverted={invertImages}
+            exportControls="menu"
+            scaleBar={{ enabled: true }}
+          />
         </div>
 
         <div class="roi-detail-info">
@@ -827,10 +990,6 @@
             <div>
               <dt>Frame</dt>
               <dd>{selectedDetection.frame_index ?? selectedDetection.frame_id ?? 'unknown'}</dd>
-            </div>
-            <div>
-              <dt>ROI index</dt>
-              <dd>{selectedDetection.roi_index ?? 'unknown'}</dd>
             </div>
             <div>
               <dt>Bounding box</dt>
@@ -876,10 +1035,6 @@
                   unknown
                 {/if}
               </dd>
-            </div>
-            <div>
-              <dt>Source path</dt>
-              <dd>{selectedParentAsset?.path ?? 'unknown'}</dd>
             </div>
             <div>
               <dt>Frame ID</dt>
@@ -942,7 +1097,6 @@
         {#if selectedDetection.frame_id}
           <div class="roi-frame-controls">
             <FrameDisplayToggle bind:value={detailFrameDisplayMode} />
-            <span class="soft">{frameCaption(detailFrameDisplayMode)}</span>
           </div>
           <div class="roi-frame-stage">
             {#if detailFrameUnavailable}
@@ -956,30 +1110,23 @@
                 {/if}
               </div>
             {:else}
-              <div class="roi-frame-wrap">
-                {#key detailFrameUrl}
-                  <img
-                    class:inverted-frame={detailFrameImageInverted}
-                    src={detailFrameUrl}
-                    alt="Frame with ROI bounding boxes"
-                    on:load={setFrameImageNaturalSize}
-                    on:error={markDetailFrameUnavailable}
-                  />
-                {/key}
-                {#if frameImageNaturalWidth && frameImageNaturalHeight}
-                  <div class="bbox-overlay" style={fullFrameOverlayStyle()} aria-hidden="true">
-                    {#each frameDetections as detection}
-                      {#if fullFrameBBoxStyle(detection)}
-                        <div
-                          class:roi-frame-selected={isSelectedDetection(detection)}
-                          class:roi-frame-other={!isSelectedDetection(detection)}
-                          style={fullFrameBBoxStyle(detection)}
-                        ></div>
-                      {/if}
-                    {/each}
-                  </div>
-                {/if}
-              </div>
+              {#key detailFrameUrl}
+                <ImageCanvas
+                  imageUrl={detailFrameUrl}
+                  alt="Frame with ROI bounding boxes"
+                  filename={frameContextFilename()}
+                  annotatedFilename={frameContextFilename(true)}
+                  overlays={detailFrameCanvasOverlays}
+                  sourceWidth={detailFrameSourceDimensions?.width ?? null}
+                  sourceHeight={detailFrameSourceDimensions?.height ?? null}
+                  inverted={detailFrameImageInverted}
+                  onImageLoad={setFrameImageNaturalSize}
+                  onImageError={markDetailFrameUnavailable}
+                  exportControls="menu"
+                  scaleBar={{ enabled: true }}
+                  readImageHeaders={true}
+                />
+              {/key}
               {/if}
           </div>
           <p class="soft">

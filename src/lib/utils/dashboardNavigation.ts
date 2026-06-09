@@ -11,8 +11,8 @@ export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'ingestion', label: 'Ingestion', detail: 'server assets' },
   { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep' },
   { id: 'segmentation', label: 'Segmentation', detail: 'queue ROI jobs' },
-  { id: 'explorer', label: 'Explorer', detail: 'live preview' },
   { id: 'rois', label: 'ROI Browser', detail: 'detections gallery' },
+  { id: 'explorer', label: 'Explorer', detail: 'live preview' },
   { id: 'logs', label: 'Event Log', detail: 'job events' }
 ];
 

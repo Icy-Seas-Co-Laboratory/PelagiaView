@@ -1,10 +1,12 @@
 import type {
   AssetDetectionStats,
   CollectionSummary,
+  DetectionListResponse,
   DetectionFilters,
   DetectionSummary,
   DirectoryEntry,
   DirectoryListing,
+  FrameContextResponse,
   FramePreprocessOptions,
   FramePreprocessResponse,
   FrameSummary,
@@ -29,6 +31,8 @@ type CacheRecord<T> = {
 type FrameImageOptions = {
   format?: string;
   scale?: string | number;
+  width?: number | null;
+  height?: number | null;
   flatfield_correction?: boolean | null;
   flatfield_q?: number | null;
   flatfield_axis?: number | null;
@@ -42,8 +46,20 @@ type FrameEndpointOptions = {
   frame_num?: number | null;
   format?: string;
   scale?: string | number;
+  width?: number | null;
+  height?: number | null;
   preview_max_dim?: number | null;
   cache_bust?: number | null;
+};
+
+type FrameContextOptions = {
+  width?: number | null;
+  height?: number | null;
+  scale?: string | number;
+  include_detections?: boolean;
+  detection_limit?: number | null;
+  detection_offset?: number | null;
+  frame_payload_kind?: 'original' | 'preprocessed' | null;
 };
 
 export class ApiError extends Error {
@@ -192,39 +208,69 @@ export class PelagiaApiClient {
   }
 
   frameImageUrl(assetId: string, frameNum: number, options: FrameImageOptions = {}): string {
-    const { format = 'jpg', scale = '0.5', ...frameOptions } = options;
+    const { format = 'jpg', ...frameOptions } = options;
     return this.url(`/assets/${encodeURIComponent(assetId)}/framedata/${frameNum}`, {
       format,
-      scale,
       ...frameOptions
     });
   }
 
   originalFrameUrl(options: FrameEndpointOptions): string {
-    const { format = 'jpg', scale = '0.5', ...frameOptions } = options;
-    return this.url('/frame/original', { format, scale, ...frameOptions });
+    const { format = 'jpg', ...frameOptions } = options;
+    return this.url('/frame/original', { format, ...frameOptions });
   }
 
   preprocessedFrameUrl(options: FrameEndpointOptions): string {
-    const { format = 'jpg', scale = '0.5', ...frameOptions } = options;
-    return this.url('/frame/preprocessed', { format, scale, ...frameOptions });
+    const { format = 'jpg', ...frameOptions } = options;
+    return this.url('/frame/preprocessed', { format, ...frameOptions });
   }
 
   async listDetections(assetId: string, frameId?: string, limit = 500, offset = 0): Promise<DetectionSummary[]> {
-    const response = await this.get<{ detections: DetectionSummary[] }>(
-      `/assets/${encodeURIComponent(assetId)}/detections`,
-      { frame_id: frameId, limit, offset }
-    );
+    const response = await this.listDetectionsPage(assetId, frameId, limit, offset);
     return response.detections ?? [];
   }
 
+  async listDetectionsPage(
+    assetId: string,
+    frameId?: string,
+    limit = 500,
+    offset = 0
+  ): Promise<DetectionListResponse> {
+    const response = await this.get<DetectionListResponse>(
+      `/assets/${encodeURIComponent(assetId)}/detections`,
+      { frame_id: frameId, limit, offset }
+    );
+    return withDetectionPageFallback(response, limit, offset);
+  }
+
   async searchDetections(filters: DetectionFilters = {}): Promise<DetectionSummary[]> {
-    const response = await this.get<{ detections: DetectionSummary[] }>('/detections', compact(filters), 1500);
+    const response = await this.searchDetectionsPage(filters);
     return response.detections ?? [];
+  }
+
+  async searchDetectionsPage(filters: DetectionFilters = {}): Promise<DetectionListResponse> {
+    const response = await this.get<DetectionListResponse>('/detections', compact(filters), 1500);
+    return withDetectionPageFallback(response, filters.limit ?? 100, filters.offset ?? 0);
   }
 
   detectionImageUrl(detectionId: string, format = 'jpg'): string {
     return this.url(`/detections/${encodeURIComponent(detectionId)}/framedata`, { format });
+  }
+
+  async frameContext(frameId: string, options: FrameContextOptions = {}): Promise<FrameContextResponse> {
+    const response = await this.get<FrameContextResponse>(
+      `/frames/${encodeURIComponent(frameId)}/context`,
+      compact(options),
+      1000
+    );
+    return {
+      ...response,
+      image_urls: {
+        original: this.absoluteUrlOrNull(response.image_urls?.original),
+        preprocessed: this.absoluteUrlOrNull(response.image_urls?.preprocessed)
+      },
+      detections: response.detections ?? []
+    };
   }
 
   async queueVideo(sourcePath: string, options: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -254,6 +300,12 @@ export class PelagiaApiClient {
     apply_preprocessing?: boolean;
     apply_mask?: boolean;
     crop_enabled?: boolean;
+    crop_x?: number | null;
+    crop_y?: number | null;
+    crop_w?: number | null;
+    crop_h?: number | null;
+    bbox_coordinate_space?: string | null;
+    coordinate_space?: string | null;
     background_correction?: boolean;
     background_percentile?: number;
     intensity_inverted?: boolean;
@@ -367,6 +419,12 @@ export class PelagiaApiClient {
     }
     return url.toString();
   }
+
+  private absoluteUrlOrNull(value: string | null | undefined): string | null {
+    if (!value) return null;
+    if (/^[a-z][a-z\d+\-.]*:\/\//i.test(value)) return value;
+    return this.url(value);
+  }
 }
 
 export function normalizeBaseUrl(value: string): string {
@@ -379,6 +437,23 @@ function compact<T extends Record<string, unknown>>(input: T): T {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== '')
   ) as T;
+}
+
+function withDetectionPageFallback(
+  response: DetectionListResponse,
+  limit: number | null | undefined,
+  offset: number | null | undefined
+): DetectionListResponse {
+  const detections = response.detections ?? [];
+  return {
+    detections,
+    page: response.page ?? {
+      limit,
+      offset: offset ?? 0,
+      count: detections.length,
+      next_offset: limit && detections.length >= limit ? (offset ?? 0) + detections.length : null
+    }
+  };
 }
 
 function directoryFromAssets(assets: RawAsset[], currentPath: string): DirectoryListing {

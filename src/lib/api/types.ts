@@ -30,7 +30,11 @@ export type KvStoreOverview = {
   configured_hash_algorithm?: string;
   configured_prefix_length?: number;
   total_sqlite_file_bytes?: number;
-  status?: Record<string, unknown>;
+  status?: Record<string, unknown> & {
+    total_sqlite_file_bytes?: number | string;
+    total_stored_payload_bytes?: number | string;
+    deep?: boolean;
+  };
   health?: Record<string, unknown>;
 };
 
@@ -88,11 +92,16 @@ export type FrameSummary = {
   captured_at?: string | null;
   width?: number | null;
   height?: number | null;
+  bbox_x?: number | string | null;
+  bbox_y?: number | string | null;
   shape?: number[] | null;
+  payload_shape?: number[] | null;
+  preprocessed_payload_shape?: number[] | null;
   dtype?: string | null;
   has_preprocessed_payload?: boolean;
   created_at?: string;
   metadata?: Record<string, unknown>;
+  preprocessed_metadata?: Record<string, unknown>;
 };
 
 export type CollectionSummary = {
@@ -117,6 +126,22 @@ export type AssetDetectionStats = {
   }>;
 };
 
+export type PageMetadata = {
+  limit?: number | null;
+  offset?: number;
+  count?: number;
+  next_offset?: number | null;
+};
+
+export type BBoxObject = {
+  x?: number | string;
+  y?: number | string;
+  w?: number | string;
+  h?: number | string;
+  width?: number | string;
+  height?: number | string;
+};
+
 export type DetectionSummary = {
   id?: string;
   frame_id?: string;
@@ -128,11 +153,12 @@ export type DetectionSummary = {
   bbox_y?: number | string;
   bbox_w?: number | string;
   bbox_h?: number | string;
-  bbox?: Array<number | string>;
+  bbox?: BBoxObject | Array<number | string>;
   crop_bbox_x?: number | string;
   crop_bbox_y?: number | string;
   crop_bbox_w?: number | string;
   crop_bbox_h?: number | string;
+  crop_bbox?: BBoxObject;
   area?: number;
   perimeter?: number;
   roi_encoding?: string | null;
@@ -140,6 +166,24 @@ export type DetectionSummary = {
   roi_payload_bytes?: number;
   mask_payload_bytes?: number;
   metadata?: Record<string, unknown>;
+};
+
+export type DetectionListResponse = {
+  detections: DetectionSummary[];
+  page?: PageMetadata;
+};
+
+export type FrameContextResponse = {
+  frame: FrameSummary;
+  asset: RawAsset;
+  image_urls: {
+    original?: string | null;
+    preprocessed?: string | null;
+  };
+  frame_payload_kind?: 'original' | 'preprocessed';
+  detections: DetectionSummary[];
+  detection_count: number;
+  page?: PageMetadata;
 };
 
 export type DetectionFilters = {
