@@ -4,7 +4,17 @@ type ConfigSection = Record<string, unknown> | undefined;
 
 export function processingSection(
   config: SystemConfigResponse | null | undefined,
-  section: 'segmentation' | 'flatfield' | 'preprocessing' | 'video_ingest' | 'frame_storage'
+  section:
+    | 'segmentation'
+    | 'thresholding'
+    | 'flatfield'
+    | 'preprocessing'
+    | 'mask_augmentation'
+    | 'roi_assembly'
+    | 'roi_filter'
+    | 'roi_recording'
+    | 'video_ingest'
+    | 'frame_storage'
 ): ConfigSection {
   return config?.effective?.processing?.[section];
 }

@@ -631,6 +631,61 @@ button.job-action-muted:hover:not(:disabled) {
   opacity: 0.78;
 }
 
+.toggle-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.toggle-list button {
+  min-height: 2rem;
+  border-color: #c7d5d0;
+  padding: 0.35rem 0.55rem;
+  color: #314a42;
+  background: #ffffff;
+  font-size: 0.78rem;
+}
+
+.toggle-list button.active,
+.toggle-list button:hover:not(:disabled) {
+  border-color: #1f6b57;
+  color: #ffffff;
+  background: #1f6b57;
+}
+
+.control-details {
+  display: grid;
+  gap: 0.75rem;
+  border-top: 1px solid #e0e8e5;
+  padding-top: 0.75rem;
+}
+
+.control-details summary {
+  cursor: pointer;
+  color: #3d564d;
+  font-weight: 750;
+}
+
+.stage-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.8rem 0 0;
+}
+
+.stage-counts span {
+  border: 1px solid #d6e3df;
+  border-radius: 7px;
+  padding: 0.35rem 0.5rem;
+  color: #42584f;
+  background: #f7faf9;
+  font-size: 0.78rem;
+}
+
+.stage-counts strong {
+  color: #1f6b57;
+}
+
 .pathbar {
   margin: 1rem 0;
 }
@@ -923,6 +978,50 @@ button.job-action-muted:hover:not(:disabled) {
 .section-heading {
   display: grid;
   gap: 0.15rem;
+}
+
+.collapsible-section > summary.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.collapsible-section > summary.section-heading::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-section > summary.section-heading > span {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.collapsible-section > summary.section-heading::after {
+  content: "+";
+  display: grid;
+  flex: 0 0 auto;
+  width: 1.35rem;
+  height: 1.35rem;
+  place-items: center;
+  border: 1px solid #cbd9d5;
+  border-radius: 999px;
+  color: #52615d;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.collapsible-section[open] > summary.section-heading::after {
+  content: "-";
+}
+
+.collapsible-section > summary.section-heading:focus-visible {
+  outline: 2px solid rgba(52, 94, 82, 0.42);
+  outline-offset: 3px;
+  border-radius: 6px;
 }
 
 .section-heading strong {

@@ -5,6 +5,7 @@ export type AnalyticsRecord = {
   event_type: string;
   created_at?: string;
   route?: string;
+  session_id?: string | null;
   method?: string;
   status?: number;
   duration_ms?: number;

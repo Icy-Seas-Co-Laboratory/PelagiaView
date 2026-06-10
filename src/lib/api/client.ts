@@ -20,10 +20,13 @@ import type {
   LogEntry,
   RawAsset,
   SegmentationOptions,
+  SegmentationCapabilities,
+  SegmentationResolvedOptions,
   SystemConfigResponse,
   SystemStatus,
   WorkerSession
 } from './types';
+import { recordApiRequest } from '$lib/utils/analytics';
 
 type CacheRecord<T> = {
   expiresAt: number;
@@ -64,6 +67,8 @@ type FrameContextOptions = {
   frame_payload_kind?: 'original' | 'preprocessed' | null;
 };
 
+type QueryParamValue = string | number | boolean | Array<string | number | boolean> | null | undefined;
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
@@ -84,7 +89,7 @@ export class PelagiaApiClient {
     this.baseUrl = normalizeBaseUrl(baseUrl);
   }
 
-  async get<T>(path: string, params?: Record<string, string | number | boolean | null | undefined>, ttlMs = 0): Promise<T> {
+  async get<T>(path: string, params?: Record<string, QueryParamValue>, ttlMs = 0): Promise<T> {
     const url = this.url(path, params);
     if (ttlMs > 0) {
       const cached = this.cache.get(url) as CacheRecord<T> | undefined;
@@ -124,6 +129,10 @@ export class PelagiaApiClient {
 
   async systemConfig(): Promise<SystemConfigResponse> {
     return this.get<SystemConfigResponse>('/system/config', undefined, 15000);
+  }
+
+  async segmentationOptions(): Promise<SegmentationCapabilities> {
+    return this.get<SegmentationCapabilities>('/segmentation/options', undefined, 15000);
   }
 
   async kvStoreOverview(): Promise<KvStoreOverview> {
@@ -307,6 +316,12 @@ export class PelagiaApiClient {
     run_id?: string;
     asset_id?: string;
     saved?: boolean;
+    frame_payload_kind?: string;
+    apply_preprocessing?: boolean;
+    resolved_options?: SegmentationResolvedOptions;
+    bbox_coordinate_space?: string | null;
+    processed_frame_shape?: number[] | null;
+    stage_counts?: Record<string, number>;
     detection_count: number;
     detections: DetectionSummary[];
   }> {
@@ -328,6 +343,9 @@ export class PelagiaApiClient {
     crop_h?: number | null;
     bbox_coordinate_space?: string | null;
     coordinate_space?: string | null;
+    resolved_options?: SegmentationResolvedOptions;
+    processed_frame_shape?: number[] | null;
+    stage_counts?: Record<string, number>;
     background_correction?: boolean;
     background_percentile?: number;
     intensity_inverted?: boolean;
@@ -404,9 +422,12 @@ export class PelagiaApiClient {
 
   private async request<T>(input: string, init?: RequestInit): Promise<T> {
     let response: Response;
+    const started = performance.now();
     try {
       response = await fetch(input, init);
+      recordApiRequest(input, init, response, performance.now() - started);
     } catch (error) {
+      recordApiRequest(input, init, null, performance.now() - started, error);
       throw new ApiError(
         0,
         `Unable to reach Pelagia at ${this.baseUrl}. Check that the server is running and allows browser requests from PelagiaView.`,
@@ -432,10 +453,16 @@ export class PelagiaApiClient {
     return response.json() as Promise<T>;
   }
 
-  private url(path: string, params?: Record<string, string | number | boolean | null | undefined>): string {
+  private url(path: string, params?: Record<string, QueryParamValue>): string {
     const url = new URL(path.startsWith('/') ? path : `/${path}`, `${this.baseUrl}/`);
     for (const [key, value] of Object.entries(params ?? {})) {
-      if (value !== undefined && value !== null && value !== '') {
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item !== undefined && item !== null && item !== '') {
+            url.searchParams.append(key, String(item));
+          }
+        }
+      } else if (value !== undefined && value !== null && value !== '') {
         url.searchParams.set(key, String(value));
       }
     }

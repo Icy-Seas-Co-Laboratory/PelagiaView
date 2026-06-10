@@ -7,7 +7,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   const durationMs = Math.round((performance.now() - started) * 10) / 10;
   const pathname = event.url.pathname;
 
-  if (!pathname.startsWith('/_app/') && pathname !== '/favicon.ico') {
+  if (!pathname.startsWith('/_app/') && pathname !== '/favicon.ico' && pathname !== '/analytics') {
     void recordAnalytics({
       event_type: 'server_request',
       route: `${pathname}${event.url.search}`,

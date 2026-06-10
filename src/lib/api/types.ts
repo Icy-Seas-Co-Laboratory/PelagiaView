@@ -15,8 +15,13 @@ export type SystemConfigResponse = {
   effective?: {
     processing?: {
       segmentation?: Record<string, unknown>;
+      thresholding?: Record<string, unknown>;
       flatfield?: Record<string, unknown>;
       preprocessing?: Record<string, unknown>;
+      mask_augmentation?: Record<string, unknown>;
+      roi_assembly?: Record<string, unknown>;
+      roi_filter?: Record<string, unknown>;
+      roi_recording?: Record<string, unknown>;
       video_ingest?: Record<string, unknown>;
       frame_storage?: Record<string, unknown>;
     };
@@ -303,6 +308,41 @@ export type DirectoryListing = {
 
 export type SegmentationOptions = {
   threshold?: number | null;
+  threshold_method?: string | null;
+  manual_threshold?: number | null;
+  thresholding_maximum_value?: number | null;
+  bounded_otsu_min_contrast?: number | null;
+  bounded_otsu_max_foreground_fraction?: number | null;
+  canny_enabled?: boolean | null;
+  canny_low_threshold?: number | null;
+  canny_high_threshold?: number | null;
+  canny_blur_kernel?: number | null;
+  dilate_kernel_w?: number | null;
+  dilate_kernel_h?: number | null;
+  dilate_iterations?: number | null;
+  erode_kernel_w?: number | null;
+  erode_kernel_h?: number | null;
+  erode_iterations?: number | null;
+  open_kernel_w?: number | null;
+  open_kernel_h?: number | null;
+  open_iterations?: number | null;
+  close_kernel_w?: number | null;
+  close_kernel_h?: number | null;
+  close_iterations?: number | null;
+  fill_holes?: boolean | null;
+  remove_small_components?: boolean | null;
+  min_component_area?: number | null;
+  clear_border?: boolean | null;
+  adaptive_block_size?: number | null;
+  adaptive_c?: number | null;
+  percentile_background_percentile?: number | null;
+  percentile_min_contrast?: number | null;
+  hysteresis_low_threshold?: number | null;
+  hysteresis_high_threshold?: number | null;
+  hysteresis_connectivity?: number | null;
+  sobel_percentile?: number | null;
+  sobel_threshold?: number | null;
+  sobel_kernel_size?: number | null;
   frame_payload_kind?: 'original' | 'preprocessed' | null;
   apply_preprocessing?: boolean | null;
   background_correction?: boolean | null;
@@ -315,13 +355,46 @@ export type SegmentationOptions = {
   crop_w?: number | null;
   crop_h?: number | null;
   invert_intensity?: boolean | null;
+  mask_augmentation_enabled?: boolean | null;
+  mask_augmentation_steps?: string[] | null;
+  roi_assembly_method?: string | null;
+  roi_assembly_connectivity?: number | null;
+  min_area?: number | null;
+  max_area?: number | null;
   min_perimeter?: number | null;
   max_perimeter?: number | null;
+  min_width?: number | null;
+  max_width?: number | null;
+  min_height?: number | null;
+  max_height?: number | null;
+  min_width_plus_height?: number | null;
+  max_width_plus_height?: number | null;
   padding?: number | null;
   flatfield_correction?: boolean | null;
   flatfield_q?: number | null;
   roi_encoding?: 'png' | 'raw' | 'zstd' | 'auto' | null;
   zstd_min_bytes?: number | null;
+  store_roi_payload_min_area?: number | null;
+  store_roi_payload_min_width?: number | null;
+  store_roi_payload_min_height?: number | null;
+  store_roi_payload_min_width_plus_height?: number | null;
+  always_store_mask?: boolean | null;
+};
+
+export type SegmentationResolvedOptions = Record<string, Record<string, unknown>>;
+
+export type SegmentationCapabilities = {
+  pipeline_stage_order?: string[];
+  supported?: {
+    frame_payload_kinds?: string[];
+    threshold_methods?: string[];
+    mask_augmentation_steps?: string[];
+    roi_assembly_methods?: string[];
+    roi_encoding_options?: string[];
+  };
+  defaults?: SegmentationResolvedOptions;
+  fields?: Record<string, Array<Record<string, unknown>>>;
+  config_defaults?: Record<string, Record<string, unknown>>;
 };
 
 export type FramePreprocessOptions = {

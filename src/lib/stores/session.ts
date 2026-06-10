@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
 import { PelagiaApiClient, normalizeBaseUrl } from '$lib/api/client';
 import type { HealthResponse, SystemStatus } from '$lib/api/types';
+import { recordSessionEvent } from '$lib/utils/analytics';
 
 const STORAGE_KEY = 'pelagia-view-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -99,6 +100,11 @@ async function establishSession(
         expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString()
       });
     }
+    recordSessionEvent(options.restoring ? 'client_session_restored' : 'client_session_connected', {
+      base_origin: baseOrigin(normalized),
+      health_status: health.status,
+      has_system_status: Boolean(systemStatus)
+    });
   } catch (error) {
     session.update((state) => ({
       ...state,
@@ -112,11 +118,17 @@ async function establishSession(
     if (browser && !options.restoring) {
       persistStoredSession({ baseUrl: normalized, active: false });
     }
+    recordSessionEvent('client_session_failed', {
+      base_origin: baseOrigin(normalized),
+      restoring: Boolean(options.restoring),
+      error_name: error instanceof Error ? error.name : 'UnknownError'
+    });
     throw error;
   }
 }
 
 export function disconnectSession(): void {
+  const baseUrl = get(session).baseUrl;
   client = null;
   session.update((state) => ({
     ...state,
@@ -130,6 +142,9 @@ export function disconnectSession(): void {
   if (browser) {
     persistStoredSession({ baseUrl: get(session).baseUrl, active: false });
   }
+  recordSessionEvent('client_session_disconnected', {
+    base_origin: baseOrigin(baseUrl)
+  });
 }
 
 function readStoredSession(): StoredSession | null {
@@ -157,4 +172,12 @@ function persistStoredSession(stored: StoredSession): void {
       expiresAt: stored.expiresAt ?? null
     })
   );
+}
+
+function baseOrigin(value: string): string {
+  try {
+    return new URL(normalizeBaseUrl(value)).origin;
+  } catch {
+    return 'unknown';
+  }
 }

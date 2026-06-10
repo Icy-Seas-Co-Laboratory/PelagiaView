@@ -7,6 +7,7 @@
     DetectionSummary,
     FrameSummary,
     RawAsset,
+    SegmentationCapabilities,
     SegmentationOptions,
     SystemConfigResponse
   } from '$lib/api/types';
@@ -14,7 +15,8 @@
     booleanDefault,
     nullableNumberDefault,
     numberDefault,
-    processingSection
+    processingSection,
+    stringDefault
   } from '$lib/utils/configDefaults';
   import {
     frameCaption,
@@ -38,14 +40,92 @@
   let imageScaleX: number | null = null;
   let imageScaleY: number | null = null;
   let imageHeaderSerial = 0;
-  let threshold: number | null = null;
+  let thresholdMethod = 'bounded_otsu_canny';
+  let manualThreshold = 100;
+  let thresholdingMaximumValue: number | null = 100;
+  let boundedOtsuMinContrast = 50;
+  let boundedOtsuMaxForegroundFraction = 0.5;
+  let cannyEnabled = false;
+  let cannyLowThreshold = 60;
+  let cannyHighThreshold = 120;
+  let cannyBlurKernel = 5;
+  let thresholdMethods = [
+    'manual',
+    'otsu',
+    'bounded_otsu',
+    'bounded_otsu_canny',
+    'canny',
+    'adaptive_mean',
+    'adaptive_gaussian',
+    'percentile_background',
+    'hysteresis',
+    'sobel_edges',
+    'auto'
+  ];
+  let maskAugmentationEnabled = true;
+  let maskAugmentationSteps = new Set<string>(['dilate']);
+  let maskAugmentationStepOptions = [
+    'none',
+    'dilate',
+    'erode',
+    'open',
+    'close',
+    'fill_holes',
+    'remove_small_components',
+    'clear_border'
+  ];
+  let dilateKernelW = 3;
+  let dilateKernelH = 3;
+  let dilateIterations = 1;
+  let erodeKernelW = 3;
+  let erodeKernelH = 3;
+  let erodeIterations = 1;
+  let openKernelW = 3;
+  let openKernelH = 3;
+  let openIterations = 1;
+  let closeKernelW = 3;
+  let closeKernelH = 3;
+  let closeIterations = 1;
+  let fillHoles = false;
+  let removeSmallComponents = false;
+  let minComponentArea = 1;
+  let clearBorder = false;
+  let adaptiveBlockSize = 31;
+  let adaptiveC = 5;
+  let percentileBackgroundPercentile = 50;
+  let percentileMinContrast = 50;
+  let hysteresisLowThreshold = 30;
+  let hysteresisHighThreshold = 80;
+  let hysteresisConnectivity = 8;
+  let sobelPercentile = 90;
+  let sobelThreshold: number | null = null;
+  let sobelKernelSize = 3;
+  let roiAssemblyMethod = 'connected_components';
+  let roiAssemblyMethods = ['connected_components', 'contours'];
+  let roiAssemblyConnectivity = 8;
   let frameDisplayMode: FrameDisplayMode = 'original';
   let preprocessedReloadKey = 0;
   let backgroundCorrection = false;
   let backgroundPercentile = 50;
+  let minArea: number | null = null;
+  let maxArea: number | null = null;
   let minPerimeter = 100;
   let maxPerimeter: number | null = null;
+  let minWidth: number | null = null;
+  let maxWidth: number | null = null;
+  let minHeight: number | null = null;
+  let maxHeight: number | null = null;
+  let minWidthPlusHeight: number | null = null;
+  let maxWidthPlusHeight: number | null = null;
   let padding = 100;
+  let roiEncoding = 'zstd';
+  let roiEncodingOptions = ['zstd', 'png', 'raw', 'auto'];
+  let zstdMinBytes: number | null = null;
+  let alwaysStoreMask = true;
+  let storeRoiPayloadMinArea: number | null = null;
+  let storeRoiPayloadMinWidth: number | null = null;
+  let storeRoiPayloadMinHeight: number | null = null;
+  let storeRoiPayloadMinWidthPlusHeight: number | null = null;
   let flatfieldCorrection = false;
   let flatfieldQ = 0.95;
   let flatfieldAxis = 0;
@@ -59,6 +139,7 @@
   let loading = true;
   let message: string | null = null;
   let error: string | null = null;
+  let stageCounts: Record<string, number> = {};
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
   const frameImageWidth = 1100;
@@ -85,7 +166,27 @@
   );
   $: previewOptionsKey = optionsKey(
     frameDisplayMode,
-    threshold,
+    thresholdMethod,
+    manualThreshold,
+    thresholdingMaximumValue,
+    boundedOtsuMinContrast,
+    boundedOtsuMaxForegroundFraction,
+    cannyEnabled,
+    cannyLowThreshold,
+    cannyHighThreshold,
+    cannyBlurKernel,
+    dilateKernelW,
+    dilateKernelH,
+    adaptiveBlockSize,
+    adaptiveC,
+    percentileBackgroundPercentile,
+    percentileMinContrast,
+    hysteresisLowThreshold,
+    hysteresisHighThreshold,
+    hysteresisConnectivity,
+    sobelPercentile,
+    sobelThreshold,
+    sobelKernelSize,
     backgroundCorrection,
     backgroundPercentile,
     flatfieldCorrection,
@@ -100,7 +201,42 @@
     invertIntensity,
     minPerimeter,
     maxPerimeter,
-    padding
+    padding,
+    {
+      maskAugmentationEnabled,
+      maskAugmentationSteps: [...maskAugmentationSteps],
+      dilateIterations,
+      erodeKernelW,
+      erodeKernelH,
+      erodeIterations,
+      openKernelW,
+      openKernelH,
+      openIterations,
+      closeKernelW,
+      closeKernelH,
+      closeIterations,
+      fillHoles,
+      removeSmallComponents,
+      minComponentArea,
+      clearBorder,
+      roiAssemblyMethod,
+      roiAssemblyConnectivity,
+      minArea,
+      maxArea,
+      minWidth,
+      maxWidth,
+      minHeight,
+      maxHeight,
+      minWidthPlusHeight,
+      maxWidthPlusHeight,
+      roiEncoding,
+      zstdMinBytes,
+      alwaysStoreMask,
+      storeRoiPayloadMinArea,
+      storeRoiPayloadMinWidth,
+      storeRoiPayloadMinHeight,
+      storeRoiPayloadMinWidthPlusHeight
+    }
   );
   $: resetLivePreviewForImageOptions(selectedAssetId, selectedFrameNum, previewOptionsKey);
 
@@ -108,8 +244,11 @@
     const client = getClient();
     if (!client) return;
     try {
-      const config = await client.systemConfig().catch(() => null);
-      applyConfigDefaults(config);
+      const [config, segmentationCapabilities] = await Promise.all([
+        client.systemConfig().catch(() => null),
+        client.segmentationOptions().catch(() => null)
+      ]);
+      applyConfigDefaults(config, segmentationCapabilities);
       assets = await client.listAssets('video');
       selectedAssetId = assets[0]?.id ?? '';
       if (selectedAssetId) await loadFrames();
@@ -120,11 +259,47 @@
     }
   });
 
-  function applyConfigDefaults(config: SystemConfigResponse | null) {
-    const segmentation = processingSection(config, 'segmentation');
-    const flatfield = processingSection(config, 'flatfield');
-    const preprocessing = processingSection(config, 'preprocessing');
+  function applyConfigDefaults(config: SystemConfigResponse | null, capabilities: SegmentationCapabilities | null = null) {
+    const thresholding = pipelineSection(config, capabilities, 'thresholding');
+    const flatfield = capabilities?.defaults?.preprocessing ?? processingSection(config, 'flatfield');
+    const preprocessing = pipelineSection(config, capabilities, 'preprocessing');
+    const maskAugmentation = pipelineSection(config, capabilities, 'mask_augmentation');
+    const roiAssembly = pipelineSection(config, capabilities, 'roi_assembly');
+    const roiFilter = pipelineSection(config, capabilities, 'roi_filter');
+    const roiRecording = pipelineSection(config, capabilities, 'roi_recording');
 
+    thresholdMethods = capabilities?.supported?.threshold_methods?.length
+      ? capabilities.supported.threshold_methods
+      : thresholdMethods;
+    maskAugmentationStepOptions = capabilities?.supported?.mask_augmentation_steps?.length
+      ? capabilities.supported.mask_augmentation_steps
+      : maskAugmentationStepOptions;
+    roiAssemblyMethods = capabilities?.supported?.roi_assembly_methods?.length
+      ? capabilities.supported.roi_assembly_methods
+      : roiAssemblyMethods;
+    roiEncodingOptions = capabilities?.supported?.roi_encoding_options?.length
+      ? capabilities.supported.roi_encoding_options
+      : roiEncodingOptions;
+
+    thresholdMethod = stringDefault(thresholding, 'method', thresholdMethod);
+    manualThreshold = numberDefault(thresholding, 'manual_threshold', manualThreshold);
+    thresholdingMaximumValue = nullableNumberDefault(thresholding, 'thresholding_maximum_value', thresholdingMaximumValue);
+    boundedOtsuMinContrast = numberDefault(thresholding, 'bounded_otsu_min_contrast', boundedOtsuMinContrast);
+    boundedOtsuMaxForegroundFraction = numberDefault(thresholding, 'bounded_otsu_max_foreground_fraction', boundedOtsuMaxForegroundFraction);
+    cannyEnabled = booleanDefault(thresholding, 'canny_enabled', cannyEnabled);
+    cannyLowThreshold = numberDefault(thresholding, 'canny_low_threshold', cannyLowThreshold);
+    cannyHighThreshold = numberDefault(thresholding, 'canny_high_threshold', cannyHighThreshold);
+    cannyBlurKernel = numberDefault(thresholding, 'canny_blur_kernel', cannyBlurKernel);
+    adaptiveBlockSize = numberDefault(thresholding, 'adaptive_block_size', adaptiveBlockSize);
+    adaptiveC = numberDefault(thresholding, 'adaptive_c', adaptiveC);
+    percentileBackgroundPercentile = numberDefault(thresholding, 'percentile_background_percentile', percentileBackgroundPercentile);
+    percentileMinContrast = numberDefault(thresholding, 'percentile_min_contrast', percentileMinContrast);
+    hysteresisLowThreshold = numberDefault(thresholding, 'hysteresis_low_threshold', hysteresisLowThreshold);
+    hysteresisHighThreshold = numberDefault(thresholding, 'hysteresis_high_threshold', hysteresisHighThreshold);
+    hysteresisConnectivity = numberDefault(thresholding, 'hysteresis_connectivity', hysteresisConnectivity);
+    sobelPercentile = numberDefault(thresholding, 'sobel_percentile', sobelPercentile);
+    sobelThreshold = nullableNumberDefault(thresholding, 'sobel_threshold', sobelThreshold);
+    sobelKernelSize = numberDefault(thresholding, 'sobel_kernel_size', sobelKernelSize);
     flatfieldCorrection = booleanDefault(flatfield, 'flatfield_correction', flatfieldCorrection);
     flatfieldQ = numberDefault(flatfield, 'flatfield_q', flatfieldQ);
     flatfieldAxis = numberDefault(flatfield, 'flatfield_axis', flatfieldAxis);
@@ -138,9 +313,60 @@
     cropH = nullableNumberDefault(preprocessing, 'crop_h', cropH);
     invertIntensity = booleanDefault(preprocessing, 'invert_intensity', invertIntensity);
 
-    minPerimeter = numberDefault(segmentation, 'min_perimeter', minPerimeter);
-    maxPerimeter = nullableNumberDefault(segmentation, 'max_perimeter', maxPerimeter);
-    padding = numberDefault(segmentation, 'padding', padding);
+    maskAugmentationEnabled = booleanDefault(maskAugmentation, 'mask_augmentation_enabled', booleanDefault(maskAugmentation, 'enabled', maskAugmentationEnabled));
+    maskAugmentationSteps = new Set(arrayDefault(maskAugmentation, 'mask_augmentation_steps', arrayDefault(maskAugmentation, 'steps', [...maskAugmentationSteps])));
+    dilateKernelW = numberDefault(maskAugmentation, 'dilate_kernel_w', dilateKernelW);
+    dilateKernelH = numberDefault(maskAugmentation, 'dilate_kernel_h', dilateKernelH);
+    dilateIterations = numberDefault(maskAugmentation, 'dilate_iterations', dilateIterations);
+    erodeKernelW = numberDefault(maskAugmentation, 'erode_kernel_w', erodeKernelW);
+    erodeKernelH = numberDefault(maskAugmentation, 'erode_kernel_h', erodeKernelH);
+    erodeIterations = numberDefault(maskAugmentation, 'erode_iterations', erodeIterations);
+    openKernelW = numberDefault(maskAugmentation, 'open_kernel_w', openKernelW);
+    openKernelH = numberDefault(maskAugmentation, 'open_kernel_h', openKernelH);
+    openIterations = numberDefault(maskAugmentation, 'open_iterations', openIterations);
+    closeKernelW = numberDefault(maskAugmentation, 'close_kernel_w', closeKernelW);
+    closeKernelH = numberDefault(maskAugmentation, 'close_kernel_h', closeKernelH);
+    closeIterations = numberDefault(maskAugmentation, 'close_iterations', closeIterations);
+    fillHoles = booleanDefault(maskAugmentation, 'fill_holes', fillHoles);
+    removeSmallComponents = booleanDefault(maskAugmentation, 'remove_small_components', removeSmallComponents);
+    minComponentArea = numberDefault(maskAugmentation, 'min_component_area', minComponentArea);
+    clearBorder = booleanDefault(maskAugmentation, 'clear_border', clearBorder);
+
+    roiAssemblyMethod = stringDefault(roiAssembly, 'roi_assembly_method', stringDefault(roiAssembly, 'method', roiAssemblyMethod));
+    roiAssemblyConnectivity = numberDefault(roiAssembly, 'roi_assembly_connectivity', numberDefault(roiAssembly, 'connectivity', roiAssemblyConnectivity));
+
+    minArea = nullableNumberDefault(roiFilter, 'min_area', minArea);
+    maxArea = nullableNumberDefault(roiFilter, 'max_area', maxArea);
+    minPerimeter = numberDefault(roiFilter, 'min_perimeter', minPerimeter);
+    maxPerimeter = nullableNumberDefault(roiFilter, 'max_perimeter', maxPerimeter);
+    minWidth = nullableNumberDefault(roiFilter, 'min_width', minWidth);
+    maxWidth = nullableNumberDefault(roiFilter, 'max_width', maxWidth);
+    minHeight = nullableNumberDefault(roiFilter, 'min_height', minHeight);
+    maxHeight = nullableNumberDefault(roiFilter, 'max_height', maxHeight);
+    minWidthPlusHeight = nullableNumberDefault(roiFilter, 'min_width_plus_height', minWidthPlusHeight);
+    maxWidthPlusHeight = nullableNumberDefault(roiFilter, 'max_width_plus_height', maxWidthPlusHeight);
+
+    padding = numberDefault(roiRecording, 'padding', padding);
+    roiEncoding = stringDefault(roiRecording, 'roi_encoding', roiEncoding);
+    zstdMinBytes = nullableNumberDefault(roiRecording, 'zstd_min_bytes', zstdMinBytes);
+    alwaysStoreMask = booleanDefault(roiRecording, 'always_store_mask', alwaysStoreMask);
+    storeRoiPayloadMinArea = nullableNumberDefault(roiRecording, 'store_roi_payload_min_area', storeRoiPayloadMinArea);
+    storeRoiPayloadMinWidth = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width', storeRoiPayloadMinWidth);
+    storeRoiPayloadMinHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_height', storeRoiPayloadMinHeight);
+    storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
+  }
+
+  function pipelineSection(
+    config: SystemConfigResponse | null,
+    capabilities: SegmentationCapabilities | null,
+    section: string
+  ): Record<string, unknown> | undefined {
+    return capabilities?.defaults?.[section] ?? processingSection(config, section as Parameters<typeof processingSection>[1]);
+  }
+
+  function arrayDefault(section: Record<string, unknown> | undefined, key: string, fallback: string[]): string[] {
+    const value = section?.[key];
+    return Array.isArray(value) ? value.map(String).filter(Boolean) : fallback;
   }
 
   async function loadFrames() {
@@ -153,6 +379,7 @@
     frames = frameCount > 0 ? await client.listFrames(selectedAssetId, frameCount) : [];
     selectedFrameNum = frameCount > 0 ? 1 : 0;
     detections = [];
+    stageCounts = {};
     bboxCoordinateBasis = 'original-frame';
     await loadDetections();
   }
@@ -164,23 +391,151 @@
     const frame = await ensureSelectedFrame();
     if (!frame?.id) {
       detections = [];
+      stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       return;
     }
     detections = await client.listDetections(selectedAssetId, frame.id);
+    stageCounts = {};
     bboxCoordinateBasis = 'original-frame';
   }
 
   function options() {
     return {
-      threshold,
+      ...thresholdOptions(),
+      ...maskAugmentationOptions(),
+      ...roiAssemblyOptions(),
+      ...roiFilterOptions(),
+      ...roiRecordingOptions(),
       frame_payload_kind: framePayloadKind,
       apply_preprocessing: framePayloadKind === 'original',
-      ...preprocessingOptions(),
+      ...preprocessingOptions()
+    };
+  }
+
+  function thresholdOptions(): SegmentationOptions {
+    const method = thresholdMethod;
+    const options: SegmentationOptions = { threshold_method: method };
+    if (method === 'manual') options.manual_threshold = manualThreshold;
+    if (method === 'sobel_edges') options.sobel_threshold = sobelThreshold;
+    if (usesThresholdMaximum(method)) options.thresholding_maximum_value = thresholdingMaximumValue;
+    if (usesBoundedOtsu(method)) {
+      options.bounded_otsu_min_contrast = boundedOtsuMinContrast;
+      options.bounded_otsu_max_foreground_fraction = boundedOtsuMaxForegroundFraction;
+    }
+    if (method === 'bounded_otsu_canny') {
+      options.canny_enabled = cannyEnabled;
+    }
+    if (usesCanny(method)) {
+      options.canny_low_threshold = cannyLowThreshold;
+      options.canny_high_threshold = cannyHighThreshold;
+      options.canny_blur_kernel = cannyBlurKernel;
+    }
+    if (method === 'adaptive_mean' || method === 'adaptive_gaussian') {
+      options.adaptive_block_size = adaptiveBlockSize;
+      options.adaptive_c = adaptiveC;
+    }
+    if (method === 'percentile_background') {
+      options.percentile_background_percentile = percentileBackgroundPercentile;
+      options.percentile_min_contrast = percentileMinContrast;
+    }
+    if (method === 'hysteresis') {
+      options.hysteresis_low_threshold = hysteresisLowThreshold;
+      options.hysteresis_high_threshold = hysteresisHighThreshold;
+      options.hysteresis_connectivity = hysteresisConnectivity;
+    }
+    if (method === 'sobel_edges') {
+      options.sobel_percentile = sobelPercentile;
+      options.sobel_kernel_size = sobelKernelSize;
+    }
+    return options;
+  }
+
+  function maskAugmentationOptions(): SegmentationOptions {
+    return {
+      mask_augmentation_enabled: maskAugmentationEnabled,
+      mask_augmentation_steps: maskAugmentationEnabled ? normalizedMaskSteps() : [],
+      dilate_kernel_w: dilateKernelW,
+      dilate_kernel_h: dilateKernelH,
+      dilate_iterations: dilateIterations,
+      erode_kernel_w: erodeKernelW,
+      erode_kernel_h: erodeKernelH,
+      erode_iterations: erodeIterations,
+      open_kernel_w: openKernelW,
+      open_kernel_h: openKernelH,
+      open_iterations: openIterations,
+      close_kernel_w: closeKernelW,
+      close_kernel_h: closeKernelH,
+      close_iterations: closeIterations,
+      fill_holes: fillHoles,
+      remove_small_components: removeSmallComponents,
+      min_component_area: minComponentArea,
+      clear_border: clearBorder
+    };
+  }
+
+  function roiAssemblyOptions(): SegmentationOptions {
+    return {
+      roi_assembly_method: roiAssemblyMethod,
+      roi_assembly_connectivity: roiAssemblyConnectivity
+    };
+  }
+
+  function roiFilterOptions(): SegmentationOptions {
+    return {
+      min_area: minArea,
+      max_area: maxArea,
       min_perimeter: minPerimeter,
       max_perimeter: maxPerimeter,
-      padding
+      min_width: minWidth,
+      max_width: maxWidth,
+      min_height: minHeight,
+      max_height: maxHeight,
+      min_width_plus_height: minWidthPlusHeight,
+      max_width_plus_height: maxWidthPlusHeight
     };
+  }
+
+  function roiRecordingOptions(): SegmentationOptions {
+    return {
+      padding,
+      roi_encoding: roiEncoding as SegmentationOptions['roi_encoding'],
+      zstd_min_bytes: zstdMinBytes,
+      always_store_mask: alwaysStoreMask,
+      store_roi_payload_min_area: storeRoiPayloadMinArea,
+      store_roi_payload_min_width: storeRoiPayloadMinWidth,
+      store_roi_payload_min_height: storeRoiPayloadMinHeight,
+      store_roi_payload_min_width_plus_height: storeRoiPayloadMinWidthPlusHeight
+    };
+  }
+
+  function normalizedMaskSteps(): string[] {
+    const steps = [...maskAugmentationSteps].filter((step) => step && step !== 'none');
+    return steps.length ? steps : ['none'];
+  }
+
+  function toggleMaskStep(step: string) {
+    if (step === 'none') {
+      maskAugmentationSteps = new Set(maskAugmentationSteps.has('none') ? [] : ['none']);
+      return;
+    }
+    const next = new Set(maskAugmentationSteps);
+    next.delete('none');
+    if (next.has(step)) next.delete(step);
+    else next.add(step);
+    maskAugmentationSteps = next;
+  }
+
+  function usesThresholdMaximum(method: string): boolean {
+    return method === 'otsu' || usesBoundedOtsu(method);
+  }
+
+  function usesBoundedOtsu(method: string): boolean {
+    return method === 'bounded_otsu' || method === 'bounded_otsu_canny';
+  }
+
+  function usesCanny(method: string): boolean {
+    return method === 'canny' || method === 'bounded_otsu_canny';
   }
 
   function preprocessingOptions() {
@@ -221,7 +576,27 @@
 
   function optionsKey(
     mode: FrameDisplayMode,
-    thresholdValue: number | null,
+    thresholdMethodValue: string,
+    manualThresholdValue: number,
+    thresholdMaximumValue: number | null,
+    boundedOtsuMinContrastValue: number,
+    boundedOtsuMaxForegroundFractionValue: number,
+    cannyEnabledValue: boolean,
+    cannyLowValue: number,
+    cannyHighValue: number,
+    cannyBlurValue: number,
+    dilateWValue: number,
+    dilateHValue: number,
+    adaptiveBlockValue: number,
+    adaptiveCValue: number,
+    percentileBackgroundValue: number,
+    percentileMinContrastValue: number,
+    hysteresisLowValue: number,
+    hysteresisHighValue: number,
+    hysteresisConnectivityValue: number,
+    sobelPercentileValue: number,
+    sobelThresholdValue: number | null,
+    sobelKernelValue: number,
     backgroundEnabled: boolean,
     backgroundValue: number,
     flatfieldEnabled: boolean,
@@ -236,12 +611,33 @@
     invertEnabled: boolean,
     minPerimeterValue: number,
     maxPerimeterValue: number | null,
-    paddingValue: number
+    paddingValue: number,
+    extraValues: unknown = null
   ): string {
     return JSON.stringify({
       frame_display_mode: mode,
       frame_payload_kind: payloadKindForDisplay(mode),
-      threshold: thresholdValue,
+      threshold_method: thresholdMethodValue,
+      manual_threshold: manualThresholdValue,
+      thresholding_maximum_value: thresholdMaximumValue,
+      bounded_otsu_min_contrast: boundedOtsuMinContrastValue,
+      bounded_otsu_max_foreground_fraction: boundedOtsuMaxForegroundFractionValue,
+      canny_enabled: cannyEnabledValue,
+      canny_low_threshold: cannyLowValue,
+      canny_high_threshold: cannyHighValue,
+      canny_blur_kernel: cannyBlurValue,
+      dilate_kernel_w: dilateWValue,
+      dilate_kernel_h: dilateHValue,
+      adaptive_block_size: adaptiveBlockValue,
+      adaptive_c: adaptiveCValue,
+      percentile_background_percentile: percentileBackgroundValue,
+      percentile_min_contrast: percentileMinContrastValue,
+      hysteresis_low_threshold: hysteresisLowValue,
+      hysteresis_high_threshold: hysteresisHighValue,
+      hysteresis_connectivity: hysteresisConnectivityValue,
+      sobel_percentile: sobelPercentileValue,
+      sobel_threshold: sobelThresholdValue,
+      sobel_kernel_size: sobelKernelValue,
       background_correction: backgroundEnabled,
       background_percentile: backgroundEnabled ? backgroundValue : undefined,
       flatfield_correction: flatfieldEnabled,
@@ -256,7 +652,8 @@
       invert_intensity: invertEnabled,
       min_perimeter: minPerimeterValue,
       max_perimeter: maxPerimeterValue,
-      padding: paddingValue
+      padding: paddingValue,
+      extra_values: extraValues
     });
   }
 
@@ -283,6 +680,7 @@
     try {
       const result = await client.liveSegmentFrame(frame.id, options());
       detections = result.detections;
+      stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
       message = `Previewed frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} detected.`;
@@ -308,6 +706,7 @@
       preprocessedReloadKey = Date.now();
       hasLivePreview = false;
       detections = [];
+      stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       message = `Applied preprocessing to frame ${selectedFrameNum} and reloaded the preprocessed image.`;
     } catch (err) {
@@ -324,7 +723,8 @@
     try {
       const result = await client.segmentFrame(frame.id, options());
       detections = result.detections;
-      bboxCoordinateBasis = segmentationOptionsBboxCoordinateBasis(options());
+      stageCounts = result.stage_counts ?? {};
+      bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       message = `Saved segmentation for frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} stored.`;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -704,6 +1104,10 @@
     const suffix = annotated ? 'boxed' : framePayloadKind;
     return `${assetName}_frame_${selectedFrameNum}_${suffix}.png`;
   }
+
+  function stageCountEntries(counts: Record<string, number>): Array<[string, number]> {
+    return Object.entries(counts).filter(([, value]) => Number.isFinite(Number(value)));
+  }
 </script>
 
 <div class="segmentation-layout">
@@ -790,11 +1194,13 @@
       </div>
     </div>
 
-    <div class="form-section">
-      <div class="section-heading">
-        <p class="eyebrow">Background + flatfield</p>
-        <strong>Correction</strong>
-      </div>
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Background + flatfield</p>
+          <strong>Correction</strong>
+        </span>
+      </summary>
 
       <label class="check-row">
         <input type="checkbox" bind:checked={backgroundCorrection} />
@@ -826,13 +1232,15 @@
           </select>
         </label>
       {/if}
-    </div>
+    </details>
 
-    <div class="form-section">
-      <div class="section-heading">
-        <p class="eyebrow">Crop + mask + invert</p>
-        <strong>Candidate image</strong>
-      </div>
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Crop + mask + invert</p>
+          <strong>Candidate image</strong>
+        </span>
+      </summary>
 
       <label class="check-row">
         <input type="checkbox" bind:checked={applyMask} />
@@ -874,41 +1282,357 @@
           Apply preprocessing
         </button>
       </div>
-    </div>
+    </details>
 
-    <div class="form-section">
-      <div class="section-heading">
-        <p class="eyebrow">Threshold</p>
-        <strong>Candidate ROIs</strong>
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Threshold</p>
+          <strong>Candidate ROIs</strong>
+        </span>
+      </summary>
+
+      <label>
+        Method
+        <select bind:value={thresholdMethod}>
+          {#each thresholdMethods as method}
+            <option value={method}>{method}</option>
+          {/each}
+        </select>
+      </label>
+      {#if thresholdMethod === 'manual'}
+        <label>
+          Manual threshold
+          <input type="number" min="0" max="255" bind:value={manualThreshold} />
+        </label>
+      {/if}
+      {#if usesThresholdMaximum(thresholdMethod)}
+        <label>
+          Maximum threshold
+          <input type="number" min="0" max="255" bind:value={thresholdingMaximumValue} placeholder="none" />
+        </label>
+      {/if}
+      {#if usesBoundedOtsu(thresholdMethod)}
+        <label>
+          Minimum contrast
+          <input type="range" min="0" max="255" step="1" bind:value={boundedOtsuMinContrast} />
+          <span class="range-value">{boundedOtsuMinContrast}</span>
+        </label>
+        <label>
+          Max foreground fraction
+          <input type="range" min="0" max="1" step="0.01" bind:value={boundedOtsuMaxForegroundFraction} />
+          <span class="range-value">{boundedOtsuMaxForegroundFraction.toFixed(2)}</span>
+        </label>
+      {/if}
+      {#if thresholdMethod === 'bounded_otsu_canny'}
+        <label class="check-row">
+          <input type="checkbox" bind:checked={cannyEnabled} />
+          Add Canny edges
+        </label>
+      {/if}
+      {#if usesCanny(thresholdMethod)}
+        <div class="form-grid compact-grid">
+          <label>
+            Canny low
+            <input type="number" min="0" max="255" bind:value={cannyLowThreshold} />
+          </label>
+          <label>
+            Canny high
+            <input type="number" min="0" max="255" bind:value={cannyHighThreshold} />
+          </label>
+          <label>
+            Blur kernel
+            <input type="number" min="1" step="2" bind:value={cannyBlurKernel} />
+          </label>
+        </div>
+      {/if}
+      {#if thresholdMethod === 'adaptive_mean' || thresholdMethod === 'adaptive_gaussian'}
+        <div class="form-grid compact-grid">
+          <label>
+            Block size
+            <input type="number" min="3" step="2" bind:value={adaptiveBlockSize} />
+          </label>
+          <label>
+            C offset
+            <input type="number" bind:value={adaptiveC} />
+          </label>
+        </div>
+      {/if}
+      {#if thresholdMethod === 'percentile_background'}
+        <label>
+          Background percentile
+          <input type="range" min="0" max="100" step="1" bind:value={percentileBackgroundPercentile} />
+          <span class="range-value">{percentileBackgroundPercentile}</span>
+        </label>
+        <label>
+          Minimum contrast
+          <input type="range" min="0" max="255" step="1" bind:value={percentileMinContrast} />
+          <span class="range-value">{percentileMinContrast}</span>
+        </label>
+      {/if}
+      {#if thresholdMethod === 'hysteresis'}
+        <div class="form-grid compact-grid">
+          <label>
+            Low threshold
+            <input type="number" min="0" max="255" bind:value={hysteresisLowThreshold} />
+          </label>
+          <label>
+            High threshold
+            <input type="number" min="0" max="255" bind:value={hysteresisHighThreshold} />
+          </label>
+          <label>
+            Connectivity
+            <select bind:value={hysteresisConnectivity}>
+              <option value={4}>4</option>
+              <option value={8}>8</option>
+            </select>
+          </label>
+        </div>
+      {/if}
+      {#if thresholdMethod === 'sobel_edges'}
+        <div class="form-grid compact-grid">
+          <label>
+            Sobel threshold
+            <input type="number" bind:value={sobelThreshold} placeholder="percentile" />
+          </label>
+          <label>
+            Percentile
+            <input type="range" min="0" max="100" step="1" bind:value={sobelPercentile} />
+            <span class="range-value">{sobelPercentile}</span>
+          </label>
+          <label>
+            Kernel size
+            <input type="number" min="1" step="2" bind:value={sobelKernelSize} />
+          </label>
+        </div>
+      {/if}
+    </details>
+
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Mask</p>
+          <strong>Augment threshold mask</strong>
+        </span>
+      </summary>
+      <label class="check-row">
+        <input type="checkbox" bind:checked={maskAugmentationEnabled} />
+        Enable mask augmentation
+      </label>
+      {#if maskAugmentationEnabled}
+        <div class="toggle-list">
+          {#each maskAugmentationStepOptions as step}
+            <button
+              class:active={maskAugmentationSteps.has(step)}
+              type="button"
+              on:click={() => toggleMaskStep(step)}
+            >
+              {step}
+            </button>
+          {/each}
+        </div>
+        <div class="form-grid compact-grid">
+          <label>
+            Dilate width
+            <input type="number" min="1" bind:value={dilateKernelW} />
+          </label>
+          <label>
+            Dilate height
+            <input type="number" min="1" bind:value={dilateKernelH} />
+          </label>
+          <label>
+            Dilate iterations
+            <input type="number" min="1" bind:value={dilateIterations} />
+          </label>
+          <label>
+            Erode width
+            <input type="number" min="1" bind:value={erodeKernelW} />
+          </label>
+          <label>
+            Erode height
+            <input type="number" min="1" bind:value={erodeKernelH} />
+          </label>
+          <label>
+            Erode iterations
+            <input type="number" min="1" bind:value={erodeIterations} />
+          </label>
+        </div>
+        <details class="control-details">
+          <summary>Additional mask controls</summary>
+          <div class="form-grid compact-grid">
+            <label>
+              Open width
+              <input type="number" min="1" bind:value={openKernelW} />
+            </label>
+            <label>
+              Open height
+              <input type="number" min="1" bind:value={openKernelH} />
+            </label>
+            <label>
+              Open iterations
+              <input type="number" min="1" bind:value={openIterations} />
+            </label>
+            <label>
+              Close width
+              <input type="number" min="1" bind:value={closeKernelW} />
+            </label>
+            <label>
+              Close height
+              <input type="number" min="1" bind:value={closeKernelH} />
+            </label>
+            <label>
+              Close iterations
+              <input type="number" min="1" bind:value={closeIterations} />
+            </label>
+            <label>
+              Min component area
+              <input type="number" min="0" bind:value={minComponentArea} />
+            </label>
+          </div>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={fillHoles} />
+            Fill holes
+          </label>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={removeSmallComponents} />
+            Remove small components
+          </label>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={clearBorder} />
+            Clear border components
+          </label>
+        </details>
+      {/if}
+    </details>
+
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Assemble</p>
+          <strong>Candidate ROIs</strong>
+        </span>
+      </summary>
+      <div class="form-grid compact-grid">
+        <label>
+          Assembly method
+          <select bind:value={roiAssemblyMethod}>
+            {#each roiAssemblyMethods as method}
+              <option value={method}>{method}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Connectivity
+          <select bind:value={roiAssemblyConnectivity}>
+            <option value={4}>4</option>
+            <option value={8}>8</option>
+          </select>
+        </label>
       </div>
+    </details>
 
-      <label>
-        Threshold
-        <input type="number" bind:value={threshold} placeholder="auto" />
-      </label>
-      <label>
-        Minimum perimeter
-        <input type="range" min="0" max="1000" step="10" bind:value={minPerimeter} />
-        <span class="range-value">{minPerimeter}</span>
-      </label>
-      <label>
-        Maximum perimeter
-        <input type="number" bind:value={maxPerimeter} placeholder="none" />
-      </label>
-    </div>
-
-    <div class="form-section">
-      <div class="section-heading">
-        <p class="eyebrow">Refine</p>
-        <strong>Refined ROI storage</strong>
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Filter</p>
+          <strong>Candidate geometry</strong>
+        </span>
+      </summary>
+      <div class="form-grid compact-grid">
+        <label>
+          Min area
+          <input type="number" min="0" bind:value={minArea} placeholder="none" />
+        </label>
+        <label>
+          Max area
+          <input type="number" min="0" bind:value={maxArea} placeholder="none" />
+        </label>
+        <label>
+          Min perimeter
+          <input type="number" min="0" bind:value={minPerimeter} />
+        </label>
+        <label>
+          Max perimeter
+          <input type="number" min="0" bind:value={maxPerimeter} placeholder="none" />
+        </label>
+        <label>
+          Min width
+          <input type="number" min="0" bind:value={minWidth} placeholder="none" />
+        </label>
+        <label>
+          Max width
+          <input type="number" min="0" bind:value={maxWidth} placeholder="none" />
+        </label>
+        <label>
+          Min height
+          <input type="number" min="0" bind:value={minHeight} placeholder="none" />
+        </label>
+        <label>
+          Max height
+          <input type="number" min="0" bind:value={maxHeight} placeholder="none" />
+        </label>
+        <label>
+          Min width + height
+          <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
+        </label>
+        <label>
+          Max width + height
+          <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
+        </label>
       </div>
+    </details>
+
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Record</p>
+          <strong>ROI payloads</strong>
+        </span>
+      </summary>
 
       <label>
         Padding
         <input type="range" min="0" max="300" step="5" bind:value={padding} />
         <span class="range-value">{padding}</span>
       </label>
-    </div>
+      <label>
+        ROI encoding
+        <select bind:value={roiEncoding}>
+          {#each roiEncodingOptions as encoding}
+            <option value={encoding}>{encoding}</option>
+          {/each}
+        </select>
+      </label>
+      <label>
+        zstd min bytes
+        <input type="number" min="1" bind:value={zstdMinBytes} placeholder="default" />
+      </label>
+      <label class="check-row">
+        <input type="checkbox" bind:checked={alwaysStoreMask} />
+        Always store mask
+      </label>
+      <details class="control-details">
+        <summary>Payload storage thresholds</summary>
+        <div class="form-grid compact-grid">
+          <label>
+            Min area
+            <input type="number" min="0" bind:value={storeRoiPayloadMinArea} placeholder="none" />
+          </label>
+          <label>
+            Min width
+            <input type="number" min="0" bind:value={storeRoiPayloadMinWidth} placeholder="none" />
+          </label>
+          <label>
+            Min height
+            <input type="number" min="0" bind:value={storeRoiPayloadMinHeight} placeholder="none" />
+          </label>
+          <label>
+            Min width + height
+            <input type="number" min="0" bind:value={storeRoiPayloadMinWidthPlusHeight} placeholder="none" />
+          </label>
+        </div>
+      </details>
+    </details>
 
     <div class="button-row">
       <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Preview live</button>
@@ -927,6 +1651,14 @@
     </div>
     <span class="soft">{detections.length} detection{detections.length === 1 ? '' : 's'}, {boxes.length} box{boxes.length === 1 ? '' : 'es'}</span>
   </div>
+
+  {#if stageCountEntries(stageCounts).length}
+    <div class="stage-counts">
+      {#each stageCountEntries(stageCounts) as [key, value]}
+        <span><strong>{value}</strong> {key.replaceAll('_', ' ')}</span>
+      {/each}
+    </div>
+  {/if}
 
   {#if boxes.length}
     <ol class="bbox-list">
