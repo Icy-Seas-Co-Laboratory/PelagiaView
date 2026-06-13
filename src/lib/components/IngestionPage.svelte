@@ -1,9 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient } from '$lib/stores/session';
   import type { DirectoryEntry, DirectoryListing, SystemConfigResponse } from '$lib/api/types';
   import { numberDefault, processingSection } from '$lib/utils/configDefaults';
   import { formatBytes } from '$lib/utils/format';
+  import {
+    numberPreference,
+    preferenceKey,
+    readPreferences,
+    stringPreference,
+    writePreferences
+  } from '$lib/utils/preferences';
 
   let listing: DirectoryListing | null = null;
   let selected = new Set<string>();
@@ -15,7 +23,27 @@
   let nTile = 2;
   let collections = '';
   let metadataText = '';
+  let preferencesReady = false;
+  let submittedJobIds: string[] = [];
   const metadataPlaceholder = '{"cruise":"SKQ2026","station":"A01"}';
+  const ingestionPreferenceKey = preferenceKey('ingestion');
+
+  type IngestionPreferences = {
+    currentPath: string;
+    manualPaths: string;
+    nTile: number;
+    collections: string;
+    metadataText: string;
+  };
+
+  $: ingestionPreferenceSnapshot = {
+    currentPath,
+    manualPaths,
+    nTile,
+    collections,
+    metadataText
+  };
+  $: if (preferencesReady) writePreferences(ingestionPreferenceKey, ingestionPreferenceSnapshot);
 
   onMount(async () => {
     const client = getClient();
@@ -23,12 +51,24 @@
       const config = await client.systemConfig().catch(() => null);
       applyConfigDefaults(config);
     }
+    restorePreferences();
+    preferencesReady = true;
     await loadDirectory();
   });
 
   function applyConfigDefaults(config: SystemConfigResponse | null) {
     const videoIngest = processingSection(config, 'video_ingest');
     nTile = numberDefault(videoIngest, 'n_tile', nTile);
+  }
+
+  function restorePreferences() {
+    const preferences = readPreferences<IngestionPreferences>(ingestionPreferenceKey);
+    if (!preferences) return;
+    currentPath = stringPreference(preferences.currentPath, currentPath);
+    manualPaths = stringPreference(preferences.manualPaths, manualPaths);
+    nTile = numberPreference(preferences.nTile, nTile);
+    collections = stringPreference(preferences.collections, collections);
+    metadataText = stringPreference(preferences.metadataText, metadataText);
   }
 
   async function loadDirectory(path = currentPath) {
@@ -80,21 +120,35 @@
       return;
     }
     let queued = 0;
+    const nextJobIds: string[] = [];
     for (const path of paths) {
       try {
-        await client.queueVideo(path, {
+        const response = await client.queueVideo(path, {
           n_tile: nTile,
           collections: collections || undefined,
           metadata
         });
+        const jobId = queuedJobId(response);
+        if (jobId) nextJobIds.push(jobId);
         queued += 1;
       } catch (err) {
         error = `Queued ${queued}/${paths.length}. ${err instanceof Error ? err.message : String(err)}`;
         return;
       }
     }
+    submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
     message = `Queued ${queued} ingestion job${queued === 1 ? '' : 's'}.`;
     await loadDirectory(currentPath);
+  }
+
+  function queuedJobId(response: Record<string, unknown>): string | null {
+    const direct = response.job_id ?? response.id;
+    if (typeof direct === 'string' && direct) return direct;
+    const job = response.job;
+    if (job && typeof job === 'object' && typeof (job as { id?: unknown }).id === 'string') {
+      return (job as { id: string }).id;
+    }
+    return null;
   }
 
   function parseMetadata(): Record<string, unknown> {
@@ -188,5 +242,13 @@
     <p class="soft">{selected.size} selected from browser, {selectedPaths().length} total path{selectedPaths().length === 1 ? '' : 's'} ready.</p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
+
+    <QueueStatusSummary
+      title="Ingestion queue"
+      eyebrow="Live status"
+      stage="ingestion"
+      jobIds={submittedJobIds}
+      mode="compact"
+    />
   </section>
 </div>

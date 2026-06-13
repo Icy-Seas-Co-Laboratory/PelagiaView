@@ -1,12 +1,14 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
-  import ImageCanvas from '$lib/components/ImageCanvas.svelte';
+  import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
+  import { ApiError } from '$lib/api/client';
   import { getClient } from '$lib/stores/session';
   import type {
     DetectionSummary,
     FrameSummary,
     RawAsset,
+    RoiRefinementCapabilities,
     SegmentationCapabilities,
     SegmentationOptions,
     SystemConfigResponse
@@ -24,11 +26,24 @@
     payloadKindForDisplay,
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
-  import type { CanvasOverlayRect } from '$lib/utils/imageCanvas';
+  import { formatCount } from '$lib/utils/format';
+  import type { CanvasOverlayImage, CanvasOverlayRect } from '$lib/utils/imageCanvas';
+  import type { ImageLayer, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
+  import {
+    booleanPreference,
+    nullableNumberPreference as nullablePreferenceNumber,
+    numberPreference,
+    preferenceKey,
+    readPreferences,
+    stringArrayPreference,
+    stringPreference,
+    writePreferences
+  } from '$lib/utils/preferences';
 
   let assets: RawAsset[] = [];
   let frames: FrameSummary[] = [];
   let detections: DetectionSummary[] = [];
+  let refinedDetections: DetectionSummary[] = [];
   let selectedAssetId = '';
   let selectedAsset: RawAsset | null = null;
   let selectedFrameNum = 1;
@@ -126,9 +141,35 @@
   let storeRoiPayloadMinWidth: number | null = null;
   let storeRoiPayloadMinHeight: number | null = null;
   let storeRoiPayloadMinWidthPlusHeight: number | null = null;
+  let showCandidateMasks = true;
+  let showRefinedMasks = true;
+  let showMaskDifferences = false;
+  let maskDifferenceUrls = new Map<string, string>();
+  let maskDifferenceKey = '';
+  let maskDifferenceSerial = 0;
+  let refinementModelKind = 'identity';
+  let refinementModelRef = '';
+  let refinementModelRunDir = '';
+  let refinementModelArtifact = 'auto';
+  let refinementModelKinds = ['identity', 'keras_artifact', 'oracle_builder_unet'];
+  let refinementModelRefs: string[] = [];
+  let refinementModelArtifacts = ['auto', 'keras', 'savedmodel'];
+  let refinementTileSize = 256;
+  let refinementOverlapFraction = 0.25;
+  let refinementModelBatchSize: number | null = null;
+  let refinementOutputThreshold = 0.5;
+  let refinementAllowFrameExpansion = true;
+  let refinementMaxIterations = 3;
+  let refinementExpansionPixels: number | null = null;
+  let refinementEdgeTouchMargin = 1;
+  let refinementEncoding = 'auto';
+  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'raw'];
+  let refining = false;
   let flatfieldCorrection = false;
   let flatfieldQ = 0.95;
   let flatfieldAxis = 0;
+  let flatfieldMinFieldValue = 1;
+  let flatfieldMaxFieldValue: number | null = 255;
   let applyMask = false;
   let cropEnabled = false;
   let cropX: number | null = null;
@@ -140,13 +181,110 @@
   let message: string | null = null;
   let error: string | null = null;
   let stageCounts: Record<string, number> = {};
+  let preferencesReady = false;
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
   const frameImageWidth = 1100;
   let lastFrameImageKey = '';
   let failedImageUrl = '';
+  const explorerPreferenceKey = preferenceKey('explorer');
+
+  type ExplorerPreferences = {
+    selectedAssetId: string;
+    selectedFrameNum: number;
+    frameDisplayMode: FrameDisplayMode;
+    thresholdMethod: string;
+    manualThreshold: number;
+    thresholdingMaximumValue: number | null;
+    boundedOtsuMinContrast: number;
+    boundedOtsuMaxForegroundFraction: number;
+    cannyEnabled: boolean;
+    cannyLowThreshold: number;
+    cannyHighThreshold: number;
+    cannyBlurKernel: number;
+    adaptiveBlockSize: number;
+    adaptiveC: number;
+    percentileBackgroundPercentile: number;
+    percentileMinContrast: number;
+    hysteresisLowThreshold: number;
+    hysteresisHighThreshold: number;
+    hysteresisConnectivity: number;
+    sobelPercentile: number;
+    sobelThreshold: number | null;
+    sobelKernelSize: number;
+    maskAugmentationEnabled: boolean;
+    maskAugmentationSteps: string[];
+    dilateKernelW: number;
+    dilateKernelH: number;
+    dilateIterations: number;
+    erodeKernelW: number;
+    erodeKernelH: number;
+    erodeIterations: number;
+    openKernelW: number;
+    openKernelH: number;
+    openIterations: number;
+    closeKernelW: number;
+    closeKernelH: number;
+    closeIterations: number;
+    fillHoles: boolean;
+    removeSmallComponents: boolean;
+    minComponentArea: number;
+    clearBorder: boolean;
+    roiAssemblyMethod: string;
+    roiAssemblyConnectivity: number;
+    backgroundCorrection: boolean;
+    backgroundPercentile: number;
+    flatfieldCorrection: boolean;
+    flatfieldQ: number;
+    flatfieldAxis: number;
+    flatfieldMinFieldValue: number;
+    flatfieldMaxFieldValue: number | null;
+    applyMask: boolean;
+    cropEnabled: boolean;
+    cropX: number | null;
+    cropY: number | null;
+    cropW: number | null;
+    cropH: number | null;
+    invertIntensity: boolean;
+    minArea: number | null;
+    maxArea: number | null;
+    minPerimeter: number;
+    maxPerimeter: number | null;
+    minWidth: number | null;
+    maxWidth: number | null;
+    minHeight: number | null;
+    maxHeight: number | null;
+    minWidthPlusHeight: number | null;
+    maxWidthPlusHeight: number | null;
+    padding: number;
+    roiEncoding: string;
+    zstdMinBytes: number | null;
+    alwaysStoreMask: boolean;
+    storeRoiPayloadMinArea: number | null;
+    storeRoiPayloadMinWidth: number | null;
+    storeRoiPayloadMinHeight: number | null;
+    storeRoiPayloadMinWidthPlusHeight: number | null;
+    showCandidateMasks: boolean;
+    showRefinedMasks: boolean;
+    showMaskDifferences: boolean;
+    refinementModelKind: string;
+    refinementModelRef: string;
+    refinementModelRunDir: string;
+    refinementModelArtifact: string;
+    refinementTileSize: number;
+    refinementOverlapFraction: number;
+    refinementModelBatchSize: number | null;
+    refinementOutputThreshold: number;
+    refinementAllowFrameExpansion: boolean;
+    refinementMaxIterations: number;
+    refinementExpansionPixels: number | null;
+    refinementEdgeTouchMargin: number;
+    refinementEncoding: string;
+  };
 
   $: selectedFrame = findFrameByNumber(selectedFrameNum);
+  $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
+  $: if (preferencesReady) writePreferences(explorerPreferenceKey, explorerPreferenceSnapshot);
   $: framePayloadKind = payloadKindForDisplay(frameDisplayMode);
   $: imageInverted = isFrameDisplayInverted(frameDisplayMode);
   $: imageUrl =
@@ -157,13 +295,27 @@
   $: void loadFrameImageHeaders(imageUrl);
   $: boxes = detections.map(toCropBox).filter((box): box is BBox => box !== null);
   $: targetBoxes = detections.map(toTargetBox).filter((box): box is BBox => box !== null);
-  $: canvasOverlays = frameCanvasOverlays(
-    boxes,
-    targetBoxes,
-    imageUrl,
-    imageInverted,
-    bboxCoordinateBasis
+  $: hasRefinementResults = refinedDetections.length > 0;
+  $: refinementSummary = summarizeRefinedDetections(refinedDetections);
+  $: canvasOverlays = hasRefinementResults
+    ? []
+    : frameCanvasOverlays(
+        boxes,
+        targetBoxes,
+        imageUrl,
+        imageInverted,
+        bboxCoordinateBasis
+      );
+  $: canvasMaskOverlays = frameMaskOverlays(
+    detections,
+    refinedDetections,
+    bboxCoordinateBasis,
+    showCandidateMasks,
+    showRefinedMasks,
+    showMaskDifferences,
+    maskDifferenceUrls
   );
+  $: void updateMaskDifferenceUrls(showMaskDifferences, detections, refinedDetections);
   $: previewOptionsKey = optionsKey(
     frameDisplayMode,
     thresholdMethod,
@@ -192,6 +344,8 @@
     flatfieldCorrection,
     flatfieldQ,
     flatfieldAxis,
+    flatfieldMinFieldValue,
+    flatfieldMaxFieldValue,
     applyMask,
     cropEnabled,
     cropX,
@@ -244,13 +398,18 @@
     const client = getClient();
     if (!client) return;
     try {
-      const [config, segmentationCapabilities] = await Promise.all([
+      const [config, segmentationCapabilities, roiRefinementCapabilities] = await Promise.all([
         client.systemConfig().catch(() => null),
-        client.segmentationOptions().catch(() => null)
+        client.segmentationOptions().catch(() => null),
+        client.roiRefinementOptions().catch(() => null)
       ]);
-      applyConfigDefaults(config, segmentationCapabilities);
+      applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
+      restorePreferences();
       assets = await client.listAssets('video');
-      selectedAssetId = assets[0]?.id ?? '';
+      if (!assets.some((asset) => asset.id === selectedAssetId)) {
+        selectedAssetId = assets[0]?.id ?? '';
+      }
+      preferencesReady = true;
       if (selectedAssetId) await loadFrames();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -259,7 +418,211 @@
     }
   });
 
-  function applyConfigDefaults(config: SystemConfigResponse | null, capabilities: SegmentationCapabilities | null = null) {
+  onDestroy(() => {
+    clearMaskDifferenceUrls();
+  });
+
+  function buildPreferenceSnapshot(): ExplorerPreferences {
+    return {
+      selectedAssetId,
+      selectedFrameNum,
+      frameDisplayMode,
+      thresholdMethod,
+      manualThreshold,
+      thresholdingMaximumValue,
+      boundedOtsuMinContrast,
+      boundedOtsuMaxForegroundFraction,
+      cannyEnabled,
+      cannyLowThreshold,
+      cannyHighThreshold,
+      cannyBlurKernel,
+      adaptiveBlockSize,
+      adaptiveC,
+      percentileBackgroundPercentile,
+      percentileMinContrast,
+      hysteresisLowThreshold,
+      hysteresisHighThreshold,
+      hysteresisConnectivity,
+      sobelPercentile,
+      sobelThreshold,
+      sobelKernelSize,
+      maskAugmentationEnabled,
+      maskAugmentationSteps: [...maskAugmentationSteps],
+      dilateKernelW,
+      dilateKernelH,
+      dilateIterations,
+      erodeKernelW,
+      erodeKernelH,
+      erodeIterations,
+      openKernelW,
+      openKernelH,
+      openIterations,
+      closeKernelW,
+      closeKernelH,
+      closeIterations,
+      fillHoles,
+      removeSmallComponents,
+      minComponentArea,
+      clearBorder,
+      roiAssemblyMethod,
+      roiAssemblyConnectivity,
+      backgroundCorrection,
+      backgroundPercentile,
+      flatfieldCorrection,
+      flatfieldQ,
+      flatfieldAxis,
+      flatfieldMinFieldValue,
+      flatfieldMaxFieldValue,
+      applyMask,
+      cropEnabled,
+      cropX,
+      cropY,
+      cropW,
+      cropH,
+      invertIntensity,
+      minArea,
+      maxArea,
+      minPerimeter,
+      maxPerimeter,
+      minWidth,
+      maxWidth,
+      minHeight,
+      maxHeight,
+      minWidthPlusHeight,
+      maxWidthPlusHeight,
+      padding,
+      roiEncoding,
+      zstdMinBytes,
+      alwaysStoreMask,
+      storeRoiPayloadMinArea,
+      storeRoiPayloadMinWidth,
+      storeRoiPayloadMinHeight,
+      storeRoiPayloadMinWidthPlusHeight,
+      showCandidateMasks,
+      showRefinedMasks,
+      showMaskDifferences,
+      refinementModelKind,
+      refinementModelRef,
+      refinementModelRunDir,
+      refinementModelArtifact,
+      refinementTileSize,
+      refinementOverlapFraction,
+      refinementModelBatchSize,
+      refinementOutputThreshold,
+      refinementAllowFrameExpansion,
+      refinementMaxIterations,
+      refinementExpansionPixels,
+      refinementEdgeTouchMargin,
+      refinementEncoding
+    };
+  }
+
+  function restorePreferences() {
+    const preferences = readPreferences<ExplorerPreferences>(explorerPreferenceKey);
+    if (!preferences) return;
+    selectedAssetId = stringPreference(preferences.selectedAssetId, selectedAssetId);
+    selectedFrameNum = numberPreference(preferences.selectedFrameNum, selectedFrameNum);
+    frameDisplayMode = frameDisplayModePreference(preferences.frameDisplayMode, frameDisplayMode);
+    thresholdMethod = stringPreference(preferences.thresholdMethod, thresholdMethod);
+    manualThreshold = numberPreference(preferences.manualThreshold, manualThreshold);
+    thresholdingMaximumValue = nullablePreferenceNumber(preferences.thresholdingMaximumValue, thresholdingMaximumValue);
+    boundedOtsuMinContrast = numberPreference(preferences.boundedOtsuMinContrast, boundedOtsuMinContrast);
+    boundedOtsuMaxForegroundFraction = numberPreference(preferences.boundedOtsuMaxForegroundFraction, boundedOtsuMaxForegroundFraction);
+    cannyEnabled = booleanPreference(preferences.cannyEnabled, cannyEnabled);
+    cannyLowThreshold = numberPreference(preferences.cannyLowThreshold, cannyLowThreshold);
+    cannyHighThreshold = numberPreference(preferences.cannyHighThreshold, cannyHighThreshold);
+    cannyBlurKernel = numberPreference(preferences.cannyBlurKernel, cannyBlurKernel);
+    adaptiveBlockSize = numberPreference(preferences.adaptiveBlockSize, adaptiveBlockSize);
+    adaptiveC = numberPreference(preferences.adaptiveC, adaptiveC);
+    percentileBackgroundPercentile = numberPreference(preferences.percentileBackgroundPercentile, percentileBackgroundPercentile);
+    percentileMinContrast = numberPreference(preferences.percentileMinContrast, percentileMinContrast);
+    hysteresisLowThreshold = numberPreference(preferences.hysteresisLowThreshold, hysteresisLowThreshold);
+    hysteresisHighThreshold = numberPreference(preferences.hysteresisHighThreshold, hysteresisHighThreshold);
+    hysteresisConnectivity = numberPreference(preferences.hysteresisConnectivity, hysteresisConnectivity);
+    sobelPercentile = numberPreference(preferences.sobelPercentile, sobelPercentile);
+    sobelThreshold = nullablePreferenceNumber(preferences.sobelThreshold, sobelThreshold);
+    sobelKernelSize = numberPreference(preferences.sobelKernelSize, sobelKernelSize);
+    maskAugmentationEnabled = booleanPreference(preferences.maskAugmentationEnabled, maskAugmentationEnabled);
+    maskAugmentationSteps = new Set(stringArrayPreference(preferences.maskAugmentationSteps, [...maskAugmentationSteps]));
+    dilateKernelW = numberPreference(preferences.dilateKernelW, dilateKernelW);
+    dilateKernelH = numberPreference(preferences.dilateKernelH, dilateKernelH);
+    dilateIterations = numberPreference(preferences.dilateIterations, dilateIterations);
+    erodeKernelW = numberPreference(preferences.erodeKernelW, erodeKernelW);
+    erodeKernelH = numberPreference(preferences.erodeKernelH, erodeKernelH);
+    erodeIterations = numberPreference(preferences.erodeIterations, erodeIterations);
+    openKernelW = numberPreference(preferences.openKernelW, openKernelW);
+    openKernelH = numberPreference(preferences.openKernelH, openKernelH);
+    openIterations = numberPreference(preferences.openIterations, openIterations);
+    closeKernelW = numberPreference(preferences.closeKernelW, closeKernelW);
+    closeKernelH = numberPreference(preferences.closeKernelH, closeKernelH);
+    closeIterations = numberPreference(preferences.closeIterations, closeIterations);
+    fillHoles = booleanPreference(preferences.fillHoles, fillHoles);
+    removeSmallComponents = booleanPreference(preferences.removeSmallComponents, removeSmallComponents);
+    minComponentArea = numberPreference(preferences.minComponentArea, minComponentArea);
+    clearBorder = booleanPreference(preferences.clearBorder, clearBorder);
+    roiAssemblyMethod = stringPreference(preferences.roiAssemblyMethod, roiAssemblyMethod);
+    roiAssemblyConnectivity = numberPreference(preferences.roiAssemblyConnectivity, roiAssemblyConnectivity);
+    backgroundCorrection = booleanPreference(preferences.backgroundCorrection, backgroundCorrection);
+    backgroundPercentile = numberPreference(preferences.backgroundPercentile, backgroundPercentile);
+    flatfieldCorrection = booleanPreference(preferences.flatfieldCorrection, flatfieldCorrection);
+    flatfieldQ = numberPreference(preferences.flatfieldQ, flatfieldQ);
+    flatfieldAxis = numberPreference(preferences.flatfieldAxis, flatfieldAxis);
+    flatfieldMinFieldValue = numberPreference(preferences.flatfieldMinFieldValue, flatfieldMinFieldValue);
+    flatfieldMaxFieldValue = nullablePreferenceNumber(preferences.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    applyMask = booleanPreference(preferences.applyMask, applyMask);
+    cropEnabled = booleanPreference(preferences.cropEnabled, cropEnabled);
+    cropX = nullablePreferenceNumber(preferences.cropX, cropX);
+    cropY = nullablePreferenceNumber(preferences.cropY, cropY);
+    cropW = nullablePreferenceNumber(preferences.cropW, cropW);
+    cropH = nullablePreferenceNumber(preferences.cropH, cropH);
+    invertIntensity = booleanPreference(preferences.invertIntensity, invertIntensity);
+    minArea = nullablePreferenceNumber(preferences.minArea, minArea);
+    maxArea = nullablePreferenceNumber(preferences.maxArea, maxArea);
+    minPerimeter = numberPreference(preferences.minPerimeter, minPerimeter);
+    maxPerimeter = nullablePreferenceNumber(preferences.maxPerimeter, maxPerimeter);
+    minWidth = nullablePreferenceNumber(preferences.minWidth, minWidth);
+    maxWidth = nullablePreferenceNumber(preferences.maxWidth, maxWidth);
+    minHeight = nullablePreferenceNumber(preferences.minHeight, minHeight);
+    maxHeight = nullablePreferenceNumber(preferences.maxHeight, maxHeight);
+    minWidthPlusHeight = nullablePreferenceNumber(preferences.minWidthPlusHeight, minWidthPlusHeight);
+    maxWidthPlusHeight = nullablePreferenceNumber(preferences.maxWidthPlusHeight, maxWidthPlusHeight);
+    padding = numberPreference(preferences.padding, padding);
+    roiEncoding = stringPreference(preferences.roiEncoding, roiEncoding);
+    zstdMinBytes = nullablePreferenceNumber(preferences.zstdMinBytes, zstdMinBytes);
+    alwaysStoreMask = booleanPreference(preferences.alwaysStoreMask, alwaysStoreMask);
+    storeRoiPayloadMinArea = nullablePreferenceNumber(preferences.storeRoiPayloadMinArea, storeRoiPayloadMinArea);
+    storeRoiPayloadMinWidth = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
+    storeRoiPayloadMinHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
+    storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
+    showCandidateMasks = booleanPreference(preferences.showCandidateMasks, showCandidateMasks);
+    showRefinedMasks = booleanPreference(preferences.showRefinedMasks, showRefinedMasks);
+    showMaskDifferences = booleanPreference(preferences.showMaskDifferences, showMaskDifferences);
+    refinementModelKind = stringPreference(preferences.refinementModelKind, refinementModelKind);
+    refinementModelRef = stringPreference(preferences.refinementModelRef, refinementModelRef);
+    refinementModelRunDir = stringPreference(preferences.refinementModelRunDir, refinementModelRunDir);
+    refinementModelArtifact = stringPreference(preferences.refinementModelArtifact, refinementModelArtifact);
+    refinementTileSize = numberPreference(preferences.refinementTileSize, refinementTileSize);
+    refinementOverlapFraction = numberPreference(preferences.refinementOverlapFraction, refinementOverlapFraction);
+    refinementModelBatchSize = nullablePreferenceNumber(preferences.refinementModelBatchSize, refinementModelBatchSize);
+    refinementOutputThreshold = numberPreference(preferences.refinementOutputThreshold, refinementOutputThreshold);
+    refinementAllowFrameExpansion = booleanPreference(preferences.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
+    refinementMaxIterations = numberPreference(preferences.refinementMaxIterations, refinementMaxIterations);
+    refinementExpansionPixels = nullablePreferenceNumber(preferences.refinementExpansionPixels, refinementExpansionPixels);
+    refinementEdgeTouchMargin = numberPreference(preferences.refinementEdgeTouchMargin, refinementEdgeTouchMargin);
+    refinementEncoding = stringPreference(preferences.refinementEncoding, refinementEncoding);
+  }
+
+  function frameDisplayModePreference(value: unknown, fallback: FrameDisplayMode): FrameDisplayMode {
+    return value === 'original' || value === 'preprocessed' || value === 'preprocessed-inverted'
+      ? value
+      : fallback;
+  }
+
+  function applyConfigDefaults(
+    config: SystemConfigResponse | null,
+    capabilities: SegmentationCapabilities | null = null,
+    refinementCapabilities: RoiRefinementCapabilities | null = null
+  ) {
     const thresholding = pipelineSection(config, capabilities, 'thresholding');
     const flatfield = capabilities?.defaults?.preprocessing ?? processingSection(config, 'flatfield');
     const preprocessing = pipelineSection(config, capabilities, 'preprocessing');
@@ -267,6 +630,7 @@
     const roiAssembly = pipelineSection(config, capabilities, 'roi_assembly');
     const roiFilter = pipelineSection(config, capabilities, 'roi_filter');
     const roiRecording = pipelineSection(config, capabilities, 'roi_recording');
+    const roiRefinement = refinementCapabilities?.defaults?.roi_refinement ?? processingSection(config, 'roi_refinement');
 
     thresholdMethods = capabilities?.supported?.threshold_methods?.length
       ? capabilities.supported.threshold_methods
@@ -280,6 +644,14 @@
     roiEncodingOptions = capabilities?.supported?.roi_encoding_options?.length
       ? capabilities.supported.roi_encoding_options
       : roiEncodingOptions;
+    refinementModelKinds = refinementCapabilities?.supported?.model_kinds?.length
+      ? refinementCapabilities.supported.model_kinds
+      : refinementModelKinds;
+    refinementModelRefs = refinementCapabilities?.supported?.model_refs ?? refinementModelRefs;
+    refinementEncodingOptions = refinementCapabilities?.supported?.roi_encoding_options?.length
+      ? refinementCapabilities.supported.roi_encoding_options
+      : refinementEncodingOptions;
+    refinementModelArtifacts = modelArtifactOptions(refinementCapabilities);
 
     thresholdMethod = stringDefault(thresholding, 'method', thresholdMethod);
     manualThreshold = numberDefault(thresholding, 'manual_threshold', manualThreshold);
@@ -303,6 +675,8 @@
     flatfieldCorrection = booleanDefault(flatfield, 'flatfield_correction', flatfieldCorrection);
     flatfieldQ = numberDefault(flatfield, 'flatfield_q', flatfieldQ);
     flatfieldAxis = numberDefault(flatfield, 'flatfield_axis', flatfieldAxis);
+    flatfieldMinFieldValue = numberDefault(flatfield, 'flatfield_min_field_value', flatfieldMinFieldValue);
+    flatfieldMaxFieldValue = nullableNumberDefault(flatfield, 'flatfield_max_field_value', flatfieldMaxFieldValue);
     backgroundCorrection = booleanDefault(preprocessing, 'background_correction', backgroundCorrection);
     backgroundPercentile = numberDefault(preprocessing, 'background_percentile', backgroundPercentile);
     applyMask = booleanDefault(preprocessing, 'apply_mask', applyMask);
@@ -354,6 +728,27 @@
     storeRoiPayloadMinWidth = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width', storeRoiPayloadMinWidth);
     storeRoiPayloadMinHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_height', storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
+
+    refinementModelKind = stringDefault(roiRefinement, 'model_kind', refinementModelKind);
+    refinementModelRef = stringDefault(roiRefinement, 'model_ref', refinementModelRef);
+    refinementModelRunDir = stringDefault(roiRefinement, 'model_run_dir', refinementModelRunDir);
+    refinementModelArtifact = stringDefault(roiRefinement, 'model_artifact', refinementModelArtifact);
+    refinementTileSize = numberDefault(roiRefinement, 'tile_size', refinementTileSize);
+    refinementOverlapFraction = numberDefault(roiRefinement, 'overlap_fraction', refinementOverlapFraction);
+    refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
+    refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
+    refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
+    refinementOutputThreshold = numberDefault(roiRefinement, 'output_threshold', refinementOutputThreshold);
+    refinementModelBatchSize = nullableNumberDefault(roiRefinement, 'batch_size', refinementModelBatchSize);
+    refinementEncoding = stringDefault(roiRefinement, 'encoding', refinementEncoding);
+  }
+
+  function modelArtifactOptions(capabilities: RoiRefinementCapabilities | null): string[] {
+    const fieldOptions = capabilities?.fields?.model_selection
+      ?.find((field) => field.key === 'model_artifact')
+      ?.options;
+    if (Array.isArray(fieldOptions)) return fieldOptions.map(String).filter(Boolean);
+    return refinementModelArtifacts;
   }
 
   function pipelineSection(
@@ -379,6 +774,7 @@
     frames = frameCount > 0 ? await client.listFrames(selectedAssetId, frameCount) : [];
     selectedFrameNum = frameCount > 0 ? 1 : 0;
     detections = [];
+    refinedDetections = [];
     stageCounts = {};
     bboxCoordinateBasis = 'original-frame';
     await loadDetections();
@@ -391,11 +787,13 @@
     const frame = await ensureSelectedFrame();
     if (!frame?.id) {
       detections = [];
+      refinedDetections = [];
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       return;
     }
     detections = await client.listDetections(selectedAssetId, frame.id);
+    refinedDetections = [];
     stageCounts = {};
     bboxCoordinateBasis = 'original-frame';
   }
@@ -509,6 +907,39 @@
     };
   }
 
+  function forceRoiPayloadRecordingOptions(): SegmentationOptions {
+    return {
+      ...options(),
+      always_store_mask: true,
+      store_roi_payload_min_area: 0,
+      store_roi_payload_min_width: 0,
+      store_roi_payload_min_height: 0,
+      store_roi_payload_min_width_plus_height: 0
+    };
+  }
+
+  function hasRoiPayload(detection: DetectionSummary): boolean {
+    return Number(detection.roi_payload_bytes ?? 0) > 0;
+  }
+
+  function roiRefinementOptions(): Record<string, unknown> {
+    return {
+      model_kind: refinementModelKind,
+      model_ref: refinementModelRef || undefined,
+      model_run_dir: refinementModelRunDir || undefined,
+      model_artifact: refinementModelArtifact || undefined,
+      tile_size: refinementTileSize,
+      overlap_fraction: refinementOverlapFraction,
+      batch_size: refinementModelBatchSize,
+      output_threshold: refinementOutputThreshold,
+      allow_frame_expansion: refinementAllowFrameExpansion,
+      max_iterations: refinementMaxIterations,
+      expansion_pixels: refinementExpansionPixels,
+      edge_touch_margin: refinementEdgeTouchMargin,
+      encoding: refinementEncoding === 'auto' ? undefined : refinementEncoding
+    };
+  }
+
   function normalizedMaskSteps(): string[] {
     const steps = [...maskAugmentationSteps].filter((step) => step && step !== 'none');
     return steps.length ? steps : ['none'];
@@ -545,6 +976,8 @@
       flatfield_correction: flatfieldCorrection,
       flatfield_q: flatfieldCorrection ? flatfieldQ : undefined,
       flatfield_axis: flatfieldCorrection ? flatfieldAxis : undefined,
+      flatfield_min_field_value: flatfieldCorrection ? flatfieldMinFieldValue : undefined,
+      flatfield_max_field_value: flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
       apply_mask: applyMask,
       crop_enabled: cropEnabled,
       crop_x: cropEnabled ? cropX : undefined,
@@ -602,6 +1035,8 @@
     flatfieldEnabled: boolean,
     flatfieldValue: number,
     flatfieldAxisValue: number,
+    flatfieldMinFieldValue: number,
+    flatfieldMaxFieldValue: number | null,
     maskEnabled: boolean,
     cropIsEnabled: boolean,
     cropXValue: number | null,
@@ -643,6 +1078,8 @@
       flatfield_correction: flatfieldEnabled,
       flatfield_q: flatfieldEnabled ? flatfieldValue : undefined,
       flatfield_axis: flatfieldEnabled ? flatfieldAxisValue : undefined,
+      flatfield_min_field_value: flatfieldEnabled ? flatfieldMinFieldValue : undefined,
+      flatfield_max_field_value: flatfieldEnabled ? flatfieldMaxFieldValue : undefined,
       apply_mask: maskEnabled,
       crop_enabled: cropIsEnabled,
       crop_x: cropIsEnabled ? cropXValue : undefined,
@@ -666,6 +1103,7 @@
     if (lastFrameImageKey && key !== lastFrameImageKey) {
       hasLivePreview = false;
       detections = [];
+      refinedDetections = [];
       bboxCoordinateBasis = 'original-frame';
     }
     lastFrameImageKey = key;
@@ -680,6 +1118,7 @@
     try {
       const result = await client.liveSegmentFrame(frame.id, options());
       detections = result.detections;
+      refinedDetections = [];
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
@@ -706,6 +1145,7 @@
       preprocessedReloadKey = Date.now();
       hasLivePreview = false;
       detections = [];
+      refinedDetections = [];
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       message = `Applied preprocessing to frame ${selectedFrameNum} and reloaded the preprocessed image.`;
@@ -723,11 +1163,69 @@
     try {
       const result = await client.segmentFrame(frame.id, options());
       detections = result.detections;
+      refinedDetections = [];
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       message = `Saved segmentation for frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} stored.`;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function refineCurrentDetections() {
+    const client = getClient();
+    const frame = await ensureSelectedFrame();
+    if (!client || !frame?.id) return;
+    message = null;
+    error = null;
+    refining = true;
+    try {
+      let storedDetections = detections.filter((detection) => detection.id);
+      let refreshedRoiPayloads = false;
+      if (!storedDetections.length || storedDetections.some((detection) => !hasRoiPayload(detection))) {
+        const result = await client.segmentFrame(frame.id, forceRoiPayloadRecordingOptions());
+        detections = result.detections;
+        refinedDetections = [];
+        storedDetections = result.detections.filter((detection) => detection.id);
+        stageCounts = result.stage_counts ?? {};
+        bboxCoordinateBasis = liveBboxCoordinateBasis(result);
+        refreshedRoiPayloads = true;
+      }
+      const detectionIds = storedDetections.map((detection) => detection.id).filter((id): id is string => Boolean(id));
+      if (!detectionIds.length) {
+        throw new Error('No stored candidate detections are available to refine.');
+      }
+      if (storedDetections.some((detection) => !hasRoiPayload(detection))) {
+        throw new Error('Candidate detections still do not include ROI payload data after refreshing segmentation.');
+      }
+      const refinementPayload = {
+        detection_ids: detectionIds,
+        ...roiRefinementOptions()
+      };
+      try {
+        const result = await client.refineRois({
+          ...refinementPayload,
+          store: true,
+          dry_run: false
+        });
+        refinedDetections = result.refined_detections ?? [];
+        const refinedCount = result.refined_count ?? refinedDetections.length;
+        message = `${refreshedRoiPayloads ? 'Saved ROI payload data, then r' : 'R'}efined ${refinedCount} ROI${refinedCount === 1 ? '' : 's'} for frame ${selectedFrameNum}.`;
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 0) throw err;
+        const response = await client.queueRoiRefinementJob({
+          ...refinementPayload,
+          run_id: selectedAsset?.run_id ?? undefined,
+          asset_id: selectedAssetId || undefined,
+          store: true,
+          dry_run: false
+        });
+        message = `${refreshedRoiPayloads ? 'Saved ROI payload data. ' : ''}Direct refinement lost the API connection, so queued refinement job ${response.job.id} for ${detectionIds.length} ROI${detectionIds.length === 1 ? '' : 's'}.`;
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      refining = false;
     }
   }
 
@@ -770,6 +1268,12 @@
   }
 
   function markImageUnavailable() {
+    if (framePayloadKind === 'preprocessed') {
+      failedImageUrl = imageUrl;
+      frameDisplayMode = 'original';
+      hasLivePreview = false;
+      return;
+    }
     failedImageUrl = imageUrl;
     imageNaturalWidth = 0;
     imageNaturalHeight = 0;
@@ -841,6 +1345,57 @@
     area?: number;
     perimeter?: number;
   };
+
+  type RefinementSummary = {
+    count: number;
+    areaCount: number;
+    totalArea: number;
+    meanArea: number | null;
+    medianArea: number | null;
+    minArea: number | null;
+    maxArea: number | null;
+    bboxAreaCount: number;
+    totalBboxArea: number;
+  };
+
+  function summarizeRefinedDetections(refined: DetectionSummary[]): RefinementSummary {
+    const areas = refined
+      .map((detection) => numberValue(detection.area))
+      .filter((value): value is number => value !== null && value >= 0)
+      .sort((a, b) => a - b);
+    const bboxAreas = refined
+      .map((detection, index) => toTargetBox(detection, index) ?? toCropBox(detection, index))
+      .filter((box): box is BBox => box !== null)
+      .map((box) => Math.max(0, box.w * box.h))
+      .sort((a, b) => a - b);
+    const totalArea = areas.reduce((total, area) => total + area, 0);
+    const totalBboxArea = bboxAreas.reduce((total, area) => total + area, 0);
+    return {
+      count: refined.length,
+      areaCount: areas.length,
+      totalArea,
+      meanArea: areas.length ? totalArea / areas.length : null,
+      medianArea: median(areas),
+      minArea: areas[0] ?? null,
+      maxArea: areas.at(-1) ?? null,
+      bboxAreaCount: bboxAreas.length,
+      totalBboxArea
+    };
+  }
+
+  function median(values: number[]): number | null {
+    if (!values.length) return null;
+    const midpoint = Math.floor(values.length / 2);
+    return values.length % 2
+      ? values[midpoint]
+      : (values[midpoint - 1] + values[midpoint]) / 2;
+  }
+
+  function formatStat(value: number | null | undefined): string {
+    return value === null || value === undefined || !Number.isFinite(value)
+      ? 'n/a'
+      : formatCount(Math.round(value));
+  }
 
   function toTargetBox(detection: DetectionSummary, index: number): BBox | null {
     return toBox(detection, index, readTargetTuple(detection));
@@ -1060,6 +1615,291 @@
     ];
   }
 
+  function frameMaskOverlays(
+    candidateDetections: DetectionSummary[],
+    refined: DetectionSummary[],
+    basis: BboxCoordinateBasis,
+    includeCandidateMasks: boolean,
+    includeRefinedMasks: boolean,
+    includeMaskDifferences: boolean,
+    differenceUrls: Map<string, string>
+  ): CanvasOverlayImage[] {
+    const client = getClient();
+    if (!client || imageScaleX === null || imageScaleY === null) return [];
+    const layers: CanvasOverlayImage[] = [];
+    if (includeCandidateMasks) {
+      for (const [index, detection] of candidateDetections.entries()) {
+        if (!detection.id) continue;
+        const layer = maskOverlayForDetection(
+          detection,
+          index,
+          client.detectionMaskUrl(detection.id),
+          '#ff2020',
+          1,
+          'candidate-mask',
+          basis
+        );
+        if (layer) layers.push(layer);
+      }
+    }
+    if (includeRefinedMasks) {
+      for (const [index, detection] of refined.entries()) {
+        const candidateId = candidateIdForRefinedDetection(detection, index);
+        if (!candidateId) continue;
+        const layer = maskOverlayForDetection(
+          detection,
+          index,
+          client.refinedDetectionMaskUrl(candidateId),
+          '#1688ff',
+          0.38,
+          'refined-mask',
+          basis
+        );
+        if (layer) layers.push(layer);
+      }
+    }
+    if (includeMaskDifferences) {
+      for (const request of maskDifferenceRequests(candidateDetections, refined)) {
+        const imageUrl = differenceUrls.get(request.key);
+        if (!imageUrl) continue;
+        const scaled = scaleBoxToDisplayedFrame(request.unionBox, imageScaleX, imageScaleY, basis);
+        if (scaled.w <= 0 || scaled.h <= 0) continue;
+        layers.push({
+          id: `mask-difference-${request.key}`,
+          imageUrl,
+          x: scaled.x,
+          y: scaled.y,
+          w: scaled.w,
+          h: scaled.h,
+          tint: '#ffd21f',
+          opacity: 1,
+          className: 'difference-mask',
+          coordinateSpace: 'image'
+        });
+      }
+    }
+    return layers;
+  }
+
+  type MaskDifferenceRequest = {
+    key: string;
+    candidateUrl: string;
+    refinedUrl: string;
+    candidateBox: BBox;
+    refinedBox: BBox;
+    unionBox: BBox;
+  };
+
+  function maskDifferenceRequests(
+    candidateDetections: DetectionSummary[],
+    refined: DetectionSummary[]
+  ): MaskDifferenceRequest[] {
+    const client = getClient();
+    if (!client) return [];
+    const candidateById = new Map(candidateDetections.filter((detection) => detection.id).map((detection) => [detection.id, detection]));
+    const requests: MaskDifferenceRequest[] = [];
+    for (const [index, refinedDetection] of refined.entries()) {
+      const candidateId = candidateIdForRefinedDetection(refinedDetection, index);
+      if (!candidateId) continue;
+      const candidateDetection = candidateById.get(candidateId);
+      if (!candidateDetection) continue;
+      const candidateBox = toCropBox(candidateDetection, index);
+      const refinedBox = toCropBox(refinedDetection, index);
+      if (!candidateBox || !refinedBox) continue;
+      const unionBox = unionCropBox(candidateBox, refinedBox);
+      const candidateUrl = client.detectionMaskUrl(candidateId);
+      const refinedUrl = client.refinedDetectionMaskUrl(candidateId);
+      const key = [
+        candidateId,
+        refinedDetection.id ?? index,
+        boxKey(candidateBox),
+        boxKey(refinedBox),
+        candidateUrl,
+        refinedUrl
+      ].join('|');
+      requests.push({ key, candidateUrl, refinedUrl, candidateBox, refinedBox, unionBox });
+    }
+    return requests;
+  }
+
+  async function updateMaskDifferenceUrls(
+    enabled: boolean,
+    candidateDetections: DetectionSummary[],
+    refined: DetectionSummary[]
+  ) {
+    const serial = ++maskDifferenceSerial;
+    if (!enabled || typeof window === 'undefined') {
+      clearMaskDifferenceUrls();
+      return;
+    }
+    const requests = maskDifferenceRequests(candidateDetections, refined);
+    const nextKey = requests.map((request) => request.key).join('||');
+    if (nextKey === maskDifferenceKey) return;
+    maskDifferenceKey = nextKey;
+
+    const neededKeys = new Set(requests.map((request) => request.key));
+    for (const [key, url] of maskDifferenceUrls) {
+      if (!neededKeys.has(key)) URL.revokeObjectURL(url);
+    }
+    maskDifferenceUrls = new Map([...maskDifferenceUrls].filter(([key]) => neededKeys.has(key)));
+
+    for (const request of requests) {
+      if (serial !== maskDifferenceSerial) return;
+      if (maskDifferenceUrls.has(request.key)) continue;
+      try {
+        const url = await buildDifferenceMaskUrl(request);
+        if (serial !== maskDifferenceSerial) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        maskDifferenceUrls = new Map(maskDifferenceUrls).set(request.key, url);
+      } catch {
+        // Difference overlays are optional; missing masks should not interrupt the explorer.
+      }
+    }
+  }
+
+  function clearMaskDifferenceUrls() {
+    for (const url of maskDifferenceUrls.values()) URL.revokeObjectURL(url);
+    maskDifferenceUrls = new Map();
+    maskDifferenceKey = '';
+  }
+
+  async function buildDifferenceMaskUrl(request: MaskDifferenceRequest): Promise<string> {
+    const [candidateBitmap, refinedBitmap] = await Promise.all([
+      loadMaskBitmap(request.candidateUrl),
+      loadMaskBitmap(request.refinedUrl)
+    ]);
+    try {
+      const width = Math.max(1, Math.round(request.unionBox.w));
+      const height = Math.max(1, Math.round(request.unionBox.h));
+      const candidateCanvas = maskCanvasForBox(candidateBitmap, request.candidateBox, request.unionBox, width, height);
+      const refinedCanvas = maskCanvasForBox(refinedBitmap, request.refinedBox, request.unionBox, width, height);
+      const candidate = candidateCanvas.getContext('2d')?.getImageData(0, 0, width, height);
+      const refined = refinedCanvas.getContext('2d')?.getImageData(0, 0, width, height);
+      if (!candidate || !refined) throw new Error('Could not read mask pixels.');
+
+      const outputCanvas = document.createElement('canvas');
+      outputCanvas.width = width;
+      outputCanvas.height = height;
+      const context = outputCanvas.getContext('2d');
+      if (!context) throw new Error('Could not create difference mask canvas.');
+      const output = context.createImageData(width, height);
+      for (let pixel = 0; pixel < width * height; pixel += 1) {
+        const offset = pixel * 4;
+        const candidateOn = maskPixelOn(candidate.data, offset);
+        const refinedOn = maskPixelOn(refined.data, offset);
+        const different = candidateOn !== refinedOn;
+        output.data[offset] = 255;
+        output.data[offset + 1] = 255;
+        output.data[offset + 2] = 255;
+        output.data[offset + 3] = different ? 255 : 0;
+      }
+      context.putImageData(output, 0, 0);
+      return await canvasToObjectUrl(outputCanvas);
+    } finally {
+      candidateBitmap.close?.();
+      refinedBitmap.close?.();
+    }
+  }
+
+  async function loadMaskBitmap(url: string): Promise<ImageBitmap> {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Mask image request failed: ${response.status}`);
+    return createImageBitmap(await response.blob());
+  }
+
+  function maskCanvasForBox(
+    bitmap: ImageBitmap,
+    box: BBox,
+    unionBox: BBox,
+    width: number,
+    height: number
+  ): HTMLCanvasElement {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) return canvas;
+    context.drawImage(
+      bitmap,
+      Math.round(box.x - unionBox.x),
+      Math.round(box.y - unionBox.y),
+      Math.max(1, Math.round(box.w)),
+      Math.max(1, Math.round(box.h))
+    );
+    return canvas;
+  }
+
+  function maskPixelOn(data: Uint8ClampedArray, offset: number): boolean {
+    const alpha = data[offset + 3];
+    const luma = 0.2126 * data[offset] + 0.7152 * data[offset + 1] + 0.0722 * data[offset + 2];
+    return alpha > 8 && luma > 16;
+  }
+
+  async function canvasToObjectUrl(canvas: HTMLCanvasElement): Promise<string> {
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Could not encode difference mask.'))), 'image/png');
+    });
+    return URL.createObjectURL(blob);
+  }
+
+  function unionCropBox(a: BBox, b: BBox): BBox {
+    const x0 = Math.min(a.x, b.x);
+    const y0 = Math.min(a.y, b.y);
+    const x1 = Math.max(a.x + a.w, b.x + b.w);
+    const y1 = Math.max(a.y + a.h, b.y + b.h);
+    return {
+      index: a.index,
+      x: x0,
+      y: y0,
+      w: x1 - x0,
+      h: y1 - y0
+    };
+  }
+
+  function boxKey(box: BBox): string {
+    return [box.x, box.y, box.w, box.h].map((value) => Math.round(value)).join(',');
+  }
+
+  function maskOverlayForDetection(
+    detection: DetectionSummary,
+    index: number,
+    maskUrl: string,
+    tint: string,
+    opacity: number,
+    className: string,
+    basis: BboxCoordinateBasis
+  ): CanvasOverlayImage | null {
+    if (imageScaleX === null || imageScaleY === null) return null;
+    const box = toCropBox(detection, index);
+    if (!box) return null;
+    const scaled = scaleBoxToDisplayedFrame(box, imageScaleX, imageScaleY, basis);
+    if (scaled.w <= 0 || scaled.h <= 0) return null;
+    return {
+      id: `${className}-${detection.id ?? index}`,
+      imageUrl: maskUrl,
+      x: scaled.x,
+      y: scaled.y,
+      w: scaled.w,
+      h: scaled.h,
+      tint,
+      opacity,
+      className,
+      coordinateSpace: 'image'
+    };
+  }
+
+  function candidateIdForRefinedDetection(detection: DetectionSummary, index: number): string | null {
+    const direct = detection.candidate_detection_id ?? stringValue(detection.metadata?.candidate_detection_id);
+    if (direct) return direct;
+    return detections[index]?.id ?? null;
+  }
+
+  function stringValue(value: unknown): string | null {
+    return typeof value === 'string' && value ? value : null;
+  }
+
   function overlayOrigin(basis: BboxCoordinateBasis): { x: number; y: number } {
     if (basis === 'preprocessed-local') return { x: 0, y: 0 };
     return displayedFrameOrigin();
@@ -1103,6 +1943,141 @@
     const assetName = selectedAsset?.filename?.replace(/\.[^.]+$/, '') ?? selectedAssetId ?? 'asset';
     const suffix = annotated ? 'boxed' : framePayloadKind;
     return `${assetName}_frame_${selectedFrameNum}_${suffix}.png`;
+  }
+
+  function frameInfoTimestamp(): string | null {
+    const metadata = selectedFrame?.metadata ?? selectedAsset?.metadata ?? {};
+    const frame = selectedFrame as (FrameSummary & { captured_at?: unknown; capture_datetime?: unknown }) | null;
+    const value =
+      frame?.captured_at ??
+      frame?.capture_datetime ??
+      metadata.capture_datetime ??
+      metadata.captured_at ??
+      metadata.timestamp;
+    return value === undefined || value === null || value === '' ? null : String(value);
+  }
+
+  function frameRenderSourceDimensions(): { width: number; height: number } | null {
+    const frame = selectedFrame as
+      | (FrameSummary & {
+          width?: unknown;
+          height?: unknown;
+          shape?: unknown;
+          payload_shape?: unknown;
+          preprocessed_payload_shape?: unknown;
+          preprocessed_metadata?: Record<string, unknown>;
+          metadata?: Record<string, unknown>;
+        })
+      | null;
+    if (!frame) return null;
+    if (framePayloadKind === 'preprocessed') {
+      const preprocessed =
+        dimensionsFromShape(frame.preprocessed_payload_shape) ??
+        dimensionsFromShape(frame.preprocessed_metadata?.shape) ??
+        dimensionsFromShape(frame.preprocessed_metadata?.payload_shape) ??
+        dimensionsFromBox(frame.preprocessed_metadata?.crop_bbox) ??
+        dimensionsFromShape(frame.metadata?.preprocessed_payload_shape);
+      if (preprocessed) return preprocessed;
+    }
+    const width = numberValue(frame.width);
+    const height = numberValue(frame.height);
+    if (width && height) return { width, height };
+    return (
+      dimensionsFromShape(frame.payload_shape) ??
+      dimensionsFromShape(frame.shape) ??
+      dimensionsFromShape(frame.metadata?.payload_shape) ??
+      dimensionsFromShape(frame.metadata?.shape)
+    );
+  }
+
+  function dimensionsFromShape(shape: unknown): { width: number; height: number } | null {
+    if (!Array.isArray(shape) || shape.length < 2) return null;
+    const height = numberValue(shape[0]);
+    const width = numberValue(shape[1]);
+    return width && height ? { width, height } : null;
+  }
+
+  function dimensionsFromBox(box: unknown): { width: number; height: number } | null {
+    if (Array.isArray(box) && box.length >= 4) {
+      const width = numberValue(box[2]);
+      const height = numberValue(box[3]);
+      return width && height ? { width, height } : null;
+    }
+    if (!box || typeof box !== 'object') return null;
+    const value = box as { w?: unknown; h?: unknown; width?: unknown; height?: unknown };
+    const width = numberValue(value.w ?? value.width);
+    const height = numberValue(value.h ?? value.height);
+    return width && height ? { width, height } : null;
+  }
+
+  function frameRenderSpec(): ImageRenderSpec {
+    const sourceDimensions = frameRenderSourceDimensions();
+    return {
+      image: {
+        url: imageUrl,
+        alt: hasLivePreview ? 'Selected frame with explorer overlays' : 'Selected frame',
+        invert: imageInverted,
+        sourceWidth: sourceDimensions?.width ?? (imageNaturalWidth || null),
+        sourceHeight: sourceDimensions?.height ?? (imageNaturalHeight || null)
+      },
+      layers: imageLayersForFrame(canvasOverlays, canvasMaskOverlays),
+      scaleBar: {
+        enabled: true,
+        placement: 'inside'
+      },
+      toolbar: {
+        exportControls: 'menu',
+        filename: frameExportFilename(),
+        annotatedFilename: frameExportFilename(true),
+        originalUrl: imageUrl,
+        originalFilename: frameExportFilename(),
+        info: {
+          assetFilename: selectedAsset?.filename ?? selectedAssetId ?? null,
+          frameNumber: selectedFrame?.frame_num ?? selectedFrame?.frame_index ?? selectedFrameNum,
+          timestamp: frameInfoTimestamp(),
+          collections: selectedAsset?.collections ?? null
+        }
+      },
+      display: {
+        maxWidth: frameImageWidth,
+        maxHeight: 760,
+        background: '#050807'
+      }
+    };
+  }
+
+  function imageLayersForFrame(
+    rects: CanvasOverlayRect[],
+    masks: CanvasOverlayImage[]
+  ): ImageLayer[] {
+    return [
+      ...masks.map((mask) => ({
+        kind: 'mask-overlay' as const,
+        id: mask.id,
+        imageUrl: mask.imageUrl,
+        x: mask.x,
+        y: mask.y,
+        w: mask.w,
+        h: mask.h,
+        tint: mask.tint,
+        opacity: mask.opacity,
+        coordinateSpace: mask.coordinateSpace
+      })),
+      ...rects.map((rect) => ({
+        kind: 'rect' as const,
+        id: rect.id,
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        stroke: rect.stroke,
+        lineWidth: rect.lineWidth,
+        halo: rect.halo,
+        selected: rect.selected,
+        coordinateSpace: rect.coordinateSpace,
+        tooltip: typeof rect.id === 'string' ? rect.id : undefined
+      }))
+    ];
   }
 
   function stageCountEntries(counts: Record<string, number>): Array<[string, number]> {
@@ -1161,16 +2136,11 @@
             </div>
           {:else}
             {#key imageUrl}
-              <ImageCanvas
-                imageUrl={imageUrl}
-                alt={hasLivePreview ? 'Selected frame with explorer bounding boxes' : 'Selected frame'}
-                filename={frameExportFilename()}
-                annotatedFilename={frameExportFilename(true)}
-                overlays={canvasOverlays}
-                inverted={imageInverted}
+              <KonvaImageCanvas
+                spec={frameRenderSpec()}
+                mode="viewer"
                 onImageLoad={setImageNaturalSize}
                 onImageError={markImageUnavailable}
-                exportControls="menu"
               />
             {/key}
           {/if}
@@ -1183,6 +2153,10 @@
     <div class="detection-strip">
       <strong>{detections.length}</strong>
       <span>detections on selected frame</span>
+      {#if hasRefinementResults}
+        <strong>{refinementSummary.count}</strong>
+        <span>refined ROI{refinementSummary.count === 1 ? '' : 's'}</span>
+      {/if}
     </div>
   </section>
 
@@ -1223,6 +2197,16 @@
           Flatfield q
           <input type="range" min="0" max="1" step="0.01" bind:value={flatfieldQ} />
           <span class="range-value">{flatfieldQ.toFixed(2)}</span>
+        </label>
+        <label>
+          Min field value
+          <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
+          <span class="range-value">{flatfieldMinFieldValue}</span>
+        </label>
+        <label>
+          Max field value
+          <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
+          <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
         </label>
         <label>
           Flatfield axis
@@ -1634,8 +2618,131 @@
       </details>
     </details>
 
+    <details class="form-section collapsible-section" open>
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Refine</p>
+          <strong>ROI mask refinement</strong>
+        </span>
+      </summary>
+
+      <div class="legend-row">
+        <label class="check-row">
+          <input type="checkbox" bind:checked={showCandidateMasks} />
+          <span><i class="legend-swatch candidate-mask-swatch"></i>Candidate masks</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={showRefinedMasks} />
+          <span><i class="legend-swatch refined-mask-swatch"></i>Refined masks</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={showMaskDifferences} />
+          <span><i class="legend-swatch difference-mask-swatch"></i>Differences</span>
+        </label>
+      </div>
+
+      <label>
+        Model kind
+        <select bind:value={refinementModelKind}>
+          {#each refinementModelKinds as kind}
+            <option value={kind}>{kind}</option>
+          {/each}
+        </select>
+      </label>
+      {#if refinementModelRefs.length}
+        <label>
+          Model reference
+          <select bind:value={refinementModelRef}>
+            <option value="">Default</option>
+            {#each refinementModelRefs as modelRef}
+              <option value={modelRef}>{modelRef}</option>
+            {/each}
+          </select>
+        </label>
+      {:else}
+        <label>
+          Model reference
+          <input bind:value={refinementModelRef} placeholder="default" />
+        </label>
+      {/if}
+      {#if refinementModelKind === 'oracle_builder_unet'}
+        <label>
+          Model run directory
+          <input bind:value={refinementModelRunDir} placeholder="oracle-builder run path" />
+        </label>
+      {/if}
+      {#if refinementModelKind === 'keras_artifact'}
+        <label>
+          Model artifact
+          <select bind:value={refinementModelArtifact}>
+            {#each refinementModelArtifacts as artifact}
+              <option value={artifact}>{artifact}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+
+      <div class="form-grid compact-grid">
+        <label>
+          Tile size
+          <input type="number" min="1" step="1" bind:value={refinementTileSize} />
+        </label>
+        <label>
+          Model batch size
+          <input type="number" min="1" bind:value={refinementModelBatchSize} placeholder="default" />
+        </label>
+        <label>
+          Output threshold
+          <input type="range" min="0" max="1" step="0.01" bind:value={refinementOutputThreshold} />
+          <span class="range-value">{Number(refinementOutputThreshold).toFixed(2)}</span>
+        </label>
+        <label>
+          Overlap fraction
+          <input type="range" min="0" max="0.99" step="0.01" bind:value={refinementOverlapFraction} />
+          <span class="range-value">{Number(refinementOverlapFraction).toFixed(2)}</span>
+        </label>
+      </div>
+
+      <details class="control-details">
+        <summary>Expansion and storage</summary>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={refinementAllowFrameExpansion} />
+          Allow frame expansion
+        </label>
+        <div class="form-grid compact-grid">
+          <label>
+            Max iterations
+            <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
+          </label>
+          <label>
+            Expansion pixels
+            <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
+          </label>
+          <label>
+            Edge touch margin
+            <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
+          </label>
+          <label>
+            Encoding
+            <select bind:value={refinementEncoding}>
+              <option value="auto">default</option>
+              {#each refinementEncodingOptions as encoding}
+                {#if encoding !== 'auto'}
+                  <option value={encoding}>{encoding}</option>
+                {/if}
+              {/each}
+            </select>
+          </label>
+        </div>
+      </details>
+    </details>
+
     <div class="button-row">
       <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Preview live</button>
+      <button class="ghost" type="button" on:click={saveSegmentation} disabled={frameCount < 1}>Save detections</button>
+      <button class="ghost" type="button" on:click={refineCurrentDetections} disabled={frameCount < 1 || refining}>
+        {refining ? 'Refining' : 'Refine current ROIs'}
+      </button>
      </div>
 
     {#if message}<p class="success">{message}</p>{/if}
@@ -1646,11 +2753,43 @@
 <section class="panel bbox-panel">
   <div class="panel-heading">
     <div>
-      <p class="eyebrow">Bounding boxes</p>
-      <h2>Current frame detections</h2>
+      <p class="eyebrow">{hasRefinementResults ? 'Refinement summary' : 'Bounding boxes'}</p>
+      <h2>{hasRefinementResults ? 'Current frame refinement' : 'Current frame detections'}</h2>
     </div>
     <span class="soft">{detections.length} detection{detections.length === 1 ? '' : 's'}, {boxes.length} box{boxes.length === 1 ? '' : 'es'}</span>
   </div>
+
+  {#if hasRefinementResults}
+    <div class="refinement-summary-grid">
+      <div>
+        <span>Refined ROIs</span>
+        <strong>{formatCount(refinementSummary.count)}</strong>
+      </div>
+      <div>
+        <span>Total ROI area</span>
+        <strong>{formatStat(refinementSummary.areaCount ? refinementSummary.totalArea : null)}</strong>
+        <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} with area` : 'area unavailable'}</small>
+      </div>
+      <div>
+        <span>Mean area</span>
+        <strong>{formatStat(refinementSummary.meanArea)}</strong>
+      </div>
+      <div>
+        <span>Median area</span>
+        <strong>{formatStat(refinementSummary.medianArea)}</strong>
+      </div>
+      <div>
+        <span>Area range</span>
+        <strong>{formatStat(refinementSummary.minArea)}-{formatStat(refinementSummary.maxArea)}</strong>
+      </div>
+      <div>
+        <span>Total bbox area</span>
+        <strong>{formatStat(refinementSummary.totalBboxArea)}</strong>
+        <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} boxes` : 'bbox unavailable'}</small>
+      </div>
+    </div>
+    <p class="soft">Bounding-box overlays are hidden while refined mask overlays are available.</p>
+  {/if}
 
   {#if stageCountEntries(stageCounts).length}
     <div class="stage-counts">

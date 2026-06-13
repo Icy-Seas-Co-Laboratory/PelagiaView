@@ -20,6 +20,20 @@ export type CanvasOverlayRect = {
   };
 };
 
+export type CanvasOverlayImage = {
+  id?: string | number;
+  imageUrl: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  tint: string;
+  opacity?: number;
+  coordinateSpace?: CanvasCoordinateSpace;
+  className?: string;
+  inverted?: boolean;
+};
+
 export type CanvasScaleBar = {
   enabled?: boolean;
   lengths?: number[];

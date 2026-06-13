@@ -1,19 +1,30 @@
-export type DashboardView = 'status' | 'ingestion' | 'preprocessing' | 'segmentation' | 'explorer' | 'rois' | 'logs';
+export type DashboardView =
+  | 'status'
+  | 'ingestion'
+  | 'preprocessing'
+  | 'segmentation'
+  | 'roi_refinement'
+  | 'explorer'
+  | 'rois'
+  | 'logs';
 
 export type DashboardViewDefinition = {
   id: DashboardView;
   label: string;
   detail: string;
+  group: 'workflow' | 'analysis' | 'system';
+  nextView?: DashboardView;
 };
 
 export const dashboardViews: DashboardViewDefinition[] = [
-  { id: 'status', label: 'Status', detail: 'queue and workers' },
-  { id: 'ingestion', label: 'Ingestion', detail: 'server assets' },
-  { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep' },
-  { id: 'segmentation', label: 'Segmentation', detail: 'queue ROI jobs' },
-  { id: 'rois', label: 'ROI Browser', detail: 'detections gallery' },
-  { id: 'explorer', label: 'Explorer', detail: 'live preview' },
-  { id: 'logs', label: 'Event Log', detail: 'job events' }
+  { id: 'status', label: 'Status', detail: 'queue and workers', group: 'system' },
+  { id: 'ingestion', label: 'Ingestion', detail: 'server assets', group: 'workflow', nextView: 'preprocessing' },
+  { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep', group: 'workflow', nextView: 'segmentation' },
+  { id: 'segmentation', label: 'Candidate ROIs', detail: 'queue ROI jobs', group: 'workflow', nextView: 'roi_refinement' },
+  { id: 'roi_refinement', label: 'ROI Refinement', detail: 'queue refined ROIs', group: 'workflow', nextView: 'rois' },
+  { id: 'rois', label: 'ROI Browser', detail: 'detections gallery', group: 'analysis' },
+  { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
+  { id: 'logs', label: 'Event Log', detail: 'job events', group: 'system' }
 ];
 
 const dashboardViewIds = new Set<DashboardView>(dashboardViews.map((view) => view.id));

@@ -2,12 +2,13 @@
   import { page } from '$app/stores';
   import { onMount, tick } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
-  import ImageCanvas from '$lib/components/ImageCanvas.svelte';
+  import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { getClient } from '$lib/stores/session';
   import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
   import { processingSection, stringDefault } from '$lib/utils/configDefaults';
   import { roiBrowserHref } from '$lib/utils/dashboardNavigation';
   import {
+    displayModeForPayloadKind,
     frameCaption,
     isFrameDisplayInverted,
     payloadKindForDisplay,
@@ -15,6 +16,9 @@
   } from '$lib/utils/frameDisplay';
   import { formatBytes } from '$lib/utils/format';
   import type { CanvasOverlayRect } from '$lib/utils/imageCanvas';
+  import type { ImageInfoSpec, ImageLayer, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
+
+  type RoiViewMode = 'candidate' | 'refined';
 
   let assets: RawAsset[] = [];
   let detections: DetectionSummary[] = [];
@@ -34,6 +38,8 @@
   let roiEncoding = '';
   let imageFormat = 'png';
   let invertImages = false;
+  let applyRoiMask = false;
+  let roiViewMode: RoiViewMode = 'candidate';
   let sortBy: 'area' | 'byte_size' | 'id' | 'asset_frame' = 'asset_frame';
   let sortDir: 'asc' | 'desc' = 'desc';
   let nextOffset = 0;
@@ -86,7 +92,6 @@
     frameImageNaturalHeight,
     detailFrameSourceDimensions
   );
-  $: roiDetailCanvasOverlays = selectedDetection ? roiDetailCanvasOverlaysFor(selectedDetection) : [];
   $: resetFrameContextImage(detailFrameUrl);
   $: roiPreferenceSnapshot = {
     selectedAssetId,
@@ -104,6 +109,8 @@
     roiEncoding,
     imageFormat,
     invertImages,
+    applyRoiMask,
+    roiViewMode,
     sortBy,
     sortDir
   };
@@ -165,6 +172,7 @@
       min_perimeter: minPerimeter,
       max_perimeter: maxPerimeter,
       roi_encoding: roiEncoding || undefined,
+      refinement_state: roiViewMode === 'refined' ? 'refined' : undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
       limit: pageSize,
@@ -215,6 +223,8 @@
       roiEncoding = stringPreference(preferences.roiEncoding, roiEncoding);
       imageFormat = stringPreference(preferences.imageFormat, imageFormat);
       invertImages = typeof preferences.invertImages === 'boolean' ? preferences.invertImages : invertImages;
+      applyRoiMask = typeof preferences.applyRoiMask === 'boolean' ? preferences.applyRoiMask : applyRoiMask;
+      roiViewMode = roiViewModePreference(preferences.roiViewMode, roiViewMode);
       sortBy = sortByPreference(preferences.sortBy, sortBy);
       sortDir = sortDirPreference(preferences.sortDir, sortDir);
       return true;
@@ -259,6 +269,19 @@
 
   function sortDirPreference(value: unknown, fallback: typeof sortDir): typeof sortDir {
     return value === 'asc' || value === 'desc' ? value : fallback;
+  }
+
+  function roiViewModePreference(value: unknown, fallback: RoiViewMode): RoiViewMode {
+    return value === 'candidate' || value === 'refined' ? value : fallback;
+  }
+
+  function setRoiViewMode(mode: RoiViewMode) {
+    if (roiViewMode === mode) return;
+    roiViewMode = mode;
+    nextOffset = 0;
+    hasMore = true;
+    closeRoiDetail();
+    void loadDetections(true);
   }
 
   function nullableNumberPreference(value: unknown, fallback: number | null): number | null {
@@ -317,6 +340,7 @@
       });
       if (serial !== frameDetectionLoadSerial) return;
       selectedFrameContext = context;
+      detailFrameDisplayMode = displayModeForPayloadKind(context.frame_payload_kind);
       selectedParentAsset = context.asset ?? null;
       selectedParentFrame = context.frame ?? null;
       const contextDetection = context.detections.find((candidate) => candidate.id && candidate.id === detection.id);
@@ -401,9 +425,112 @@
     return [selected, ...rest];
   }
 
-  function imageUrl(detection: DetectionSummary): string {
+  function imageUrl(
+    detection: DetectionSummary,
+    viewMode = roiViewMode,
+    format = imageFormat,
+    maskEnabled = applyRoiMask
+  ): string {
     const client = getClient();
-    return client && detection.id ? client.detectionImageUrl(detection.id, imageFormat) : '';
+    if (!client || !detection.id) return '';
+    const options = { applyMask: maskEnabled };
+    return viewMode === 'refined'
+      ? client.refinedDetectionImageUrl(detection.id, format, options)
+      : client.detectionImageUrl(detection.id, format, options);
+  }
+
+  function roiImageMaskUrl(detection: DetectionSummary, viewMode = roiViewMode): string {
+    const client = getClient();
+    if (!client || !detection.id) return '';
+    return viewMode === 'refined'
+      ? client.refinedDetectionMaskUrl(detection.id, 'png')
+      : client.detectionMaskUrl(detection.id, 'png');
+  }
+
+  function roiCanvasKey(
+    detection: DetectionSummary,
+    viewMode = roiViewMode,
+    format = imageFormat,
+    maskEnabled = applyRoiMask,
+    inverted = invertImages
+  ): string {
+    return [
+      detection.id ?? 'roi',
+      viewMode,
+      format,
+      maskEnabled ? 'masked' : 'plain',
+      inverted ? 'inverted' : 'normal'
+    ].join(':');
+  }
+
+  function roiImageAlt(detection: DetectionSummary, viewMode = roiViewMode): string {
+    const prefix = viewMode === 'refined' ? 'Refined ROI' : 'Candidate ROI';
+    return `${prefix} ${detection.roi_index ?? ''}`;
+  }
+
+  function roiImageVersionLabel(): string {
+    return roiViewMode === 'refined' ? 'Refined ROI' : 'Candidate ROI';
+  }
+
+  function roiImageSourceWidth(detection: DetectionSummary): number | null {
+    return roiSourceWidth(detection);
+  }
+
+  function roiImageSourceHeight(detection: DetectionSummary): number | null {
+    return roiSourceHeight(detection);
+  }
+
+  function roiRenderSpec(
+    detection: DetectionSummary,
+    maxWidth = roiDisplayMaxWidth,
+    maxHeight = roiDisplayMaxHeight,
+    exportControls: 'full' | 'menu' | 'copy-menu' | 'none' = 'none',
+    viewMode = roiViewMode,
+    format = imageFormat,
+    maskEnabled = applyRoiMask,
+    inverted = invertImages
+  ): ImageRenderSpec {
+    const sourceWidth = roiImageSourceWidth(detection);
+    const sourceHeight = roiImageSourceHeight(detection);
+    return {
+      key: roiCanvasKey(detection, viewMode, format, maskEnabled, inverted),
+      image: {
+        url: imageUrl(detection, viewMode, format, maskEnabled),
+        alt: roiImageAlt(detection, viewMode),
+        invert: inverted,
+        sourceWidth,
+        sourceHeight
+      },
+      baseMask: {
+        url: roiImageMaskUrl(detection, viewMode),
+        enabled: maskEnabled,
+        outsideColor: 'black',
+        applyBeforeInvert: true
+      },
+      layers: [],
+      scaleBar: {
+        enabled: true,
+        placement: exportControls === 'none' ? 'below' : 'inside',
+        lengths: scaleBarLengths,
+        maxPercent: exportControls === 'none' ? 55 : 48
+      },
+      toolbar: {
+        exportControls,
+        filename: roiFilenameForDetection(detection, 'roi', viewMode),
+        annotatedFilename: roiFilenameForDetection(detection, 'boxed', viewMode),
+        originalUrl: imageUrl(detection, viewMode, format, false),
+        originalFilename: roiFilenameForDetection(detection, 'original', viewMode),
+        maskUrl: roiImageMaskUrl(detection, viewMode),
+        maskFilename: roiFilenameForDetection(detection, 'mask', viewMode),
+        maskedFilename: roiFilenameForDetection(detection, 'masked', viewMode),
+        info: roiInfo(detection)
+      },
+      display: {
+        maxWidth,
+        maxHeight,
+        background: '#111916'
+      }
+    };
   }
 
   function bboxLabel(detection: DetectionSummary): string {
@@ -417,57 +544,12 @@
     return `x=${values[0]}, y=${values[1]}, w=${values[2]}, h=${values[3]}`;
   }
 
-  function cropImageStyle(detection: DetectionSummary, maxWidth = roiDisplayMaxWidth, maxHeight = roiDisplayMaxHeight): string {
-    const cropW = roiSourceWidth(detection);
-    const cropH = roiSourceHeight(detection);
-    if (!cropW || !cropH) return '';
-    const scale = roiDisplayScale(cropW, cropH, maxWidth, maxHeight);
-    return [
-      `width: ${Math.max(1, Math.round(cropW * scale))}px`,
-      `aspect-ratio: ${cropW} / ${cropH}`
-    ].join('; ');
-  }
-
   function roiSourceWidth(detection: DetectionSummary): number | null {
     return bboxValue(detection, 'crop_bbox', 'w');
   }
 
   function roiSourceHeight(detection: DetectionSummary): number | null {
     return bboxValue(detection, 'crop_bbox', 'h');
-  }
-
-  function roiDetailCanvasOverlaysFor(detection: DetectionSummary): CanvasOverlayRect[] {
-    const bboxX = bboxValue(detection, 'bbox', 'x');
-    const bboxY = bboxValue(detection, 'bbox', 'y');
-    const bboxW = bboxValue(detection, 'bbox', 'w');
-    const bboxH = bboxValue(detection, 'bbox', 'h');
-    const cropX = bboxValue(detection, 'crop_bbox', 'x');
-    const cropY = bboxValue(detection, 'crop_bbox', 'y');
-    if (
-      bboxX === null ||
-      bboxY === null ||
-      bboxW === null ||
-      bboxH === null ||
-      cropX === null ||
-      cropY === null
-    ) {
-      return [];
-    }
-    return [
-      {
-        id: 'roi-local-bbox',
-        x: bboxX - cropX,
-        y: bboxY - cropY,
-        w: bboxW,
-        h: bboxH,
-        stroke: '#e2322e',
-        lineWidth: 3,
-        halo: 'rgba(255, 255, 255, 0.8)',
-        className: 'roi-local-bbox',
-        coordinateSpace: 'source',
-        selected: true
-      }
-    ];
   }
 
   function roiFilename(version = 'roi'): string {
@@ -478,7 +560,60 @@
       'asset';
     const frame = selectedDetection?.frame_index ?? selectedDetection?.frame_id ?? 'frame';
     const roi = selectedDetection?.roi_index ?? selectedDetection?.id ?? 'roi';
-    return `${assetName}_frame_${frame}_roi_${roi}_${version}.png`;
+    return `${assetName}_frame_${frame}_roi_${roi}_${roiViewMode}_${version}.png`;
+  }
+
+  function roiFilenameForDetection(
+    detection: DetectionSummary,
+    version = 'roi',
+    viewMode = roiViewMode
+  ): string {
+    const assetName =
+      detection.asset_filename?.replace(/\.[^.]+$/, '') ??
+      detection.asset_id ??
+      selectedParentAsset?.filename?.replace(/\.[^.]+$/, '') ??
+      'asset';
+    const frame = detection.frame_index ?? detection.frame_id ?? 'frame';
+    const roi = detection.roi_index ?? detection.id ?? 'roi';
+    return `${assetName}_frame_${frame}_roi_${roi}_${viewMode}_${version}.png`;
+  }
+
+  function roiInfo(detection: DetectionSummary): ImageInfoSpec {
+    const isSelected = selectedDetection?.id && detection.id === selectedDetection.id;
+    const metadata = detection.metadata ?? {};
+    const frameMetadata = isSelected ? selectedParentFrame?.metadata ?? {} : {};
+    const assetMetadata = isSelected ? selectedParentAsset?.metadata ?? {} : {};
+    return {
+      assetFilename:
+        (isSelected ? selectedParentAsset?.filename : null) ??
+        detection.asset_filename ??
+        detection.asset_id ??
+        null,
+      frameNumber:
+        (isSelected ? selectedParentFrame?.frame_num ?? selectedParentFrame?.frame_index : null) ??
+        detection.frame_index ??
+        detection.frame_id ??
+        null,
+      timestamp: valueLabel(
+        frameMetadata.capture_datetime ??
+          frameMetadata.captured_at ??
+          frameMetadata.timestamp ??
+          assetMetadata.capture_datetime ??
+          metadata.capture_datetime ??
+          metadata.captured_at ??
+          metadata.timestamp
+      ),
+      collections: collectionsForDetection(detection, isSelected ? selectedParentAsset : null)
+    };
+  }
+
+  function collectionsForDetection(detection: DetectionSummary, asset: RawAsset | null): string[] | string | null {
+    const direct = (detection as DetectionSummary & { collections?: unknown }).collections;
+    if (Array.isArray(direct) || typeof direct === 'string') return direct;
+    if (asset?.collections) return asset.collections;
+    const metadataCollections = detection.metadata?.collections;
+    if (Array.isArray(metadataCollections) || typeof metadataCollections === 'string') return metadataCollections;
+    return null;
   }
 
   function numberValue(value: unknown): number | null {
@@ -512,10 +647,6 @@
     return numberValue(detection[`${prefix}_${field}` as keyof DetectionSummary]);
   }
 
-  function roiDisplayScale(cropW: number, cropH: number, maxWidth = roiDisplayMaxWidth, maxHeight = roiDisplayMaxHeight): number {
-    return Math.min(1, maxWidth / cropW, maxHeight / cropH);
-  }
-
   function frameContextUrl(detection: DetectionSummary, mode: FrameDisplayMode): string {
     const client = getClient();
     if (!client || !detection.frame_id) return '';
@@ -546,6 +677,12 @@
   }
 
   function markDetailFrameUnavailable() {
+    const failedUrl = detailFrameUrl;
+    if (detailFramePayloadKind === 'preprocessed') {
+      detailFrameFailedUrl = failedUrl;
+      detailFrameDisplayMode = 'original';
+      return;
+    }
     detailFrameFailedUrl = detailFrameUrl;
     frameImageNaturalWidth = 0;
     frameImageNaturalHeight = 0;
@@ -750,6 +887,58 @@
     const suffix = annotated ? 'boxed' : detailFramePayloadKind;
     return `${assetName}_frame_${frameNumberLabel()}_${suffix}.png`;
   }
+
+  function frameContextRenderSpec(): ImageRenderSpec {
+    return {
+      image: {
+        url: detailFrameUrl,
+        alt: 'Frame with ROI bounding boxes',
+        invert: detailFrameImageInverted,
+        sourceWidth: detailFrameSourceDimensions?.width ?? null,
+        sourceHeight: detailFrameSourceDimensions?.height ?? null
+      },
+      layers: rectLayersForFrameContext(detailFrameCanvasOverlays),
+      scaleBar: {
+        enabled: true,
+        placement: 'inside'
+      },
+      toolbar: {
+        exportControls: 'menu',
+        filename: frameContextFilename(),
+        annotatedFilename: frameContextFilename(true),
+        originalUrl: detailFrameUrl,
+        originalFilename: frameContextFilename(),
+        info: {
+          assetFilename: selectedParentAsset?.filename ?? selectedDetection?.asset_filename ?? selectedDetection?.asset_id ?? null,
+          frameNumber: frameNumberLabel(),
+          timestamp: valueLabel(metadataValue('capture_datetime', 'captured_at', 'timestamp')),
+          collections: selectedParentAsset?.collections ?? null
+        }
+      },
+      display: {
+        maxWidth: frameContextImageWidth,
+        maxHeight: 360,
+        background: '#050807'
+      }
+    };
+  }
+
+  function rectLayersForFrameContext(rects: CanvasOverlayRect[]): ImageLayer[] {
+    return rects.map((rect) => ({
+      kind: 'rect',
+      id: rect.id,
+      x: rect.x,
+      y: rect.y,
+      w: rect.w,
+      h: rect.h,
+      stroke: rect.stroke,
+      lineWidth: rect.lineWidth,
+      halo: rect.halo,
+      selected: rect.selected,
+      coordinateSpace: rect.coordinateSpace,
+      tooltip: rect.selected ? 'Selected ROI' : 'Other ROI'
+    }));
+  }
 </script>
 
 <svelte:window on:scroll={maybeLoadMoreFromViewport} on:resize={maybeLoadMoreFromViewport} />
@@ -760,6 +949,44 @@
       <div>
         <p class="eyebrow">ROI Browser</p>
         <h2>Filters</h2>
+      </div>
+    </div>
+
+    <div class="filter-group">
+      <div class="section-heading">
+        <p class="eyebrow">View</p>
+        <strong>ROI image source</strong>
+      </div>
+      <div class="toggle-list">
+        <button
+          class:active={roiViewMode === 'candidate'}
+          type="button"
+          on:click={() => setRoiViewMode('candidate')}
+        >
+          Candidate ROIs
+        </button>
+        <button
+          class:active={roiViewMode === 'refined'}
+          type="button"
+          on:click={() => setRoiViewMode('refined')}
+        >
+          Refined ROIs
+        </button>
+      </div>
+      {#if roiViewMode === 'refined'}
+        <p class="soft">Only detections with stored refined ROI payloads are shown.</p>
+      {/if}
+      <div class="view-option-stack">
+        <label class="switch-row">
+          <span>Invert grayscale</span>
+          <input type="checkbox" bind:checked={invertImages} />
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
+        <label class="switch-row">
+          <span>Apply ROI mask</span>
+          <input type="checkbox" bind:checked={applyRoiMask} />
+          <span class="switch-track" aria-hidden="true"></span>
+        </label>
       </div>
     </div>
 
@@ -853,11 +1080,6 @@
       </label>
     </div>
 
-    <label class="check-row">
-      <input type="checkbox" bind:checked={invertImages} />
-      Invert grayscale ROI images
-    </label>
-
     <div class="form-grid compact-grid">
       <label>
         Sort by
@@ -899,24 +1121,15 @@
         <div class="roi-tile-grid">
           {#each detections as detection}
             {#if detection.id}
-              <button
-                type="button"
-                class="roi-tile"
-                on:click={() => openRoiDetail(detection)}
-              >
+              <div class="roi-tile">
                 <div class="roi-image-frame">
-                  <ImageCanvas
-                    imageUrl={imageUrl(detection)}
-                    alt={`ROI ${detection.roi_index ?? ''}`}
-                    overlays={roiDetailCanvasOverlaysFor(detection)}
-                    inverted={invertImages}
-                    sourceWidth={roiSourceWidth(detection)}
-                    sourceHeight={roiSourceHeight(detection)}
-                    canvasStyle={cropImageStyle(detection)}
-                    exportControls="none"
-                    loading="lazy"
-                    scaleBar={{ enabled: true, placement: 'below', lengths: scaleBarLengths, maxPercent: 55 }}
-                  />
+                  {#key roiCanvasKey(detection, roiViewMode, imageFormat, applyRoiMask, invertImages)}
+                    <KonvaImageCanvas
+                      spec={roiRenderSpec(detection, roiDisplayMaxWidth, roiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages)}
+                      mode="thumbnail"
+                      onMoreAction={() => openRoiDetail(detection)}
+                    />
+                  {/key}
                 </div>
                 <div class="roi-tile-meta">
                   <strong>{detection.asset_filename ?? detection.asset_id ?? 'Unknown asset'}</strong>
@@ -932,7 +1145,7 @@
                     {/if}
                   </small>
                 </div>
-              </button>
+              </div>
             {/if}
           {/each}
         </div>
@@ -965,24 +1178,21 @@
 
       <div class="roi-detail-grid">
         <div class="roi-detail-image-panel">
-          <ImageCanvas
-            imageUrl={imageUrl(selectedDetection)}
-            alt={`ROI ${selectedDetection.roi_index ?? ''}`}
-            filename={roiFilename()}
-            annotatedFilename={roiFilename('boxed')}
-            overlays={roiDetailCanvasOverlays}
-            sourceWidth={roiSourceWidth(selectedDetection)}
-            sourceHeight={roiSourceHeight(selectedDetection)}
-            canvasStyle={cropImageStyle(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight)}
-            inverted={invertImages}
-            exportControls="menu"
-            scaleBar={{ enabled: true }}
-          />
+          {#key roiCanvasKey(selectedDetection, roiViewMode, imageFormat, applyRoiMask, invertImages)}
+            <KonvaImageCanvas
+              spec={roiRenderSpec(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages)}
+              mode="static"
+            />
+          {/key}
         </div>
 
         <div class="roi-detail-info">
           <h3>Detection</h3>
           <dl>
+            <div>
+              <dt>Viewing</dt>
+              <dd>{roiImageVersionLabel()}</dd>
+            </div>
             <div>
               <dt>Detection ID</dt>
               <dd>{selectedDetection.id}</dd>
@@ -1111,20 +1321,11 @@
               </div>
             {:else}
               {#key detailFrameUrl}
-                <ImageCanvas
-                  imageUrl={detailFrameUrl}
-                  alt="Frame with ROI bounding boxes"
-                  filename={frameContextFilename()}
-                  annotatedFilename={frameContextFilename(true)}
-                  overlays={detailFrameCanvasOverlays}
-                  sourceWidth={detailFrameSourceDimensions?.width ?? null}
-                  sourceHeight={detailFrameSourceDimensions?.height ?? null}
-                  inverted={detailFrameImageInverted}
+                <KonvaImageCanvas
+                  spec={frameContextRenderSpec()}
+                  mode="viewer"
                   onImageLoad={setFrameImageNaturalSize}
                   onImageError={markDetailFrameUnavailable}
-                  exportControls="menu"
-                  scaleBar={{ enabled: true }}
-                  readImageHeaders={true}
                 />
               {/key}
               {/if}

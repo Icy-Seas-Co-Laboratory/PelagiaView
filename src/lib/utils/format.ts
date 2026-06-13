@@ -1,6 +1,37 @@
 export function formatCount(value: unknown): string {
-  if (typeof value !== 'number') return '0';
-  return new Intl.NumberFormat().format(value);
+  const parsed = numericValue(value);
+  if (parsed === null) return '0';
+  return new Intl.NumberFormat().format(parsed);
+}
+
+export function numericValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function formatPercent(value: unknown): string {
+  const parsed = numericValue(value);
+  if (parsed === null) return 'Unknown';
+  return `${Math.max(0, Math.min(100, parsed)).toFixed(0)}%`;
+}
+
+export function formatRelativeTime(value?: string | null): string {
+  if (!value) return 'Unknown';
+  const date = new Date(value);
+  const elapsedMs = Date.now() - date.getTime();
+  if (Number.isNaN(elapsedMs)) return value;
+  const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  if (elapsedSeconds < 60) return `${elapsedSeconds}s ago`;
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 48) return `${elapsedHours}h ago`;
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return `${elapsedDays}d ago`;
 }
 
 export function formatBytes(value?: number): string {

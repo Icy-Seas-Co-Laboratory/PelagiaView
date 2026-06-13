@@ -14,11 +14,18 @@ import type {
   FrameSummary,
   HealthResponse,
   Job,
+  JobEventListOptions,
+  JobListOptions,
   JobEvent,
+  LogListOptions,
+  JobsSummaryOptions,
+  JobsSummaryResponse,
   KvStoreOverview,
   LivePreprocessResponse,
   LogEntry,
   RawAsset,
+  RoiRefinementCapabilities,
+  RoiRefinementOptions,
   SegmentationOptions,
   SegmentationCapabilities,
   SegmentationResolvedOptions,
@@ -41,6 +48,8 @@ type FrameImageOptions = {
   flatfield_correction?: boolean | null;
   flatfield_q?: number | null;
   flatfield_axis?: number | null;
+  flatfield_min_field_value?: number | null;
+  flatfield_max_field_value?: number | null;
   background_correction?: boolean | null;
   preview_max_dim?: number | null;
 };
@@ -65,6 +74,10 @@ type FrameContextOptions = {
   detection_limit?: number | null;
   detection_offset?: number | null;
   frame_payload_kind?: 'original' | 'preprocessed' | null;
+};
+
+type DetectionImageOptions = {
+  applyMask?: boolean;
 };
 
 type QueryParamValue = string | number | boolean | Array<string | number | boolean> | null | undefined;
@@ -135,22 +148,33 @@ export class PelagiaApiClient {
     return this.get<SegmentationCapabilities>('/segmentation/options', undefined, 15000);
   }
 
+  async roiRefinementOptions(): Promise<RoiRefinementCapabilities> {
+    return this.get<RoiRefinementCapabilities>('/roi-refinement/options', undefined, 15000);
+  }
+
   async kvStoreOverview(): Promise<KvStoreOverview> {
     return this.get<KvStoreOverview>('/kvstore', undefined, 1500);
   }
 
-  async listJobs(limit = 100): Promise<Job[]> {
-    const response = await this.get<{ jobs: Job[] }>('/jobs', { limit }, 1500);
+  async listJobs(options: number | JobListOptions = 100): Promise<Job[]> {
+    const params = typeof options === 'number' ? { limit: options } : options;
+    const response = await this.get<{ jobs: Job[] }>('/jobs', params, 1500);
     return response.jobs ?? [];
   }
 
-  async listJobEvents(afterId?: number, limit = 150): Promise<JobEvent[]> {
-    const response = await this.get<{ events: JobEvent[] }>('/jobs/events', { after_id: afterId, limit });
+  async jobsSummary(options: JobsSummaryOptions = {}): Promise<JobsSummaryResponse> {
+    return this.get<JobsSummaryResponse>('/jobs/summary', options, 1500);
+  }
+
+  async listJobEvents(options: number | JobEventListOptions = {}): Promise<JobEvent[]> {
+    const params = typeof options === 'number' ? { after_id: options, limit: 150 } : options;
+    const response = await this.get<{ events: JobEvent[] }>('/jobs/events', params);
     return response.events ?? [];
   }
 
-  async listLogs(afterId?: number, limit = 150): Promise<LogEntry[]> {
-    const response = await this.get<{ logs: LogEntry[] }>('/logs', { after_id: afterId, limit });
+  async listLogs(options: number | LogListOptions = {}): Promise<LogEntry[]> {
+    const params = typeof options === 'number' ? { after_id: options, limit: 150 } : options;
+    const response = await this.get<{ logs: LogEntry[] }>('/logs', params);
     return response.logs ?? [];
   }
 
@@ -211,6 +235,7 @@ export class PelagiaApiClient {
     filename?: string | null;
     preprocessing_state?: string | null;
     detection_state?: string | null;
+    refinement_state?: string | null;
     start_frame?: number | null;
     end_frame?: number | null;
     limit?: number | null;
@@ -284,8 +309,26 @@ export class PelagiaApiClient {
     return withDetectionPageFallback(response, filters.limit ?? 100, filters.offset ?? 0);
   }
 
-  detectionImageUrl(detectionId: string, format = 'jpg'): string {
-    return this.url(`/detections/${encodeURIComponent(detectionId)}/framedata`, { format });
+  detectionImageUrl(detectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/detections/${encodeURIComponent(detectionId)}/framedata`,
+      compact({ format, apply_mask: options.applyMask || undefined })
+    );
+  }
+
+  refinedDetectionImageUrl(detectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/detections/${encodeURIComponent(detectionId)}/refined-roi`,
+      compact({ format, apply_mask: options.applyMask || undefined })
+    );
+  }
+
+  detectionMaskUrl(detectionId: string, format = 'png'): string {
+    return this.url(`/detections/${encodeURIComponent(detectionId)}/mask`, { format });
+  }
+
+  refinedDetectionMaskUrl(detectionId: string, format = 'png'): string {
+    return this.url(`/detections/${encodeURIComponent(detectionId)}/refined-mask`, { format });
   }
 
   async frameContext(frameId: string, options: FrameContextOptions = {}): Promise<FrameContextResponse> {
@@ -395,6 +438,31 @@ export class PelagiaApiClient {
 
   async queueSegmentationJob(body: Record<string, unknown>): Promise<{ job: Job }> {
     return this.post('/segmentation/jobs', compact(body));
+  }
+
+  async queueRoiRefinementJob(body: RoiRefinementOptions & {
+    run_id?: string | null;
+    asset_id?: string | null;
+    priority?: number | null;
+    depends_on?: string[];
+  }): Promise<{ job: Job }> {
+    return this.post('/roi-refinement/jobs', compact(body));
+  }
+
+  async refineRois(body: RoiRefinementOptions): Promise<{
+    dry_run?: boolean;
+    stored?: boolean;
+    detection_ids?: string[];
+    candidate_count?: number;
+    refined_count?: number;
+    stored_count?: number;
+    resolved_options?: Record<string, unknown>;
+    model_kind?: string | null;
+    model_ref?: string | null;
+    refinement_method?: string | null;
+    refined_detections?: DetectionSummary[];
+  }> {
+    return this.post('/roi-refinement', compact(body));
   }
 
   async listRawDirectory(path = '.'): Promise<DirectoryListing> {

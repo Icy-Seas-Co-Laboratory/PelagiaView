@@ -4,6 +4,10 @@ export function payloadKindForDisplay(mode: FrameDisplayMode): 'original' | 'pre
   return mode === 'original' ? 'original' : 'preprocessed';
 }
 
+export function displayModeForPayloadKind(kind: string | null | undefined): FrameDisplayMode {
+  return kind === 'preprocessed' ? 'preprocessed' : 'original';
+}
+
 export function frameCaption(mode: FrameDisplayMode): string {
   if (mode === 'preprocessed-inverted') return 'Preprocessed frame, inverted';
   if (mode === 'preprocessed') return 'Preprocessed frame';

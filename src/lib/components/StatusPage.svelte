@@ -1,27 +1,65 @@
 <script lang="ts">
+  import { page } from '$app/stores';
   import { onMount } from 'svelte';
+  import ActiveJobsPanel from '$lib/components/ActiveJobsPanel.svelte';
+  import AttentionPanel from '$lib/components/AttentionPanel.svelte';
+  import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
+  import StageStatusCard from '$lib/components/StageStatusCard.svelte';
   import { getClient, session } from '$lib/stores/session';
-  import type { Job, KvStoreOverview, SystemStatus, WorkerSession } from '$lib/api/types';
-  import { formatCount, formatDate, statusTone } from '$lib/utils/format';
+  import type { Job, JobsSummaryResponse, KvStoreOverview, SystemStatus, WorkerSession } from '$lib/api/types';
+  import { formatCount, formatDate, numericValue, statusTone } from '$lib/utils/format';
+  import { dashboardViewHref, type DashboardView } from '$lib/utils/dashboardNavigation';
 
   let status: SystemStatus | null = $session.systemStatus;
   let jobs: Job[] = [];
   let workers: WorkerSession[] = [];
   let kvstore: KvStoreOverview | null = null;
+  let globalSummary: JobsSummaryResponse | null = null;
   let loading = true;
+  let refreshing = false;
   let actionError: string | null = null;
+  let lastRefreshedAt: Date | null = null;
+  let refreshSequence = 0;
   let workerSortColumn: WorkerSortColumn = 'worker';
   let workerSortDirection: SortDirection = 'asc';
   let workerPage = 1;
-  let jobPage = 1;
   let workerPreferencesReady = false;
   const workerPageSize = 5;
-  const jobPageSize = 20;
   const statusPreferenceKey = 'pelagia-view:status:v1';
+  const stageCards: Array<{
+    title: string;
+    detail: string;
+    stage: string;
+    view: DashboardView;
+  }> = [
+    {
+      title: 'Ingestion',
+      detail: 'Raw videos and image folders become frame records.',
+      stage: 'extract_frames',
+      view: 'ingestion'
+    },
+    {
+      title: 'Preprocessing',
+      detail: 'Frames receive background, flatfield, crop, mask, and inversion processing.',
+      stage: 'preprocess_frames',
+      view: 'preprocessing'
+    },
+    {
+      title: 'Candidate ROIs',
+      detail: 'Thresholding and candidate assembly create first-pass detections.',
+      stage: 'segment',
+      view: 'segmentation'
+    },
+    {
+      title: 'ROI Refinement',
+      detail: 'Candidate masks are refined into final ROI detections.',
+      stage: 'roi_refinement',
+      view: 'roi_refinement'
+    }
+  ];
 
   type WorkerSortColumn = 'worker' | 'status' | 'capability' | 'current_job' | 'heartbeat' | 'started';
   type SortDirection = 'asc' | 'desc';
-  type JobAction = 'pause' | 'resume' | 'retry';
 
   $: sortedWorkers = sortedWorkerSessions(workers, workerSortColumn, workerSortDirection);
   $: workerPageCount = Math.max(1, Math.ceil(sortedWorkers.length / workerPageSize));
@@ -29,66 +67,67 @@
   $: pagedWorkers = sortedWorkers.slice((workerPage - 1) * workerPageSize, workerPage * workerPageSize);
   $: workerPageStart = sortedWorkers.length ? (workerPage - 1) * workerPageSize + 1 : 0;
   $: workerPageEnd = Math.min(workerPage * workerPageSize, sortedWorkers.length);
-  $: jobPageCount = Math.max(1, Math.ceil(jobs.length / jobPageSize));
-  $: if (jobPage > jobPageCount) jobPage = jobPageCount;
-  $: pagedJobs = jobs.slice((jobPage - 1) * jobPageSize, jobPage * jobPageSize);
-  $: jobPageStart = jobs.length ? (jobPage - 1) * jobPageSize + 1 : 0;
-  $: jobPageEnd = Math.min(jobPage * jobPageSize, jobs.length);
   $: workerPreferenceSnapshot = {
     workerSortColumn,
     workerSortDirection,
     workerPage
   };
   $: if (workerPreferencesReady) persistWorkerPreferences(workerPreferenceSnapshot);
+  $: globalTotal = globalSummary?.total;
+  $: failedJobCount =
+    (numericValue(globalTotal?.failed) ?? 0) +
+    (numericValue(globalTotal?.cancelled) ?? 0) +
+    (numericValue(globalTotal?.dead_lettered) ?? 0);
+  $: pausedJobCount = numericValue(globalTotal?.paused) ?? 0;
+  $: staleWorkerCount = workers.filter(isWorkerStale).length;
+  $: attentionCount = failedJobCount + pausedJobCount + staleWorkerCount;
 
   onMount(() => {
     let cancelled = false;
     restoreWorkerPreferences();
     workerPreferencesReady = true;
-    async function load() {
-      const client = getClient();
-      if (!client) return;
-      try {
-        const [nextStatus, nextJobs, nextWorkers, nextKvstore] = await Promise.all([
-          client.systemStatus(),
-          client.listJobs(),
-          client.listWorkers(),
-          client.kvStoreOverview().catch(() => null)
-        ]);
-        if (!cancelled) {
-          status = nextStatus;
-          jobs = nextJobs;
-          workers = nextWorkers;
-          kvstore = nextKvstore;
-          loading = false;
-        }
-      } catch (error) {
-        if (!cancelled) {
-          actionError = error instanceof Error ? error.message : String(error);
-          loading = false;
-        }
-      }
-    }
-    load();
-    const timer = window.setInterval(load, 5000);
+    void refreshStatus({ showLoading: true, isCancelled: () => cancelled });
+    const timer = window.setInterval(
+      () => refreshStatus({ isCancelled: () => cancelled }),
+      5000
+    );
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   });
 
-  async function runJobAction(job: Job, action: 'pause' | 'resume' | 'retry') {
-    if (!job.id) return;
+  async function refreshStatus(options: { showLoading?: boolean; isCancelled?: () => boolean } = {}) {
     const client = getClient();
     if (!client) return;
-    actionError = null;
+    const sequence = ++refreshSequence;
+    if (options.showLoading || !lastRefreshedAt) loading = true;
+    refreshing = true;
     try {
-      if (action === 'pause') await client.pauseJob(job.id);
-      if (action === 'resume') await client.resumeJob(job.id);
-      if (action === 'retry') await client.retryJob(job.id);
-      jobs = await client.listJobs();
+      const [nextStatus, nextJobs, nextWorkers, nextSummary, nextKvstore] = await Promise.all([
+        client.systemStatus(),
+        client.listJobs({ limit: 100, include_progress: true, sort: 'updated_at', direction: 'desc' }),
+        client.listWorkers(),
+        client.jobsSummary(),
+        client.kvStoreOverview().catch(() => null)
+      ]);
+      if (options.isCancelled?.() || sequence !== refreshSequence) return;
+      status = nextStatus;
+      jobs = nextJobs;
+      workers = nextWorkers;
+      globalSummary = nextSummary;
+      kvstore = nextKvstore;
+      actionError = null;
+      lastRefreshedAt = new Date();
     } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
+      if (!options.isCancelled?.() && sequence === refreshSequence) {
+        actionError = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      if (!options.isCancelled?.() && sequence === refreshSequence) {
+        loading = false;
+        refreshing = false;
+      }
     }
   }
 
@@ -128,6 +167,15 @@
   function formatGigabytes(value: number | null): string {
     if (value === null) return 'Unknown';
     return `${(value / 1024 ** 3).toFixed(2)} GB`;
+  }
+
+  function lastRefreshedLabel(): string {
+    if (!lastRefreshedAt) return 'Not refreshed yet';
+    return `Last refreshed ${lastRefreshedAt.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })}`;
   }
 
   function sortedWorkerSessions(
@@ -201,6 +249,14 @@
     return formatDate(worker.last_heartbeat_at ?? worker.last_heartbeat);
   }
 
+  function isWorkerStale(worker: WorkerSession): boolean {
+    const heartbeat = worker.last_heartbeat_at ?? worker.last_heartbeat;
+    if (!heartbeat) return false;
+    const parsed = Date.parse(heartbeat);
+    if (!Number.isFinite(parsed)) return false;
+    return Date.now() - parsed > 60_000;
+  }
+
   function currentJobLabel(worker: WorkerSession): string {
     return worker.current_job_id ?? '-';
   }
@@ -211,14 +267,6 @@
 
   function nextWorkerPage() {
     workerPage = Math.min(workerPageCount, workerPage + 1);
-  }
-
-  function previousJobPage() {
-    jobPage = Math.max(1, jobPage - 1);
-  }
-
-  function nextJobPage() {
-    jobPage = Math.min(jobPageCount, jobPage + 1);
   }
 
   type WorkerPreferences = typeof workerPreferenceSnapshot;
@@ -262,58 +310,21 @@
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 
-  function jobActions(job: Job): JobAction[] {
-    const status = normalizedJobStatus(job);
-    if (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') {
-      return ['retry'];
-    }
-    if (status === 'queued' || status === 'leased') {
-      return ['pause', 'retry'];
-    }
-    if (status === 'paused' || status === 'pause') {
-      return ['resume', 'retry'];
-    }
-    if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') {
-      return ['retry'];
-    }
-    return ['pause', 'resume', 'retry'];
-  }
-
-  function normalizedJobStatus(job: Job): string {
-    return String(job.status ?? '').trim().toLowerCase();
-  }
-
-  function jobActionClass(job: Job, action: JobAction): string {
-    const status = normalizedJobStatus(job);
-    return [
-      'ghost',
-      'job-action',
-      (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') && action === 'retry'
-        ? 'job-action-muted'
-        : '',
-      (status === 'queued' || status === 'leased') && (action === 'pause' || action === 'retry')
-        ? 'job-action-muted'
-        : ''
-    ]
-      .filter(Boolean)
-      .join(' ');
-  }
-
-  function jobActionLabel(action: JobAction): string {
-    if (action === 'pause') return 'Pause';
-    if (action === 'resume') return 'Resume';
-    return 'Retry';
-  }
 </script>
 
-<div class="page-grid">
-  <section class="panel panel-compact">
+<div class="status-dashboard">
+  <section class="panel panel-compact panel-full">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">System</p>
-        <h2>Health and queue state</h2>
+        <h2>Operations overview</h2>
       </div>
-      {#if loading}<span class="soft">Refreshing</span>{/if}
+      <div class="status-refresh">
+        <span class="soft">{refreshing ? 'Refreshing' : lastRefreshedLabel()}</span>
+        <button class="ghost" type="button" on:click={() => refreshStatus({ showLoading: true })} disabled={refreshing}>
+          Refresh
+        </button>
+      </div>
     </div>
 
     <div class="metric-grid">
@@ -330,12 +341,24 @@
         </strong>
       </div>
       <div class="metric">
-        <span>Queued</span>
-        <strong>{formatCount(status?.queue?.leased)} <small>/ {formatCount(status?.queue?.queued)}</small></strong>
+        <span>Running jobs</span>
+        <strong>{formatCount(globalTotal?.leased ?? status?.queue?.leased)}</strong>
       </div>
       <div class="metric">
-        <span>Running workers</span>
-        <strong>{formatCount(status?.workers?.busy)} <small>/ {formatCount(status?.workers?.online)}</small></strong>
+        <span>Queued jobs</span>
+        <strong>{formatCount(globalTotal?.queued ?? status?.queue?.queued)}</strong>
+      </div>
+      <div class="metric">
+        <span>Online workers</span>
+        <strong>{formatCount(status?.workers?.online)}</strong>
+      </div>
+      <div class="metric">
+        <span>Busy workers</span>
+        <strong>{formatCount(status?.workers?.busy)}</strong>
+      </div>
+      <div class="metric">
+        <span>Failed jobs</span>
+        <strong class:tone-bad={failedJobCount > 0}>{formatCount(failedJobCount)}</strong>
       </div>
       <div class="metric">
         <span>KVStore size</span>
@@ -343,17 +366,42 @@
       </div>
     </div>
 
+    {#if attentionCount > 0}
+      <div class="status-notices" role="status">
+        {#if failedJobCount > 0}<span class="notice-bad">{formatCount(failedJobCount)} failed job{failedJobCount === 1 ? '' : 's'}</span>{/if}
+        {#if pausedJobCount > 0}<span>{formatCount(pausedJobCount)} paused job{pausedJobCount === 1 ? '' : 's'}</span>{/if}
+        {#if staleWorkerCount > 0}<span>{formatCount(staleWorkerCount)} stale worker heartbeat{staleWorkerCount === 1 ? '' : 's'}</span>{/if}
+      </div>
+    {/if}
+
     {#if actionError}
       <p class="form-error">{actionError}</p>
     {/if}
   </section>
 
-  <section class="panel panel-compact">
+  <div class="stage-card-grid">
+    {#each stageCards as stageCard}
+      <StageStatusCard
+        title={stageCard.title}
+        detail={stageCard.detail}
+        stage={stageCard.stage}
+        href={dashboardViewHref(stageCard.view, $page.url)}
+      />
+    {/each}
+  </div>
+
+  <div class="status-main-grid">
+    <ActiveJobsPanel />
+    <AttentionPanel {workers} />
+  </div>
+
+  <section class="panel panel-compact panel-full">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Workers</p>
         <h2>Sessions</h2>
       </div>
+      <span class="soft">5 per page</span>
     </div>
 
     <div class="table-wrap">
@@ -380,12 +428,15 @@
         </thead>
         <tbody>
           {#each pagedWorkers as worker}
-            <tr>
+            <tr class:worker-stale={isWorkerStale(worker)}>
               <td>{workerLabel(worker)}</td>
               <td><span class="status-dot {statusTone(worker.status)}"></span>{worker.status ?? 'unknown'}</td>
               <td class="soft">{capabilityLabel(worker)}</td>
               <td><code>{currentJobLabel(worker)}</code></td>
-              <td>{workerHeartbeatLabel(worker)}</td>
+              <td>
+                {workerHeartbeatLabel(worker)}
+                {#if isWorkerStale(worker)}<span class="worker-warning">Stale</span>{/if}
+              </td>
               <td class="actions">
                 <button class="ghost" type="button" on:click={() => shutdownWorker(worker)} disabled={worker.shutdown_requested}>
                   {worker.shutdown_requested ? 'Requested' : 'Shutdown'}
@@ -414,61 +465,13 @@
     </div>
   </section>
 
-  <section class="panel wide">
-    <div class="panel-heading">
-      <div>
-        <p class="eyebrow">Tasks</p>
-        <h2>Recent jobs</h2>
-      </div>
-    </div>
-
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Stage</th>
-            <th>Status</th>
-            <th>Summary</th>
-            <th>Priority</th>
-            <th>Updated</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each pagedJobs as job}
-            <tr>
-              <td>{job.stage ?? 'unknown'}</td>
-              <td><span class="status-dot {statusTone(job.status)}"></span>{job.status ?? 'unknown'}</td>
-              <td>{job.summary ?? job.id}</td>
-              <td>{job.priority ?? '-'}</td>
-              <td>{formatDate(job.updated_at ?? job.created_at)}</td>
-              <td class="actions">
-                {#each jobActions(job) as action}
-                  <button class={jobActionClass(job, action)} type="button" on:click={() => runJobAction(job, action)}>
-                    {jobActionLabel(action)}
-                  </button>
-                {/each}
-              </td>
-            </tr>
-          {:else}
-            <tr><td colspan="6" class="empty">No jobs found.</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-    <div class="table-pager" aria-label="Recent jobs pagination">
-      <span class="soft">
-        {#if jobs.length}
-          Showing {jobPageStart}-{jobPageEnd} of {jobs.length}
-        {:else}
-          Showing 0 of 0
-        {/if}
-      </span>
-      <div class="pager-actions">
-        <button class="ghost" type="button" on:click={previousJobPage} disabled={jobPage <= 1}>Previous</button>
-        <span class="soft">Page {jobPage} / {jobPageCount}</span>
-        <button class="ghost" type="button" on:click={nextJobPage} disabled={jobPage >= jobPageCount}>Next</button>
-      </div>
-    </div>
-  </section>
+  <div class="panel-full">
+    <QueueStatusSummary
+      title="Recent jobs"
+      eyebrow="Tasks"
+      jobs={jobs}
+      mode="detailed"
+      poll={false}
+    />
+  </div>
 </div>

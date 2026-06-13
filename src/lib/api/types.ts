@@ -22,6 +22,7 @@ export type SystemConfigResponse = {
       roi_assembly?: Record<string, unknown>;
       roi_filter?: Record<string, unknown>;
       roi_recording?: Record<string, unknown>;
+      roi_refinement?: Record<string, unknown>;
       video_ingest?: Record<string, unknown>;
       frame_storage?: Record<string, unknown>;
     };
@@ -52,11 +53,100 @@ export type Job = {
   worker_id?: string | null;
   priority?: number;
   attempts?: number;
+  attempt_count?: number;
   max_attempts?: number;
   summary?: string | null;
   created_at?: string;
   updated_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  lease_expires_at?: string | null;
+  progress?: JobProgress | null;
+  error_message?: string | null;
+  control_reason?: string | null;
   payload?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+};
+
+export type JobProgress = {
+  schema_version?: number;
+  stage?: string;
+  unit?: string;
+  total?: number | string | null;
+  completed?: number | string | null;
+  failed?: number | string | null;
+  skipped?: number | string | null;
+  percent?: number | string | null;
+  current?: Record<string, unknown>;
+  secondary?: Record<string, unknown>;
+  rates?: Record<string, number | string | null>;
+  message?: string | null;
+};
+
+export type JobAggregateProgress = {
+  known_total_units?: number | string | null;
+  completed_units?: number | string | null;
+  failed_units?: number | string | null;
+  skipped_units?: number | string | null;
+  percent?: number | string | null;
+};
+
+export type JobAggregateSummary = {
+  stage?: string | null;
+  status?: string | null;
+  job_count?: number | string | null;
+  queued?: number | string | null;
+  leased?: number | string | null;
+  paused?: number | string | null;
+  succeeded?: number | string | null;
+  failed?: number | string | null;
+  cancelled?: number | string | null;
+  dead_lettered?: number | string | null;
+  progress?: JobAggregateProgress | null;
+};
+
+export type JobsSummaryResponse = {
+  filters?: Record<string, unknown>;
+  total?: JobAggregateSummary;
+  by_stage?: JobAggregateSummary[];
+  by_status?: JobAggregateSummary[];
+  recent_jobs?: Job[];
+};
+
+export type JobListOptions = {
+  run_id?: string | null;
+  asset_id?: string | null;
+  status?: string | string[] | null;
+  stage?: string | string[] | null;
+  ids?: string[] | null;
+  worker_id?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+  include_details?: boolean;
+  include_progress?: boolean;
+  include_payload?: boolean;
+  include_result?: boolean;
+  sort?: string;
+  direction?: 'asc' | 'desc';
+};
+
+export type JobEventListOptions = {
+  after_id?: number | null;
+  run_id?: string | null;
+  job_id?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+};
+
+export type JobsSummaryOptions = {
+  run_id?: string | null;
+  asset_id?: string | null;
+  status?: string | string[] | null;
+  stage?: string | string[] | null;
+  ids?: string[] | null;
+  worker_id?: string | null;
+  include_recent?: boolean;
+  recent_limit?: number;
 };
 
 export type WorkerSession = {
@@ -161,6 +251,9 @@ export type FrameProcessingState = {
     total_preprocessed_frame_count?: number | string;
     total_detected_frame_count?: number | string;
     total_detection_count?: number | string;
+    total_refined_candidate_detection_count?: number | string;
+    total_unrefined_detection_count?: number | string;
+    total_refined_detection_count?: number | string;
   };
   frames?: Array<{
     frame_id: string;
@@ -174,8 +267,12 @@ export type FrameProcessingState = {
     collections?: string[];
     has_preprocessed_payload?: boolean;
     detection_count?: number | string;
+    refined_candidate_detection_count?: number | string;
+    unrefined_detection_count?: number | string;
+    refined_detection_count?: number | string;
     preprocessing_state?: string;
     detection_state?: string;
+    refinement_state?: string;
   }>;
   page?: PageMetadata;
 };
@@ -219,6 +316,9 @@ export type DetectionSummary = {
   roi_format?: string | null;
   roi_payload_bytes?: number;
   mask_payload_bytes?: number;
+  refined_detection_id?: string | null;
+  candidate_detection_id?: string | null;
+  refinement_method?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -259,6 +359,7 @@ export type DetectionFilters = {
   roi_format?: string | null;
   sort_by?: 'area' | 'byte_size' | 'id' | 'asset_frame' | null;
   sort_dir?: 'asc' | 'desc' | null;
+  refinement_state?: 'any' | 'refined' | 'unrefined' | null;
   limit?: number | null;
   offset?: number | null;
 };
@@ -287,6 +388,21 @@ export type LogEntry = {
   duration_ms?: number | null;
   created_at?: string;
   payload?: Record<string, unknown>;
+};
+
+export type LogListOptions = {
+  after_id?: number | null;
+  before_id?: number | null;
+  level?: string | null;
+  event_type?: string | null;
+  logger?: string | null;
+  run_id?: string | null;
+  asset_id?: string | null;
+  job_id?: string | null;
+  worker_id?: string | null;
+  request_id?: string | null;
+  limit?: number | null;
+  offset?: number | null;
 };
 
 export type DirectoryEntry = {
@@ -348,6 +464,8 @@ export type SegmentationOptions = {
   background_correction?: boolean | null;
   background_percentile?: number | null;
   flatfield_axis?: number | null;
+  flatfield_min_field_value?: number | null;
+  flatfield_max_field_value?: number | null;
   apply_mask?: boolean | null;
   crop_enabled?: boolean | null;
   crop_x?: number | null;
@@ -397,6 +515,39 @@ export type SegmentationCapabilities = {
   config_defaults?: Record<string, Record<string, unknown>>;
 };
 
+export type RoiRefinementOptions = {
+  detection_ids?: string[];
+  model_ref?: string | null;
+  model_kind?: string | null;
+  model_run_dir?: string | null;
+  model_artifact?: string | null;
+  batch_size?: number | null;
+  tile_size?: number | null;
+  overlap_fraction?: number | null;
+  max_iterations?: number | null;
+  expansion_pixels?: number | null;
+  edge_touch_margin?: number | null;
+  output_threshold?: number | null;
+  encoding?: 'png' | 'raw' | 'zstd' | 'auto' | null;
+  allow_frame_expansion?: boolean | null;
+  store?: boolean | null;
+  dry_run?: boolean | null;
+};
+
+export type RoiRefinementCapabilities = {
+  pipeline_stage_order?: string[];
+  supported?: {
+    model_kinds?: string[];
+    model_refs?: string[];
+    model_artifacts?: Array<Record<string, unknown>>;
+    roi_encoding_options?: string[];
+  };
+  defaults?: {
+    roi_refinement?: Record<string, unknown>;
+  };
+  fields?: Record<string, Array<Record<string, unknown>>>;
+};
+
 export type FramePreprocessOptions = {
   frame_id?: string | null;
   asset_id?: string | null;
@@ -404,6 +555,8 @@ export type FramePreprocessOptions = {
   flatfield_correction?: boolean | null;
   flatfield_q?: number | null;
   flatfield_axis?: number | null;
+  flatfield_min_field_value?: number | null;
+  flatfield_max_field_value?: number | null;
   apply_mask?: boolean | null;
   crop_enabled?: boolean | null;
   crop_x?: number | null;

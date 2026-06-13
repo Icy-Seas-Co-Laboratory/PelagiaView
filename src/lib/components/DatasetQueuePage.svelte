@@ -1,11 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type {
     AssetProcessingState,
+    DetectionSummary,
     FrameProcessingState,
     FrameSummary,
     RawAsset,
+    RoiRefinementCapabilities,
     SegmentationCapabilities,
     SystemConfigResponse
   } from '$lib/api/types';
@@ -17,8 +20,21 @@
     stringDefault
   } from '$lib/utils/configDefaults';
   import { formatCount } from '$lib/utils/format';
+  import {
+    booleanPreference,
+    nullableNumberPreference as nullablePreferenceNumber,
+    numberPreference,
+    preferenceKey,
+    readPreferences,
+    stringArrayPreference,
+    stringPreference,
+    stringSetPreference,
+    writePreferences
+  } from '$lib/utils/preferences';
 
-  export let mode: 'preprocessing' | 'segmentation';
+  type QueueMode = 'preprocessing' | 'segmentation' | 'roi_refinement';
+
+  export let mode: QueueMode;
 
   type Dataset = {
     asset: RawAsset;
@@ -27,9 +43,13 @@
     frameCount: number;
     preprocessedCount: number;
     detectionCount: number;
+    refinedCandidateDetectionCount: number;
+    unrefinedDetectionCount: number;
+    refinedDetectionCount: number;
     collections: string[];
     preprocessingState?: string;
     detectionState?: string;
+    refinementState?: string;
   };
 
   type FrameCatalogRow = {
@@ -42,8 +62,12 @@
     collections: string[];
     hasPreprocessedPayload: boolean;
     detectionCount: number;
+    refinedCandidateDetectionCount: number;
+    unrefinedDetectionCount: number;
+    refinedDetectionCount: number;
     preprocessingState: string;
     detectionState: string;
+    refinementState: string;
   };
 
   type FrameBatch = {
@@ -52,13 +76,21 @@
     frameIds: string[];
   };
 
-  type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection';
+  type DetectionBatch = {
+    assetId: string;
+    runId?: string | null;
+    firstFrameId: string;
+    detectionIds: string[];
+  };
+
+  type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection' | 'refinement';
 
   type FrameFilters = {
     assetIds: Set<string>;
     collections: Set<string>;
     preprocessStates: Set<string>;
     detectionStates: Set<string>;
+    refinementStates: Set<string>;
   };
 
   let datasets: Dataset[] = [];
@@ -68,19 +100,25 @@
   let selectedCollections = new Set<string>();
   let selectedPreprocessStates = new Set<string>();
   let selectedDetectionStates = new Set<string>();
+  let selectedRefinementStates = new Set<string>();
   let loading = true;
   let queueing = false;
   let message: string | null = null;
   let error: string | null = null;
   let catalogStatus = 'Catalog not loaded yet.';
   let lastCatalogKey = '';
+  let preferencesReady = false;
+  let submittedJobIds: string[] = [];
 
-  let frameBatchSize = 100;
+  let frameBatchSize = mode === 'roi_refinement' ? 2500 : 100;
+  let lastBatchMode: QueueMode | null = null;
   let priority: number | null = null;
 
   let flatfieldCorrection = false;
   let flatfieldQ = 0.95;
   let flatfieldAxis = 0;
+  let flatfieldMinFieldValue = 1;
+  let flatfieldMaxFieldValue: number | null = 255;
   let backgroundCorrection = false;
   let backgroundPercentile = 50;
   let applyMask = false;
@@ -177,32 +215,197 @@
   let storeRoiPayloadMinHeight: number | null = null;
   let storeRoiPayloadMinWidthPlusHeight: number | null = null;
 
-  const title = mode === 'preprocessing' ? 'Queue preprocessing' : 'Queue segmentation';
-  const eyebrow = mode === 'preprocessing' ? 'Preprocessing' : 'Segmentation';
-  const actionLabel = mode === 'preprocessing' ? 'Queue preprocessing jobs' : 'Queue segmentation jobs';
+  let refinementModelKind = 'identity';
+  let refinementModelRef = '';
+  let refinementModelRunDir = '';
+  let refinementModelArtifact = 'auto';
+  let refinementModelKinds = ['identity', 'keras_artifact', 'oracle_builder_unet'];
+  let refinementModelRefs: string[] = [];
+  let refinementModelArtifacts = ['auto', 'keras', 'savedmodel'];
+  let refinementTileSize = 256;
+  let refinementOverlapFraction = 0.25;
+  let refinementModelBatchSize: number | null = null;
+  let refinementOutputThreshold = 0.5;
+  let refinementAllowFrameExpansion = true;
+  let refinementMaxIterations = 3;
+  let refinementExpansionPixels: number | null = null;
+  let refinementEdgeTouchMargin = 1;
+  let refinementEncoding = 'auto';
+  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'raw'];
+  let refinementStore = true;
+  let refinementDryRun = false;
+
+  type DatasetQueuePreferences = {
+    selectedAssetIds: string[];
+    selectedCollections: string[];
+    selectedPreprocessStates: string[];
+    selectedDetectionStates: string[];
+    selectedRefinementStates: string[];
+    frameBatchSize: number;
+    priority: number | null;
+    flatfieldCorrection: boolean;
+    flatfieldQ: number;
+    flatfieldAxis: number;
+    flatfieldMinFieldValue: number;
+    flatfieldMaxFieldValue: number | null;
+    backgroundCorrection: boolean;
+    backgroundPercentile: number;
+    applyMask: boolean;
+    cropEnabled: boolean;
+    cropX: number | null;
+    cropY: number | null;
+    cropW: number | null;
+    cropH: number | null;
+    invertIntensity: boolean;
+    preprocessingEncoding: string;
+    framePayloadKind: 'original' | 'preprocessed';
+    applyPreprocessing: boolean;
+    thresholdMethod: string;
+    manualThreshold: number;
+    thresholdingMaximumValue: number | null;
+    boundedOtsuMinContrast: number;
+    boundedOtsuMaxForegroundFraction: number;
+    cannyEnabled: boolean;
+    cannyLowThreshold: number;
+    cannyHighThreshold: number;
+    cannyBlurKernel: number;
+    adaptiveBlockSize: number;
+    adaptiveC: number;
+    percentileBackgroundPercentile: number;
+    percentileMinContrast: number;
+    hysteresisLowThreshold: number;
+    hysteresisHighThreshold: number;
+    hysteresisConnectivity: number;
+    sobelPercentile: number;
+    sobelThreshold: number | null;
+    sobelKernelSize: number;
+    maskAugmentationEnabled: boolean;
+    maskAugmentationSteps: string[];
+    dilateKernelW: number;
+    dilateKernelH: number;
+    dilateIterations: number;
+    erodeKernelW: number;
+    erodeKernelH: number;
+    erodeIterations: number;
+    openKernelW: number;
+    openKernelH: number;
+    openIterations: number;
+    closeKernelW: number;
+    closeKernelH: number;
+    closeIterations: number;
+    fillHoles: boolean;
+    removeSmallComponents: boolean;
+    minComponentArea: number;
+    clearBorder: boolean;
+    roiAssemblyMethod: string;
+    roiAssemblyConnectivity: number;
+    minArea: number | null;
+    maxArea: number | null;
+    minPerimeter: number;
+    maxPerimeter: number | null;
+    minWidth: number | null;
+    maxWidth: number | null;
+    minHeight: number | null;
+    maxHeight: number | null;
+    minWidthPlusHeight: number | null;
+    maxWidthPlusHeight: number | null;
+    padding: number;
+    roiEncoding: string;
+    zstdMinBytes: number | null;
+    alwaysStoreMask: boolean;
+    storeRoiPayloadMinArea: number | null;
+    storeRoiPayloadMinWidth: number | null;
+    storeRoiPayloadMinHeight: number | null;
+    storeRoiPayloadMinWidthPlusHeight: number | null;
+    refinementModelKind: string;
+    refinementModelRef: string;
+    refinementModelRunDir: string;
+    refinementModelArtifact: string;
+    refinementTileSize: number;
+    refinementOverlapFraction: number;
+    refinementModelBatchSize: number | null;
+    refinementOutputThreshold: number;
+    refinementAllowFrameExpansion: boolean;
+    refinementMaxIterations: number;
+    refinementExpansionPixels: number | null;
+    refinementEdgeTouchMargin: number;
+    refinementEncoding: string;
+    refinementStore: boolean;
+    refinementDryRun: boolean;
+  };
+
+  $: title =
+    mode === 'preprocessing'
+      ? 'Queue preprocessing'
+      : mode === 'segmentation'
+        ? 'Queue segmentation'
+        : 'Queue ROI refinement';
+  $: eyebrow =
+    mode === 'preprocessing'
+      ? 'Preprocessing'
+      : mode === 'segmentation'
+        ? 'Segmentation'
+        : 'ROI refinement';
+  $: actionLabel =
+    mode === 'preprocessing'
+      ? 'Queue preprocessing jobs'
+      : mode === 'segmentation'
+        ? 'Queue segmentation jobs'
+        : 'Queue refinement jobs';
+  $: if (mode !== lastBatchMode) {
+    preferencesReady = false;
+    lastBatchMode = mode;
+    frameBatchSize = defaultBatchSize();
+  }
+  $: datasetQueuePreferenceSnapshot = buildPreferenceSnapshot();
+  $: if (preferencesReady) writePreferences(datasetQueuePreferenceKey(), datasetQueuePreferenceSnapshot);
   $: activeFilters = {
     assetIds: selectedAssetIds,
     collections: selectedCollections,
     preprocessStates: selectedPreprocessStates,
-    detectionStates: selectedDetectionStates
+    detectionStates: selectedDetectionStates,
+    refinementStates: selectedRefinementStates
   };
   $: matchingFrames = frameRows.filter((frame) => matchesFrame(frame, activeFilters));
   $: filteredFrames = matchingFrames;
   $: filteredDatasets = datasets.filter((dataset) => filteredFrames.some((frame) => frame.assetId === dataset.asset.id));
   $: preprocessStateOptions = stateOptions(frameRows.map((frame) => frame.preprocessingState));
   $: detectionStateOptions = stateOptions(frameRows.map((frame) => frame.detectionState));
+  $: refinementStateOptions = [
+    { id: 'refined', label: 'Refined' },
+    { id: 'unrefined', label: 'Unrefined' }
+  ];
   $: assetFrameCounts = frameCountMap('asset', datasets.map((dataset) => dataset.asset.id), activeFilters);
   $: collectionFrameCounts = frameCountMap('collection', collectionOptions, activeFilters);
   $: preprocessFrameCounts = frameCountMap('preprocess', preprocessStateOptions.map((option) => option.id), activeFilters);
   $: detectionFrameCounts = frameCountMap('detection', detectionStateOptions.map((option) => option.id), activeFilters);
+  $: refinementRoiCounts = refinementRoiCountMap(refinementStateOptions.map((option) => option.id), activeFilters);
   $: assetAnyFrameCount = sumFrameCounts(assetFrameCounts);
   $: collectionAnyFrameCount = sumFrameCounts(collectionFrameCounts);
   $: preprocessAnyFrameCount = sumFrameCounts(preprocessFrameCounts);
   $: detectionAnyFrameCount = sumFrameCounts(detectionFrameCounts);
+  $: refinementAnyRoiCount = prospectiveDetectionCount;
   $: prospectiveFrameCount = filteredFrames.length;
   $: prospectivePreprocessedCount = filteredFrames.filter((frame) => frame.hasPreprocessedPayload).length;
   $: prospectiveDetectionCount = filteredFrames.reduce((total, frame) => total + frame.detectionCount, 0);
-  $: prospectiveBatchCount = frameBatches(filteredFrames, frameBatchSize).length;
+  $: prospectiveRefinedCandidateCount = filteredFrames.reduce((total, frame) => total + frame.refinedCandidateDetectionCount, 0);
+  $: prospectiveUnrefinedDetectionCount = filteredFrames.reduce((total, frame) => total + frame.unrefinedDetectionCount, 0);
+  $: prospectiveRefinedDetectionCount = filteredFrames.reduce((total, frame) => total + frame.refinedDetectionCount, 0);
+  $: prospectiveRefinementCandidateCount = refinementCandidateCountForFrames(filteredFrames);
+  $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
+  $: prospectiveBatchCount =
+    mode === 'roi_refinement'
+      ? estimatedDetectionBatchCount(filteredFrames, frameBatchSize)
+      : frameBatches(filteredFrames, frameBatchSize).length;
+  $: queueItemLabel = mode === 'roi_refinement' ? 'ROI' : 'frame';
+  $: queueItemLabelPlural = mode === 'roi_refinement' ? 'ROIs' : 'frames';
+  $: queueStage = mode;
+  $: queueStatusTitle =
+    mode === 'preprocessing'
+      ? 'Preprocessing queue'
+      : mode === 'segmentation'
+        ? 'Candidate ROI queue'
+        : 'ROI refinement queue';
   $: preprocessedSourceWarning =
     mode === 'segmentation' &&
     framePayloadKind === 'preprocessed' &&
@@ -217,6 +420,216 @@
   onMount(() => {
     if ($session.connected) void loadCatalog();
   });
+
+  function datasetQueuePreferenceKey(): string {
+    return preferenceKey(`dataset-queue:${mode}`);
+  }
+
+  function buildPreferenceSnapshot(): DatasetQueuePreferences {
+    return {
+      selectedAssetIds: [...selectedAssetIds],
+      selectedCollections: [...selectedCollections],
+      selectedPreprocessStates: [...selectedPreprocessStates],
+      selectedDetectionStates: [...selectedDetectionStates],
+      selectedRefinementStates: [...selectedRefinementStates],
+      frameBatchSize,
+      priority,
+      flatfieldCorrection,
+      flatfieldQ,
+      flatfieldAxis,
+      flatfieldMinFieldValue,
+      flatfieldMaxFieldValue,
+      backgroundCorrection,
+      backgroundPercentile,
+      applyMask,
+      cropEnabled,
+      cropX,
+      cropY,
+      cropW,
+      cropH,
+      invertIntensity,
+      preprocessingEncoding,
+      framePayloadKind,
+      applyPreprocessing,
+      thresholdMethod,
+      manualThreshold,
+      thresholdingMaximumValue,
+      boundedOtsuMinContrast,
+      boundedOtsuMaxForegroundFraction,
+      cannyEnabled,
+      cannyLowThreshold,
+      cannyHighThreshold,
+      cannyBlurKernel,
+      adaptiveBlockSize,
+      adaptiveC,
+      percentileBackgroundPercentile,
+      percentileMinContrast,
+      hysteresisLowThreshold,
+      hysteresisHighThreshold,
+      hysteresisConnectivity,
+      sobelPercentile,
+      sobelThreshold,
+      sobelKernelSize,
+      maskAugmentationEnabled,
+      maskAugmentationSteps: [...maskAugmentationSteps],
+      dilateKernelW,
+      dilateKernelH,
+      dilateIterations,
+      erodeKernelW,
+      erodeKernelH,
+      erodeIterations,
+      openKernelW,
+      openKernelH,
+      openIterations,
+      closeKernelW,
+      closeKernelH,
+      closeIterations,
+      fillHoles,
+      removeSmallComponents,
+      minComponentArea,
+      clearBorder,
+      roiAssemblyMethod,
+      roiAssemblyConnectivity,
+      minArea,
+      maxArea,
+      minPerimeter,
+      maxPerimeter,
+      minWidth,
+      maxWidth,
+      minHeight,
+      maxHeight,
+      minWidthPlusHeight,
+      maxWidthPlusHeight,
+      padding,
+      roiEncoding,
+      zstdMinBytes,
+      alwaysStoreMask,
+      storeRoiPayloadMinArea,
+      storeRoiPayloadMinWidth,
+      storeRoiPayloadMinHeight,
+      storeRoiPayloadMinWidthPlusHeight,
+      refinementModelKind,
+      refinementModelRef,
+      refinementModelRunDir,
+      refinementModelArtifact,
+      refinementTileSize,
+      refinementOverlapFraction,
+      refinementModelBatchSize,
+      refinementOutputThreshold,
+      refinementAllowFrameExpansion,
+      refinementMaxIterations,
+      refinementExpansionPixels,
+      refinementEdgeTouchMargin,
+      refinementEncoding,
+      refinementStore,
+      refinementDryRun
+    };
+  }
+
+  function restorePreferences() {
+    const preferences = readPreferences<DatasetQueuePreferences>(datasetQueuePreferenceKey());
+    if (!preferences) return;
+    selectedAssetIds = stringSetPreference(preferences.selectedAssetIds, selectedAssetIds);
+    selectedCollections = stringSetPreference(preferences.selectedCollections, selectedCollections);
+    selectedPreprocessStates = stringSetPreference(preferences.selectedPreprocessStates, selectedPreprocessStates);
+    selectedDetectionStates = stringSetPreference(preferences.selectedDetectionStates, selectedDetectionStates);
+    selectedRefinementStates = stringSetPreference(preferences.selectedRefinementStates, selectedRefinementStates);
+    frameBatchSize = boundedBatchSize(numberPreference(preferences.frameBatchSize, frameBatchSize));
+    priority = nullablePreferenceNumber(preferences.priority, priority);
+    flatfieldCorrection = booleanPreference(preferences.flatfieldCorrection, flatfieldCorrection);
+    flatfieldQ = numberPreference(preferences.flatfieldQ, flatfieldQ);
+    flatfieldAxis = numberPreference(preferences.flatfieldAxis, flatfieldAxis);
+    flatfieldMinFieldValue = numberPreference(preferences.flatfieldMinFieldValue, flatfieldMinFieldValue);
+    flatfieldMaxFieldValue = nullablePreferenceNumber(preferences.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    backgroundCorrection = booleanPreference(preferences.backgroundCorrection, backgroundCorrection);
+    backgroundPercentile = numberPreference(preferences.backgroundPercentile, backgroundPercentile);
+    applyMask = booleanPreference(preferences.applyMask, applyMask);
+    cropEnabled = booleanPreference(preferences.cropEnabled, cropEnabled);
+    cropX = nullablePreferenceNumber(preferences.cropX, cropX);
+    cropY = nullablePreferenceNumber(preferences.cropY, cropY);
+    cropW = nullablePreferenceNumber(preferences.cropW, cropW);
+    cropH = nullablePreferenceNumber(preferences.cropH, cropH);
+    invertIntensity = booleanPreference(preferences.invertIntensity, invertIntensity);
+    preprocessingEncoding = stringPreference(preferences.preprocessingEncoding, preprocessingEncoding);
+    framePayloadKind = framePayloadKindPreference(preferences.framePayloadKind, framePayloadKind);
+    applyPreprocessing = booleanPreference(preferences.applyPreprocessing, applyPreprocessing);
+    thresholdMethod = stringPreference(preferences.thresholdMethod, thresholdMethod);
+    manualThreshold = numberPreference(preferences.manualThreshold, manualThreshold);
+    thresholdingMaximumValue = nullablePreferenceNumber(preferences.thresholdingMaximumValue, thresholdingMaximumValue);
+    boundedOtsuMinContrast = numberPreference(preferences.boundedOtsuMinContrast, boundedOtsuMinContrast);
+    boundedOtsuMaxForegroundFraction = numberPreference(preferences.boundedOtsuMaxForegroundFraction, boundedOtsuMaxForegroundFraction);
+    cannyEnabled = booleanPreference(preferences.cannyEnabled, cannyEnabled);
+    cannyLowThreshold = numberPreference(preferences.cannyLowThreshold, cannyLowThreshold);
+    cannyHighThreshold = numberPreference(preferences.cannyHighThreshold, cannyHighThreshold);
+    cannyBlurKernel = numberPreference(preferences.cannyBlurKernel, cannyBlurKernel);
+    adaptiveBlockSize = numberPreference(preferences.adaptiveBlockSize, adaptiveBlockSize);
+    adaptiveC = numberPreference(preferences.adaptiveC, adaptiveC);
+    percentileBackgroundPercentile = numberPreference(preferences.percentileBackgroundPercentile, percentileBackgroundPercentile);
+    percentileMinContrast = numberPreference(preferences.percentileMinContrast, percentileMinContrast);
+    hysteresisLowThreshold = numberPreference(preferences.hysteresisLowThreshold, hysteresisLowThreshold);
+    hysteresisHighThreshold = numberPreference(preferences.hysteresisHighThreshold, hysteresisHighThreshold);
+    hysteresisConnectivity = numberPreference(preferences.hysteresisConnectivity, hysteresisConnectivity);
+    sobelPercentile = numberPreference(preferences.sobelPercentile, sobelPercentile);
+    sobelThreshold = nullablePreferenceNumber(preferences.sobelThreshold, sobelThreshold);
+    sobelKernelSize = numberPreference(preferences.sobelKernelSize, sobelKernelSize);
+    maskAugmentationEnabled = booleanPreference(preferences.maskAugmentationEnabled, maskAugmentationEnabled);
+    maskAugmentationSteps = new Set(stringArrayPreference(preferences.maskAugmentationSteps, [...maskAugmentationSteps]));
+    dilateKernelW = numberPreference(preferences.dilateKernelW, dilateKernelW);
+    dilateKernelH = numberPreference(preferences.dilateKernelH, dilateKernelH);
+    dilateIterations = numberPreference(preferences.dilateIterations, dilateIterations);
+    erodeKernelW = numberPreference(preferences.erodeKernelW, erodeKernelW);
+    erodeKernelH = numberPreference(preferences.erodeKernelH, erodeKernelH);
+    erodeIterations = numberPreference(preferences.erodeIterations, erodeIterations);
+    openKernelW = numberPreference(preferences.openKernelW, openKernelW);
+    openKernelH = numberPreference(preferences.openKernelH, openKernelH);
+    openIterations = numberPreference(preferences.openIterations, openIterations);
+    closeKernelW = numberPreference(preferences.closeKernelW, closeKernelW);
+    closeKernelH = numberPreference(preferences.closeKernelH, closeKernelH);
+    closeIterations = numberPreference(preferences.closeIterations, closeIterations);
+    fillHoles = booleanPreference(preferences.fillHoles, fillHoles);
+    removeSmallComponents = booleanPreference(preferences.removeSmallComponents, removeSmallComponents);
+    minComponentArea = numberPreference(preferences.minComponentArea, minComponentArea);
+    clearBorder = booleanPreference(preferences.clearBorder, clearBorder);
+    roiAssemblyMethod = stringPreference(preferences.roiAssemblyMethod, roiAssemblyMethod);
+    roiAssemblyConnectivity = numberPreference(preferences.roiAssemblyConnectivity, roiAssemblyConnectivity);
+    minArea = nullablePreferenceNumber(preferences.minArea, minArea);
+    maxArea = nullablePreferenceNumber(preferences.maxArea, maxArea);
+    minPerimeter = numberPreference(preferences.minPerimeter, minPerimeter);
+    maxPerimeter = nullablePreferenceNumber(preferences.maxPerimeter, maxPerimeter);
+    minWidth = nullablePreferenceNumber(preferences.minWidth, minWidth);
+    maxWidth = nullablePreferenceNumber(preferences.maxWidth, maxWidth);
+    minHeight = nullablePreferenceNumber(preferences.minHeight, minHeight);
+    maxHeight = nullablePreferenceNumber(preferences.maxHeight, maxHeight);
+    minWidthPlusHeight = nullablePreferenceNumber(preferences.minWidthPlusHeight, minWidthPlusHeight);
+    maxWidthPlusHeight = nullablePreferenceNumber(preferences.maxWidthPlusHeight, maxWidthPlusHeight);
+    padding = numberPreference(preferences.padding, padding);
+    roiEncoding = stringPreference(preferences.roiEncoding, roiEncoding);
+    zstdMinBytes = nullablePreferenceNumber(preferences.zstdMinBytes, zstdMinBytes);
+    alwaysStoreMask = booleanPreference(preferences.alwaysStoreMask, alwaysStoreMask);
+    storeRoiPayloadMinArea = nullablePreferenceNumber(preferences.storeRoiPayloadMinArea, storeRoiPayloadMinArea);
+    storeRoiPayloadMinWidth = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
+    storeRoiPayloadMinHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
+    storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
+    refinementModelKind = stringPreference(preferences.refinementModelKind, refinementModelKind);
+    refinementModelRef = stringPreference(preferences.refinementModelRef, refinementModelRef);
+    refinementModelRunDir = stringPreference(preferences.refinementModelRunDir, refinementModelRunDir);
+    refinementModelArtifact = stringPreference(preferences.refinementModelArtifact, refinementModelArtifact);
+    refinementTileSize = numberPreference(preferences.refinementTileSize, refinementTileSize);
+    refinementOverlapFraction = numberPreference(preferences.refinementOverlapFraction, refinementOverlapFraction);
+    refinementModelBatchSize = nullablePreferenceNumber(preferences.refinementModelBatchSize, refinementModelBatchSize);
+    refinementOutputThreshold = numberPreference(preferences.refinementOutputThreshold, refinementOutputThreshold);
+    refinementAllowFrameExpansion = booleanPreference(preferences.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
+    refinementMaxIterations = numberPreference(preferences.refinementMaxIterations, refinementMaxIterations);
+    refinementExpansionPixels = nullablePreferenceNumber(preferences.refinementExpansionPixels, refinementExpansionPixels);
+    refinementEdgeTouchMargin = numberPreference(preferences.refinementEdgeTouchMargin, refinementEdgeTouchMargin);
+    refinementEncoding = stringPreference(preferences.refinementEncoding, refinementEncoding);
+    refinementStore = booleanPreference(preferences.refinementStore, refinementStore);
+    refinementDryRun = booleanPreference(preferences.refinementDryRun, refinementDryRun);
+  }
+
+  function framePayloadKindPreference(value: unknown, fallback: 'original' | 'preprocessed'): 'original' | 'preprocessed' {
+    return value === 'original' || value === 'preprocessed' ? value : fallback;
+  }
 
   async function loadCatalog() {
     const client = getClient();
@@ -234,8 +647,13 @@
         client.listCollections(500).catch(() => []),
         client.systemConfig().catch(() => null)
       ]);
-      const segmentationCapabilities = await client.segmentationOptions().catch(() => null);
-      applyConfigDefaults(config, segmentationCapabilities);
+      const [segmentationCapabilities, roiRefinementCapabilities] = await Promise.all([
+        client.segmentationOptions().catch(() => null),
+        client.roiRefinementOptions().catch(() => null)
+      ]);
+      preferencesReady = false;
+      applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
+      restorePreferences();
       frameRows = processingState ?? (await loadCatalogFallback());
       datasets = datasetsFromFrames(frameRows);
       catalogStatus = processingState
@@ -245,6 +663,7 @@
         ...collections.map((collection) => collection.collection),
         ...frameRows.flatMap((frame) => frame.collections)
       ]);
+      preferencesReady = true;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       catalogStatus = 'Dataset catalog failed to load.';
@@ -286,6 +705,7 @@
         return frames.map((frame) => {
           const hasPreprocessedPayload = Boolean(frame.has_preprocessed_payload);
           const detectionCount = detectionByAsset.get(asset.id) ?? 0;
+          const refinedCandidateDetectionCount = 0;
           return {
             frameId: frame.id,
             runId: frame.run_id ?? assetWithDetails.run_id,
@@ -296,8 +716,12 @@
             collections: assetCollections(assetWithDetails),
             hasPreprocessedPayload,
             detectionCount,
+            refinedCandidateDetectionCount,
+            unrefinedDetectionCount: detectionCount,
+            refinedDetectionCount: 0,
             preprocessingState: hasPreprocessedPayload ? 'fully-preprocessed' : 'needs-preprocessed',
-            detectionState: detectionCount > 0 ? 'fully-detected' : 'needs-detections'
+            detectionState: detectionCount > 0 ? 'fully-detected' : 'needs-detections',
+            refinementState: detectionCount > 0 ? 'needs-refinement' : 'no-detections'
           };
         });
       })
@@ -316,8 +740,14 @@
       collections: entry.collections ?? [],
       hasPreprocessedPayload: Boolean(entry.has_preprocessed_payload),
       detectionCount: Number(entry.detection_count ?? 0),
+      refinedCandidateDetectionCount: Number(entry.refined_candidate_detection_count ?? 0),
+      unrefinedDetectionCount: Number(
+        entry.unrefined_detection_count ?? Math.max(0, Number(entry.detection_count ?? 0) - Number(entry.refined_candidate_detection_count ?? 0))
+      ),
+      refinedDetectionCount: Number(entry.refined_detection_count ?? entry.refined_candidate_detection_count ?? 0),
       preprocessingState: entry.preprocessing_state ?? inferredFramePreprocessingState(entry),
-      detectionState: entry.detection_state ?? inferredFrameDetectionState(entry)
+      detectionState: entry.detection_state ?? inferredFrameDetectionState(entry),
+      refinementState: entry.refinement_state ?? inferredFrameRefinementState(entry)
     })).filter((frame) => Boolean(frame.frameId && frame.assetId));
   }
 
@@ -342,9 +772,13 @@
         frameCount: assetFrames.length,
         preprocessedCount: assetFrames.filter((frame) => frame.hasPreprocessedPayload).length,
         detectionCount: assetFrames.reduce((total, frame) => total + frame.detectionCount, 0),
+        refinedCandidateDetectionCount: assetFrames.reduce((total, frame) => total + frame.refinedCandidateDetectionCount, 0),
+        unrefinedDetectionCount: assetFrames.reduce((total, frame) => total + frame.unrefinedDetectionCount, 0),
+        refinedDetectionCount: assetFrames.reduce((total, frame) => total + frame.refinedDetectionCount, 0),
         collections: assetCollections(asset),
         preprocessingState: uniqueStrings(assetFrames.map((frame) => frame.preprocessingState)).join(', '),
-        detectionState: uniqueStrings(assetFrames.map((frame) => frame.detectionState)).join(', ')
+        detectionState: uniqueStrings(assetFrames.map((frame) => frame.detectionState)).join(', '),
+        refinementState: uniqueStrings(assetFrames.map((frame) => frame.refinementState)).join(', ')
       };
     });
   }
@@ -358,7 +792,20 @@
     return detectionCount > 0 ? 'fully-detected' : 'needs-detections';
   }
 
-  function applyConfigDefaults(config: SystemConfigResponse | null, capabilities: SegmentationCapabilities | null = null) {
+  function inferredFrameRefinementState(entry: NonNullable<FrameProcessingState['frames']>[number]): string {
+    const detectionCount = Number(entry.detection_count ?? 0);
+    const refinedCount = Number(entry.refined_candidate_detection_count ?? 0);
+    if (detectionCount <= 0) return 'no-detections';
+    if (refinedCount <= 0) return 'needs-refinement';
+    if (refinedCount >= detectionCount) return 'fully-refined';
+    return 'partially-refined';
+  }
+
+  function applyConfigDefaults(
+    config: SystemConfigResponse | null,
+    capabilities: SegmentationCapabilities | null = null,
+    refinementCapabilities: RoiRefinementCapabilities | null = null
+  ) {
     const thresholding = pipelineSection(config, capabilities, 'thresholding');
     const flatfield = capabilities?.defaults?.preprocessing ?? processingSection(config, 'flatfield');
     const preprocessing = pipelineSection(config, capabilities, 'preprocessing');
@@ -366,6 +813,7 @@
     const roiAssembly = pipelineSection(config, capabilities, 'roi_assembly');
     const roiFilter = pipelineSection(config, capabilities, 'roi_filter');
     const roiRecording = pipelineSection(config, capabilities, 'roi_recording');
+    const roiRefinement = refinementCapabilities?.defaults?.roi_refinement ?? processingSection(config, 'roi_refinement');
     const frameStorage = processingSection(config, 'frame_storage');
 
     thresholdMethods = capabilities?.supported?.threshold_methods?.length
@@ -380,10 +828,20 @@
     roiEncodingOptions = capabilities?.supported?.roi_encoding_options?.length
       ? capabilities.supported.roi_encoding_options
       : roiEncodingOptions;
+    refinementModelKinds = refinementCapabilities?.supported?.model_kinds?.length
+      ? refinementCapabilities.supported.model_kinds
+      : refinementModelKinds;
+    refinementModelRefs = refinementCapabilities?.supported?.model_refs ?? refinementModelRefs;
+    refinementEncodingOptions = refinementCapabilities?.supported?.roi_encoding_options?.length
+      ? refinementCapabilities.supported.roi_encoding_options
+      : refinementEncodingOptions;
+    refinementModelArtifacts = modelArtifactOptions(refinementCapabilities);
 
     flatfieldCorrection = booleanDefault(flatfield, 'flatfield_correction', flatfieldCorrection);
     flatfieldQ = numberDefault(flatfield, 'flatfield_q', flatfieldQ);
     flatfieldAxis = numberDefault(flatfield, 'flatfield_axis', flatfieldAxis);
+    flatfieldMinFieldValue = numberDefault(flatfield, 'flatfield_min_field_value', flatfieldMinFieldValue);
+    flatfieldMaxFieldValue = nullableNumberDefault(flatfield, 'flatfield_max_field_value', flatfieldMaxFieldValue);
     backgroundCorrection = booleanDefault(preprocessing, 'background_correction', backgroundCorrection);
     backgroundPercentile = numberDefault(preprocessing, 'background_percentile', backgroundPercentile);
     applyMask = booleanDefault(preprocessing, 'apply_mask', applyMask);
@@ -456,6 +914,27 @@
     storeRoiPayloadMinWidth = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width', storeRoiPayloadMinWidth);
     storeRoiPayloadMinHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_height', storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
+
+    refinementModelKind = stringDefault(roiRefinement, 'model_kind', refinementModelKind);
+    refinementModelRef = stringDefault(roiRefinement, 'model_ref', refinementModelRef);
+    refinementModelRunDir = stringDefault(roiRefinement, 'model_run_dir', refinementModelRunDir);
+    refinementModelArtifact = stringDefault(roiRefinement, 'model_artifact', refinementModelArtifact);
+    refinementTileSize = numberDefault(roiRefinement, 'tile_size', refinementTileSize);
+    refinementOverlapFraction = numberDefault(roiRefinement, 'overlap_fraction', refinementOverlapFraction);
+    refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
+    refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
+    refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
+    refinementOutputThreshold = numberDefault(roiRefinement, 'output_threshold', refinementOutputThreshold);
+    refinementModelBatchSize = nullableNumberDefault(roiRefinement, 'batch_size', refinementModelBatchSize);
+    refinementEncoding = stringDefault(roiRefinement, 'encoding', refinementEncoding);
+  }
+
+  function modelArtifactOptions(capabilities: RoiRefinementCapabilities | null): string[] {
+    const fieldOptions = capabilities?.fields?.model_selection
+      ?.find((field) => field.key === 'model_artifact')
+      ?.options;
+    if (Array.isArray(fieldOptions)) return fieldOptions.map(String).filter(Boolean);
+    return refinementModelArtifacts;
   }
 
   function pipelineSection(
@@ -489,16 +968,26 @@
     const collections = filters.collections;
     const preprocessStates = filters.preprocessStates;
     const detectionStates = filters.detectionStates;
+    const refinementStates = filters.refinementStates;
     const preprocessingState = frame.preprocessingState;
     const detectionState = frame.detectionState;
 
     if (assetIds.size && !assetIds.has(frame.assetId)) return false;
     if (collections.size && !frame.collections.some((collection) => collections.has(collection))) return false;
     if (preprocessStates.size && (!preprocessingState || !preprocessStates.has(preprocessingState))) return false;
-    if (mode === 'segmentation' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
+    if (mode !== 'preprocessing' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
+      return false;
+    }
+    if (mode === 'roi_refinement' && refinementStates.size && !frameMatchesRefinementStates(frame, refinementStates)) {
       return false;
     }
     return true;
+  }
+
+  function frameMatchesRefinementStates(frame: FrameCatalogRow, states: Set<string>): boolean {
+    if (states.has('refined') && frame.refinedCandidateDetectionCount > 0) return true;
+    if (states.has('unrefined') && frame.unrefinedDetectionCount > 0) return true;
+    return false;
   }
 
   function stateOptions(states: Array<string | undefined>): Array<{ id: string; label: string }> {
@@ -516,6 +1005,20 @@
     return new Map(values.map((value) => [value, framesForOption(group, value, filters).length]));
   }
 
+  function refinementRoiCountMap(values: string[], filters: FrameFilters): Map<string, number> {
+    return new Map(
+      values.map((value) => {
+        const frames = framesForOption('refinement', value, filters);
+        const count = frames.reduce((total, frame) => {
+          if (value === 'refined') return total + frame.refinedCandidateDetectionCount;
+          if (value === 'unrefined') return total + frame.unrefinedDetectionCount;
+          return total;
+        }, 0);
+        return [value, count];
+      })
+    );
+  }
+
   function sumFrameCounts(counts: Map<string, number>): number {
     return [...counts.values()].reduce((total, count) => total + count, 0);
   }
@@ -529,17 +1032,60 @@
       assetIds: group === 'asset' ? new Set([value]) : filters.assetIds,
       collections: group === 'collection' ? new Set([value]) : filters.collections,
       preprocessStates: group === 'preprocess' ? new Set([value]) : filters.preprocessStates,
-      detectionStates: group === 'detection' ? new Set([value]) : filters.detectionStates
+      detectionStates: group === 'detection' ? new Set([value]) : filters.detectionStates,
+      refinementStates: group === 'refinement' ? new Set([value]) : filters.refinementStates
     };
     return frameRows.filter((frame) => matchesFrame(frame, optionFilters));
   }
 
+  function refinementCandidateCountForFrames(frames: FrameCatalogRow[]): number {
+    return frames.reduce((total, frame) => total + refinementCandidateCountForFrame(frame), 0);
+  }
+
+  function refinementCandidateCountForFrame(frame: FrameCatalogRow): number {
+    if (selectedRefinementStates.size > 0) {
+      return (
+        (selectedRefinementStates.has('refined') ? frame.refinedCandidateDetectionCount : 0) +
+        (selectedRefinementStates.has('unrefined') ? frame.unrefinedDetectionCount : 0)
+      );
+    }
+    return frame.detectionCount;
+  }
+
   function boundedFrameBatchSize(): number {
-    return Math.min(1000, Math.max(100, Math.round(Number(frameBatchSize) || 100)));
+    const minimum = batchSizeMin();
+    const maximum = batchSizeMax();
+    return Math.min(maximum, Math.max(minimum, Math.round(Number(frameBatchSize) || defaultBatchSize())));
+  }
+
+  function batchSizeMin(): number {
+    return mode === 'roi_refinement' ? 100 : 20;
+  }
+
+  function batchSizeMax(): number {
+    return mode === 'roi_refinement' ? 10000 : 1000;
+  }
+
+  function batchSizeStep(): number {
+    return mode === 'roi_refinement' ? 100 : 20;
+  }
+
+  function defaultBatchSize(): number {
+    return mode === 'roi_refinement' ? 2500 : 100;
+  }
+
+  function boundedBatchSize(batchSize: number): number {
+    const minimum = batchSizeMin();
+    const maximum = batchSizeMax();
+    return Math.min(maximum, Math.max(minimum, Math.round(Number(batchSize) || defaultBatchSize())));
+  }
+
+  function compareFrameId(a: FrameCatalogRow, b: FrameCatalogRow): number {
+    return a.frameId.localeCompare(b.frameId);
   }
 
   function frameBatches(frames: FrameCatalogRow[], batchSize: number): FrameBatch[] {
-    const boundedBatchSize = Math.min(1000, Math.max(100, Math.round(Number(batchSize) || 100)));
+    const resolvedBatchSize = boundedBatchSize(batchSize);
     const grouped = new Map<string, FrameCatalogRow[]>();
     for (const frame of frames) {
       const key = `${frame.assetId}:${frame.runId ?? ''}`;
@@ -547,12 +1093,9 @@
     }
     const batches: FrameBatch[] = [];
     for (const group of grouped.values()) {
-      group.sort((a, b) => {
-        const frameDelta = Number(a.frameIndex ?? 0) - Number(b.frameIndex ?? 0);
-        return frameDelta || a.frameId.localeCompare(b.frameId);
-      });
-      for (let index = 0; index < group.length; index += boundedBatchSize) {
-        const batch = group.slice(index, index + boundedBatchSize);
+      group.sort(compareFrameId);
+      for (let index = 0; index < group.length; index += resolvedBatchSize) {
+        const batch = group.slice(index, index + resolvedBatchSize);
         if (!batch.length) continue;
         batches.push({
           assetId: batch[0].assetId,
@@ -561,7 +1104,20 @@
         });
       }
     }
-    return batches;
+    return batches.sort((a, b) => (a.frameIds[0] ?? '').localeCompare(b.frameIds[0] ?? ''));
+  }
+
+  function estimatedDetectionBatchCount(frames: FrameCatalogRow[], batchSize: number): number {
+    const resolvedBatchSize = boundedBatchSize(batchSize);
+    const groupedCounts = new Map<string, number>();
+    for (const frame of [...frames].sort(compareFrameId)) {
+      const key = `${frame.assetId}:${frame.runId ?? ''}`;
+      groupedCounts.set(key, (groupedCounts.get(key) ?? 0) + refinementCandidateCountForFrame(frame));
+    }
+    return [...groupedCounts.values()].reduce(
+      (total, count) => total + (count > 0 ? Math.ceil(count / resolvedBatchSize) : 0),
+      0
+    );
   }
 
   function toggleAsset(assetId: string) {
@@ -580,6 +1136,10 @@
     selectedDetectionStates = toggled(selectedDetectionStates, state);
   }
 
+  function toggleRefinementState(state: string) {
+    selectedRefinementStates = toggled(selectedRefinementStates, state);
+  }
+
   function toggled(values: Set<string>, value: string): Set<string> {
     const next = new Set(values);
     if (next.has(value)) next.delete(value);
@@ -592,20 +1152,62 @@
     if (group === 'collection') selectedCollections = new Set();
     if (group === 'preprocess') selectedPreprocessStates = new Set();
     if (group === 'detection') selectedDetectionStates = new Set();
+    if (group === 'refinement') selectedRefinementStates = new Set();
   }
 
   async function queueJobs() {
     const client = getClient();
-    const batches = frameBatches(filteredFrames, boundedFrameBatchSize());
-    if (!client || batches.length === 0) return;
+    if (!client) return;
     queueing = true;
     message = null;
     error = null;
     let queued = 0;
+    const nextJobIds: string[] = [];
+
+    if (mode === 'roi_refinement') {
+      const batches = await detectionBatchesForFrames(client, filteredFrames, boundedFrameBatchSize()).catch((err) => {
+        error = err instanceof Error ? err.message : String(err);
+        return [] as DetectionBatch[];
+      });
+      if (!batches.length) {
+        if (!error) error = 'No candidate ROI detections matched the current frame filters.';
+        queueing = false;
+        return;
+      }
+      for (const batch of batches) {
+        try {
+          const response = await client.queueRoiRefinementJob({
+            asset_id: batch.assetId,
+            run_id: batch.runId,
+            detection_ids: batch.detectionIds,
+            priority,
+            ...roiRefinementOptions()
+          });
+          if (response.job?.id) nextJobIds.push(response.job.id);
+          queued += 1;
+        } catch (err) {
+          error = `Queued ${queued}/${batches.length}. ${err instanceof Error ? err.message : String(err)}`;
+          queueing = false;
+          return;
+        }
+      }
+      message = `Queued ${queued} ROI refinement batch job${queued === 1 ? '' : 's'} covering ${formatCount(
+        batches.reduce((total, batch) => total + batch.detectionIds.length, 0)
+      )} ROI${batches.reduce((total, batch) => total + batch.detectionIds.length, 0) === 1 ? '' : 's'}.`;
+      submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
+      queueing = false;
+      return;
+    }
+
+    const batches = frameBatches(filteredFrames, boundedFrameBatchSize());
+    if (batches.length === 0) {
+      queueing = false;
+      return;
+    }
     for (const batch of batches) {
       try {
         if (mode === 'preprocessing') {
-          await client.queuePreprocessJob({
+          const response = await client.queuePreprocessJob({
             asset_id: batch.assetId,
             run_id: batch.runId,
             frame_ids: batch.frameIds,
@@ -613,6 +1215,8 @@
             flatfield_correction: flatfieldCorrection,
             flatfield_q: flatfieldCorrection ? flatfieldQ : undefined,
             flatfield_axis: flatfieldCorrection ? flatfieldAxis : undefined,
+            flatfield_min_field_value: flatfieldCorrection ? flatfieldMinFieldValue : undefined,
+            flatfield_max_field_value: flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
             background_correction: backgroundCorrection,
             background_percentile: backgroundCorrection ? backgroundPercentile : undefined,
             apply_mask: applyMask,
@@ -624,8 +1228,9 @@
             invert_intensity: invertIntensity,
             encoding: preprocessingEncoding as 'png' | 'jpg' | 'raw' | 'zstd'
           });
+          if (response.job?.id) nextJobIds.push(response.job.id);
         } else {
-          await client.queueSegmentationJob({
+          const response = await client.queueSegmentationJob({
             asset_id: batch.assetId,
             run_id: batch.runId,
             frame_ids: batch.frameIds,
@@ -636,8 +1241,14 @@
             ...roiFilterOptions(),
             ...roiRecordingOptions(),
             frame_payload_kind: framePayloadKind,
-            apply_preprocessing: framePayloadKind === 'original' ? applyPreprocessing : false
+            apply_preprocessing: framePayloadKind === 'original' ? applyPreprocessing : false,
+            flatfield_correction: applyPreprocessing ? flatfieldCorrection : undefined,
+            flatfield_q: applyPreprocessing && flatfieldCorrection ? flatfieldQ : undefined,
+            flatfield_axis: applyPreprocessing && flatfieldCorrection ? flatfieldAxis : undefined,
+            flatfield_min_field_value: applyPreprocessing && flatfieldCorrection ? flatfieldMinFieldValue : undefined,
+            flatfield_max_field_value: applyPreprocessing && flatfieldCorrection ? flatfieldMaxFieldValue : undefined
           });
+          if (response.job?.id) nextJobIds.push(response.job.id);
         }
         queued += 1;
       } catch (err) {
@@ -646,8 +1257,84 @@
         return;
       }
     }
+    submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
     message = `Queued ${queued} ${mode === 'preprocessing' ? 'preprocessing' : 'segmentation'} batch job${queued === 1 ? '' : 's'} covering ${formatCount(prospectiveFrameCount)} frame${prospectiveFrameCount === 1 ? '' : 's'}.`;
     queueing = false;
+  }
+
+  async function detectionBatchesForFrames(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    frames: FrameCatalogRow[],
+    batchSize: number
+  ): Promise<DetectionBatch[]> {
+    const resolvedBatchSize = boundedBatchSize(batchSize);
+    const grouped = new Map<string, FrameCatalogRow[]>();
+    for (const frame of [...frames].sort(compareFrameId).filter((candidate) => candidate.detectionCount > 0)) {
+      const key = `${frame.assetId}:${frame.runId ?? ''}`;
+      grouped.set(key, [...(grouped.get(key) ?? []), frame]);
+    }
+
+    const batches: DetectionBatch[] = [];
+    for (const group of grouped.values()) {
+      const detectionEntries: Array<{ detectionId: string; frameId: string }> = [];
+      const sortedFrames = [...group].sort(compareFrameId);
+      for (const frame of sortedFrames) {
+        const detections = await detectionsForFrame(client, frame, selectedDetectionRefinementStates());
+        detectionEntries.push(
+          ...detections
+            .map((detection) => detection.id)
+            .filter((id): id is string => Boolean(id))
+            .map((detectionId) => ({ detectionId, frameId: frame.frameId }))
+        );
+      }
+      for (let index = 0; index < detectionEntries.length; index += resolvedBatchSize) {
+        const detectionBatch = detectionEntries.slice(index, index + resolvedBatchSize);
+        if (!detectionBatch.length) continue;
+        batches.push({
+          assetId: group[0].assetId,
+          runId: group[0].runId,
+          firstFrameId: detectionBatch[0].frameId,
+          detectionIds: detectionBatch.map((entry) => entry.detectionId)
+        });
+      }
+    }
+    return batches.sort((a, b) => a.firstFrameId.localeCompare(b.firstFrameId));
+  }
+
+  async function detectionsForFrame(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    frame: FrameCatalogRow,
+    refinementStates: string[]
+  ): Promise<DetectionSummary[]> {
+    const detections: DetectionSummary[] = [];
+    const states = refinementStates.length ? refinementStates : ['any'];
+    let offset = 0;
+    const limit = 1000;
+    for (const state of states) {
+      offset = 0;
+      while (true) {
+        const page = await client.searchDetectionsPage({
+          asset_id: frame.assetId,
+          frame_id: frame.frameId,
+          sort_by: 'asset_frame',
+          sort_dir: 'asc',
+          refinement_state: state === 'any' ? undefined : (state as 'refined' | 'unrefined'),
+          limit,
+          offset
+        });
+        detections.push(...(page.detections ?? []));
+        const nextOffset = page.page?.next_offset;
+        if (nextOffset === null || nextOffset === undefined) break;
+        offset = Number(nextOffset);
+        if (!Number.isFinite(offset) || offset <= detections.length - limit) break;
+      }
+    }
+    return detections;
+  }
+
+  function selectedDetectionRefinementStates(): string[] {
+    const states = [...selectedRefinementStates].filter((state) => state === 'refined' || state === 'unrefined');
+    return states.length === 2 ? [] : states;
   }
 
   function thresholdOptions(): Record<string, unknown> {
@@ -746,6 +1433,26 @@
     };
   }
 
+  function roiRefinementOptions(): Record<string, unknown> {
+    return {
+      model_kind: refinementModelKind,
+      model_ref: refinementModelRef || undefined,
+      model_run_dir: refinementModelRunDir || undefined,
+      model_artifact: refinementModelArtifact || undefined,
+      tile_size: refinementTileSize,
+      overlap_fraction: refinementOverlapFraction,
+      batch_size: refinementModelBatchSize,
+      output_threshold: refinementOutputThreshold,
+      allow_frame_expansion: refinementAllowFrameExpansion,
+      max_iterations: refinementMaxIterations,
+      expansion_pixels: refinementExpansionPixels,
+      edge_touch_margin: refinementEdgeTouchMargin,
+      encoding: refinementEncoding,
+      store: refinementStore,
+      dry_run: refinementDryRun
+    };
+  }
+
   function normalizedMaskSteps(): string[] {
     const steps = [...maskAugmentationSteps].filter((step) => step && step !== 'none');
     return steps.length ? steps : ['none'];
@@ -795,10 +1502,20 @@
         <span>Preprocessed frames</span>
         <strong>{formatCount(prospectivePreprocessedCount)}</strong>
       </div>
-      {#if mode === 'segmentation'}
+      {#if mode !== 'preprocessing'}
         <div class="metric">
-          <span>Existing detections</span>
+          <span>{mode === 'roi_refinement' ? 'Candidate ROIs' : 'Existing detections'}</span>
           <strong>{formatCount(prospectiveDetectionCount)}</strong>
+        </div>
+      {/if}
+      {#if mode === 'roi_refinement'}
+        <div class="metric">
+          <span>Refined ROIs</span>
+          <strong>{formatCount(prospectiveRefinedDetectionCount)}</strong>
+        </div>
+        <div class="metric">
+          <span>Unrefined candidates</span>
+          <strong>{formatCount(prospectiveUnrefinedDetectionCount)}</strong>
         </div>
       {/if}
       <div class="metric">
@@ -877,7 +1594,7 @@
         </div>
       </div>
 
-      {#if mode === 'segmentation'}
+      {#if mode !== 'preprocessing'}
         <div class="filter-group">
           <div class="section-heading">
             <p class="eyebrow">State</p>
@@ -901,6 +1618,31 @@
           </div>
         </div>
       {/if}
+
+      {#if mode === 'roi_refinement'}
+        <div class="filter-group">
+          <div class="section-heading">
+            <p class="eyebrow">State</p>
+            <strong>ROI refinement state</strong>
+          </div>
+          <div class="compact-select-list">
+            <button class="wildcard-filter" class:active={selectedRefinementStates.size === 0} type="button" on:click={() => clearGroup('refinement')}>
+              <span>Any ROI refinement state</span>
+              <small>{formatCount(refinementAnyRoiCount)} ROIs</small>
+            </button>
+            {#each refinementStateOptions as option}
+              <button
+                class:active={selectedRefinementStates.has(option.id)}
+                type="button"
+                on:click={() => toggleRefinementState(option.id)}
+              >
+                <span>{option.label}</span>
+                <small>{formatCount(countFor(refinementRoiCounts, option.id))} ROIs</small>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
     </div>
     
     <p class="soft panel-bottom">{catalogStatus}</p>
@@ -910,7 +1652,7 @@
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Parameters</p>
-        <h2>{mode === 'preprocessing' ? 'Preprocessing job' : 'Segmentation job'}</h2>
+        <h2>{mode === 'preprocessing' ? 'Preprocessing job' : mode === 'segmentation' ? 'Segmentation job' : 'ROI refinement job'}</h2>
       </div>
     </div>
 
@@ -918,14 +1660,20 @@
       <summary class="section-heading">
         <span>
           <p class="eyebrow">Scope</p>
-          <strong>Frame batches</strong>
+          <strong>{mode === 'roi_refinement' ? 'ROI batches' : 'Frame batches'}</strong>
         </span>
       </summary>
       <div class="form-grid compact-grid">
         <label class="span-2">
           Batch size
-          <input type="range" min="100" max="1000" step="50" bind:value={frameBatchSize} />
-          <span class="range-value">{boundedFrameBatchSize()} frames per job</span>
+          <input
+            type="range"
+            min={batchSizeMin()}
+            max={batchSizeMax()}
+            step={batchSizeStep()}
+            bind:value={frameBatchSize}
+          />
+          <span class="range-value">{boundedFrameBatchSize()} {mode === 'roi_refinement' ? 'ROIs' : 'frames'} per job</span>
         </label>
         <label>
           Priority
@@ -962,6 +1710,16 @@
             Flatfield q
             <input type="range" min="0" max="1" step="0.01" bind:value={flatfieldQ} />
             <span class="range-value">{flatfieldQ.toFixed(2)}</span>
+          </label>
+          <label>
+            Min field value
+            <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
+            <span class="range-value">{flatfieldMinFieldValue}</span>
+          </label>
+          <label>
+            Max field value
+            <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
+            <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
           </label>
           <label>
             Flatfield axis
@@ -1022,7 +1780,7 @@
           </select>
         </label>
       </details>
-    {:else}
+    {:else if mode === 'segmentation'}
       <details class="form-section collapsible-section" open>
         <summary class="section-heading">
           <span>
@@ -1395,11 +2153,152 @@
           </div>
         </details>
       </details>
+    {:else}
+      <details class="form-section collapsible-section" open>
+        <summary class="section-heading">
+          <span>
+            <p class="eyebrow">Model selection</p>
+            <strong>Refinement model</strong>
+          </span>
+        </summary>
+        <label>
+          Model kind
+          <select bind:value={refinementModelKind}>
+            {#each refinementModelKinds as kind}
+              <option value={kind}>{kind}</option>
+            {/each}
+          </select>
+        </label>
+        {#if refinementModelRefs.length}
+          <label>
+            Model reference
+            <select bind:value={refinementModelRef}>
+              <option value="">Default</option>
+              {#each refinementModelRefs as modelRef}
+                <option value={modelRef}>{modelRef}</option>
+              {/each}
+            </select>
+          </label>
+        {:else}
+          <label>
+            Model reference
+            <input bind:value={refinementModelRef} placeholder="default" />
+          </label>
+        {/if}
+        {#if refinementModelKind === 'oracle_builder_unet'}
+          <label>
+            Model run directory
+            <input bind:value={refinementModelRunDir} placeholder="oracle-builder run path" />
+          </label>
+        {/if}
+        {#if refinementModelKind === 'keras_artifact'}
+          <label>
+            Model artifact
+            <select bind:value={refinementModelArtifact}>
+              {#each refinementModelArtifacts as artifact}
+                <option value={artifact}>{artifact}</option>
+              {/each}
+            </select>
+          </label>
+        {/if}
+      </details>
+
+      <details class="form-section collapsible-section" open>
+        <summary class="section-heading">
+          <span>
+            <p class="eyebrow">Tiling</p>
+            <strong>Model input geometry</strong>
+          </span>
+        </summary>
+        <label>
+          Tile size
+          <input type="number" min="1" step="1" bind:value={refinementTileSize} />
+        </label>
+        <label>
+          Overlap fraction
+          <input type="range" min="0" max="0.99" step="0.01" bind:value={refinementOverlapFraction} />
+          <span class="range-value">{Number(refinementOverlapFraction).toFixed(2)}</span>
+        </label>
+        <label>
+          Model batch size
+          <input type="number" min="1" bind:value={refinementModelBatchSize} placeholder="default" />
+        </label>
+      </details>
+
+      <details class="form-section collapsible-section" open>
+        <summary class="section-heading">
+          <span>
+            <p class="eyebrow">Prediction</p>
+            <strong>Mask threshold</strong>
+          </span>
+        </summary>
+        <label>
+          Output threshold
+          <input type="range" min="0" max="1" step="0.01" bind:value={refinementOutputThreshold} />
+          <span class="range-value">{Number(refinementOutputThreshold).toFixed(2)}</span>
+        </label>
+      </details>
+
+      <details class="form-section collapsible-section" open>
+        <summary class="section-heading">
+          <span>
+            <p class="eyebrow">Expansion</p>
+            <strong>Frame-aware ROI growth</strong>
+          </span>
+        </summary>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={refinementAllowFrameExpansion} />
+          Allow frame expansion
+        </label>
+        <label>
+          Max iterations
+          <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
+        </label>
+        <label>
+          Expansion pixels
+          <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
+        </label>
+        <label>
+          Edge touch margin
+          <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
+        </label>
+      </details>
+
+      <details class="form-section collapsible-section" open>
+        <summary class="section-heading">
+          <span>
+            <p class="eyebrow">Record</p>
+            <strong>Refined detections</strong>
+          </span>
+        </summary>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={refinementStore} />
+          Store refined detections
+        </label>
+        <label>
+          Encoding
+          <select bind:value={refinementEncoding}>
+            <option value="auto">default</option>
+            {#each refinementEncodingOptions as encoding}
+              {#if encoding !== 'auto'}
+                <option value={encoding}>{encoding}</option>
+              {/if}
+            {/each}
+          </select>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={refinementDryRun} />
+          Dry run
+        </label>
+      </details>
     {/if}
 
     <div class="selected-frame-summary">
       <span>Currently selected</span>
-      <strong>{formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}</strong>
+      <strong>{formatCount(prospectiveQueueItemCount)} {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}</strong>
+      {#if mode === 'roi_refinement'}
+        <small>from {formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}</small>
+      {/if}
       <small>{formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'}</small>
     </div>
 
@@ -1407,9 +2306,17 @@
       {queueing ? 'Queueing' : actionLabel}
     </button>
     <p class="soft">
-      {formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'} covering {formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}.
+      {formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'} covering {formatCount(prospectiveQueueItemCount)} {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}.
     </p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
+
+    <QueueStatusSummary
+      title={queueStatusTitle}
+      eyebrow="Live status"
+      stage={queueStage}
+      jobIds={submittedJobIds}
+      mode="compact"
+    />
   </section>
 </div>

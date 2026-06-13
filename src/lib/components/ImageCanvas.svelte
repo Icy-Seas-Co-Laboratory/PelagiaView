@@ -1,12 +1,15 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import {
     copyImagePng,
     downloadImagePng,
+    type ImageOverlayMask,
     type ImageOverlayRect
   } from '$lib/utils/imageExport';
   import { recordClientEvent } from '$lib/utils/analytics';
   import type {
     CanvasExportControls,
+    CanvasOverlayImage,
     CanvasOverlayRect,
     CanvasScaleBar
   } from '$lib/utils/imageCanvas';
@@ -15,7 +18,10 @@
   export let alt = '';
   export let filename = 'pelagia-image.png';
   export let annotatedFilename = 'pelagia-image-boxed.png';
+  export let imageMaskUrl = '';
+  export let applyImageMask = false;
   export let overlays: CanvasOverlayRect[] = [];
+  export let imageOverlays: CanvasOverlayImage[] = [];
   export let inverted = false;
   export let disabled = false;
   export let sourceWidth: number | null = null;
@@ -37,29 +43,52 @@
   let busy = false;
   let status: string | null = null;
   let exportMenuOpen = false;
+  let imageFailed = false;
+  let lastImageUrl = '';
+  let maskedImageUrl = '';
+  let maskedImageKey = '';
+  let maskRenderSerial = 0;
 
   const defaultScaleBarLengths = [1000, 500, 100, 50, 10];
 
+  onDestroy(() => {
+    if (maskedImageUrl) URL.revokeObjectURL(maskedImageUrl);
+  });
+
+  $: visibleImageUrl = applyImageMask && maskedImageUrl ? maskedImageUrl : imageUrl;
   $: exportOverlays = overlayExportRects();
-  $: exportFilename = exportOverlays.length ? annotatedFilename : filename;
+  $: exportMasks = overlayExportMasks();
+  $: exportFilename = exportOverlays.length || exportMasks.length ? annotatedFilename : filename;
   $: isDisabled = disabled || busy || !imageUrl;
   $: scaleBarLength = selectedScaleBarLength();
   $: scaleBarPlacement = scaleBar?.placement ?? 'inside';
   $: resolvedSourceWidth = headerSourceWidth ?? sourceWidth ?? imageNaturalWidth;
   $: resolvedSourceHeight = headerSourceHeight ?? sourceHeight ?? imageNaturalHeight;
   $: void loadImageHeaders(imageUrl, readImageHeaders);
+  $: void renderMaskedImage(imageUrl, imageMaskUrl, applyImageMask);
+  $: resetImageState(visibleImageUrl);
 
   function handleLoad(event: Event) {
     const image = event.currentTarget as HTMLImageElement;
     imageNaturalWidth = image.naturalWidth;
     imageNaturalHeight = image.naturalHeight;
+    imageFailed = false;
     onImageLoad?.({ width: imageNaturalWidth, height: imageNaturalHeight });
   }
 
   function handleError() {
     imageNaturalWidth = 0;
     imageNaturalHeight = 0;
+    imageFailed = true;
     onImageError?.();
+  }
+
+  function resetImageState(url: string) {
+    if (url === lastImageUrl) return;
+    lastImageUrl = url;
+    imageFailed = false;
+    imageNaturalWidth = 0;
+    imageNaturalHeight = 0;
   }
 
   async function loadImageHeaders(url: string, enabled: boolean) {
@@ -84,17 +113,88 @@
     }
   }
 
+  async function renderMaskedImage(url: string, maskUrl: string, enabled: boolean) {
+    const key = enabled && maskUrl ? `${url}::${maskUrl}::masked` : '';
+    if (key === maskedImageKey && maskedImageUrl) return;
+    const previousUrl = maskedImageUrl;
+    maskedImageUrl = '';
+    if (previousUrl) URL.revokeObjectURL(previousUrl);
+    const serial = ++maskRenderSerial;
+    if (!enabled || !url || !maskUrl || typeof window === 'undefined') {
+      maskedImageKey = '';
+      return;
+    }
+    maskedImageKey = key;
+    try {
+      const [image, mask] = await Promise.all([loadElementImage(url), loadElementImage(maskUrl)]);
+      if (serial !== maskRenderSerial) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+      context.drawImage(image, 0, 0);
+
+      const maskCanvas = document.createElement('canvas');
+      maskCanvas.width = canvas.width;
+      maskCanvas.height = canvas.height;
+      const maskContext = maskCanvas.getContext('2d');
+      if (!maskContext) return;
+      maskContext.drawImage(mask, 0, 0, canvas.width, canvas.height);
+
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const maskData = maskContext.getImageData(0, 0, canvas.width, canvas.height);
+      for (let index = 0; index < imageData.data.length; index += 4) {
+        const luminance =
+          maskData.data[index] * 0.2126 +
+          maskData.data[index + 1] * 0.7152 +
+          maskData.data[index + 2] * 0.0722;
+        if (luminance <= 0) {
+          imageData.data[index] = 0;
+          imageData.data[index + 1] = 0;
+          imageData.data[index + 2] = 0;
+          imageData.data[index + 3] = 255;
+        }
+      }
+      context.putImageData(imageData, 0, 0);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (serial !== maskRenderSerial || !blob) return;
+      maskedImageUrl = URL.createObjectURL(blob);
+    } catch {
+      if (serial === maskRenderSerial) {
+        maskedImageUrl = '';
+        maskedImageKey = '';
+      }
+    }
+  }
+
+  async function loadElementImage(url: string): Promise<HTMLImageElement> {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Could not load image (${response.status}).`);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const image = new Image();
+      image.decoding = 'async';
+      image.src = objectUrl;
+      await image.decode();
+      return image;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
   function headerNumber(headers: Headers, name: string): number | null {
     const parsed = Number(headers.get(name));
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   async function runDownload() {
-    await runExport('download', exportOverlays, inverted, exportFilename);
+    await runExport('download', exportOverlays, exportMasks, inverted, exportFilename);
   }
 
   async function runCopy() {
-    await runExport('copy', exportOverlays, inverted, exportFilename);
+    await runExport('copy', exportOverlays, exportMasks, inverted, exportFilename);
   }
 
   async function runMenuExport(
@@ -102,18 +202,20 @@
     variant: 'plain' | 'boxed' | 'inverted'
   ) {
     const nextOverlays = variant === 'boxed' ? exportOverlays : [];
+    const nextMasks = variant === 'boxed' ? exportMasks : [];
     const nextInverted = variant === 'inverted' ? true : inverted;
     const nextFilename =
       variant === 'boxed'
         ? annotatedFilename
         : filenameForSuffix(filename, variant === 'inverted' ? '-inverted' : '');
-    await runExport(action, nextOverlays, nextInverted, nextFilename);
+    await runExport(action, nextOverlays, nextMasks, nextInverted, nextFilename);
     exportMenuOpen = false;
   }
 
   async function runExport(
     action: 'download' | 'copy',
     nextOverlays: ImageOverlayRect[],
+    nextMasks: ImageOverlayMask[],
     nextInverted: boolean,
     nextFilename: string
   ) {
@@ -124,16 +226,19 @@
       const options = {
         imageUrl,
         filename: nextFilename,
+        baseMaskUrl: applyImageMask ? imageMaskUrl || undefined : undefined,
         overlays: nextOverlays,
+        masks: nextMasks,
         inverted: nextInverted
       };
+      const annotationCount = nextOverlays.length + nextMasks.length;
       if (action === 'download') {
         await downloadImagePng(options);
-        status = nextOverlays.length ? 'Downloaded boxed PNG.' : 'Downloaded PNG.';
+        status = annotationCount ? 'Downloaded annotated PNG.' : 'Downloaded PNG.';
       } else {
         await copyImagePng(options);
-        status = nextOverlays.length
-          ? 'Copied boxed PNG.'
+        status = annotationCount
+          ? 'Copied annotated PNG.'
           : nextInverted
             ? 'Copied inverted PNG.'
             : 'Copied PNG.';
@@ -142,6 +247,7 @@
         action,
         filename: nextFilename,
         overlay_count: nextOverlays.length,
+        mask_count: nextMasks.length,
         inverted: nextInverted,
         image_width: imageNaturalWidth,
         image_height: imageNaturalHeight,
@@ -153,6 +259,7 @@
         action,
         filename: nextFilename,
         overlay_count: nextOverlays.length,
+        mask_count: nextMasks.length,
         inverted: nextInverted,
         error: status
       });
@@ -176,7 +283,40 @@
       .join('; ');
   }
 
-  function overlayPercentRect(overlay: CanvasOverlayRect) {
+  function imageOverlayStyle(overlay: CanvasOverlayImage): string {
+    const rect = overlayPercentRect(overlay);
+    const opacity = Math.max(0, Math.min(1, overlay.opacity ?? 0.45));
+    const escapedUrl = overlay.imageUrl.replace(/"/g, '\\"');
+    return [
+      `left: ${rect.x}%`,
+      `top: ${rect.y}%`,
+      `width: ${rect.w}%`,
+      `height: ${rect.h}%`,
+      `background-color: ${overlay.tint}`,
+      `opacity: ${opacity}`,
+      `-webkit-mask-image: url("${escapedUrl}")`,
+      `mask-image: url("${escapedUrl}")`,
+      '-webkit-mask-size: 100% 100%',
+      'mask-size: 100% 100%',
+      '-webkit-mask-mode: luminance',
+      'mask-mode: luminance',
+      '-webkit-mask-repeat: no-repeat',
+      'mask-repeat: no-repeat',
+      '-webkit-mask-position: center',
+      'mask-position: center',
+      overlay.inverted ? 'filter: invert(1)' : ''
+    ]
+      .filter(Boolean)
+      .join('; ');
+  }
+
+  function overlayPercentRect(overlay: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    coordinateSpace?: 'source' | 'image' | 'percent';
+  }) {
     const coordinateSpace = overlay.coordinateSpace ?? 'source';
     if (coordinateSpace === 'percent') {
       return { x: overlay.x, y: overlay.y, w: overlay.w, h: overlay.h };
@@ -205,6 +345,24 @@
           stroke: overlay.stroke,
           lineWidth: overlay.lineWidth,
           halo: overlay.halo
+        };
+      })
+      .filter((overlay) => overlay.w > 0 && overlay.h > 0);
+  }
+
+  function overlayExportMasks(): ImageOverlayMask[] {
+    if (!imageNaturalWidth || !imageNaturalHeight) return [];
+    return imageOverlays
+      .map((overlay) => {
+        const rect = overlayPercentRect(overlay);
+        return {
+          imageUrl: overlay.imageUrl,
+          x: (rect.x / 100) * imageNaturalWidth,
+          y: (rect.y / 100) * imageNaturalHeight,
+          w: (rect.w / 100) * imageNaturalWidth,
+          h: (rect.h / 100) * imageNaturalHeight,
+          tint: overlay.tint,
+          opacity: overlay.opacity
         };
       })
       .filter((overlay) => overlay.w > 0 && overlay.h > 0);
@@ -240,22 +398,43 @@
       .filter(Boolean)
       .join(' ');
   }
+
+  function imageOverlayClass(overlay: CanvasOverlayImage): string {
+    return ['image-canvas-mask', overlay.className ?? ''].filter(Boolean).join(' ');
+  }
 </script>
 
 <div class="image-canvas">
   {#if imageUrl}
     <div class="image-canvas-stage" style={canvasStyle}>
-      <img
-        class:inverted-frame={inverted}
-        class={imageClass}
-        src={imageUrl}
-        alt={alt}
-        {loading}
-        on:load={handleLoad}
-        on:error={handleError}
-      />
+      {#if imageFailed}
+        <div class="image-canvas-error" role="status">
+          <strong>Image unavailable</strong>
+          <span>Check the frame or ROI endpoint.</span>
+        </div>
+      {:else}
+        {#key visibleImageUrl}
+          <img
+            class:inverted-frame={inverted}
+            class={imageClass}
+            src={visibleImageUrl}
+            alt={alt}
+            {loading}
+            on:load={handleLoad}
+            on:error={handleError}
+          />
+        {/key}
+      {/if}
 
-      {#if imageNaturalWidth && imageNaturalHeight && overlays.length}
+      {#if !imageFailed && imageNaturalWidth && imageNaturalHeight && imageOverlays.length}
+        <div class="image-canvas-mask-overlay" aria-hidden="true">
+          {#each imageOverlays as overlay}
+            <div class={imageOverlayClass(overlay)} style={imageOverlayStyle(overlay)}></div>
+          {/each}
+        </div>
+      {/if}
+
+      {#if !imageFailed && imageNaturalWidth && imageNaturalHeight && overlays.length}
         <div class="image-canvas-overlay" aria-hidden="true">
           {#each overlays as overlay, index}
             <div
@@ -306,9 +485,9 @@
             <div class="image-canvas-menu">
               <button type="button" on:click|stopPropagation={() => runMenuExport('copy', 'plain')}>Copy image</button>
               <button type="button" on:click|stopPropagation={() => runMenuExport('download', 'plain')}>Download image</button>
-              {#if exportOverlays.length}
-                <button type="button" on:click|stopPropagation={() => runMenuExport('copy', 'boxed')}>Copy image + bbox</button>
-                <button type="button" on:click|stopPropagation={() => runMenuExport('download', 'boxed')}>Download image + bbox</button>
+              {#if exportOverlays.length || exportMasks.length}
+                <button type="button" on:click|stopPropagation={() => runMenuExport('copy', 'boxed')}>Copy image + overlays</button>
+                <button type="button" on:click|stopPropagation={() => runMenuExport('download', 'boxed')}>Download image + overlays</button>
               {/if}
               <button type="button" on:click|stopPropagation={() => runMenuExport('copy', 'inverted')}>Copy inverted image</button>
               <button type="button" on:click|stopPropagation={() => runMenuExport('download', 'inverted')}>Download inverted image</button>
