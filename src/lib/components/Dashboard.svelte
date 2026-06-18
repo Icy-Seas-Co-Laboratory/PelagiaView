@@ -4,6 +4,8 @@
   import AppSidebar from './AppSidebar.svelte';
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
+  import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
+  import HeaderProcessingPresetSelect from './HeaderProcessingPresetSelect.svelte';
   import IngestionPage from './IngestionPage.svelte';
   import PageHeader from './PageHeader.svelte';
   import PreferencesModal from './PreferencesModal.svelte';
@@ -49,6 +51,8 @@
       </div>
       <div class="session-controls">
         <span class="endpoint-pill">{$session.baseUrl}</span>
+        <HeaderProcessingPresetSelect />
+        <HeaderImageInversionToggle />
         <button class="ghost" type="button" on:click={() => (preferencesOpen = true)}>Preferences</button>
         <button class="ghost" type="button" on:click={disconnectSession}>Disconnect</button>
       </div>

@@ -6,15 +6,15 @@
   import { displayScale, projectRect, scaleBarLength } from '$lib/utils/imageProjection';
   import { formatBytes } from '$lib/utils/format';
   import type {
-    ImageCanvasMode,
     ImageLayer,
     ImageMaskOverlayLayer,
     ImageRectLayer,
-    ImageRenderSpec
+    ImageRenderSpec,
+    ImageViewerMode
   } from '$lib/utils/imageRenderSpec';
 
   export let spec: ImageRenderSpec;
-  export let mode: ImageCanvasMode = 'static';
+  export let mode: ImageViewerMode = 'static';
   export let onImageLoad: ((dimensions: { width: number; height: number }) => void) | null = null;
   export let onImageError: (() => void) | null = null;
   export let onMoreAction: (() => void) | null = null;
@@ -612,7 +612,7 @@
     </div>
   {/if}
   {#if error}
-    <div class="image-canvas-error" role="status">
+    <div class="konva-image-error" role="status">
       <strong>Image unavailable</strong>
       <span>{error}</span>
     </div>
@@ -718,6 +718,6 @@
         </div>
       {/if}
     </div>
-    {#if status}<span class="image-canvas-menu-status">{status}</span>{/if}
+    {#if status}<span class="konva-image-status">{status}</span>{/if}
   {/if}
 </div>

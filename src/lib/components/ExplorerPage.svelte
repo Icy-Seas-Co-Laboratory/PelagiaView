@@ -2,7 +2,10 @@
   import { onDestroy, onMount } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
+  import ProcessingPresetControls from '$lib/components/ProcessingPresetControls.svelte';
   import { ApiError } from '$lib/api/client';
+  import { listProcessingPresets, saveProcessingPreset } from '$lib/api/processingPresets';
+  import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient } from '$lib/stores/session';
   import type {
     DetectionSummary,
@@ -22,13 +25,18 @@
   } from '$lib/utils/configDefaults';
   import {
     frameCaption,
-    isFrameDisplayInverted,
     payloadKindForDisplay,
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
   import { formatCount } from '$lib/utils/format';
-  import type { CanvasOverlayImage, CanvasOverlayRect } from '$lib/utils/imageCanvas';
-  import type { ImageLayer, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
+  import type { ImageLayer, ImageOverlayImage, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
+  import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
+  import {
+    liveProcessingPreset as createLiveProcessingPreset,
+    PROCESSING_PRESET_APPLIED_EVENT,
+    processingPresetByKey,
+    processingPresetKey
+  } from '$lib/processing/settings';
   import {
     booleanPreference,
     nullableNumberPreference as nullablePreferenceNumber,
@@ -188,6 +196,22 @@
   let lastFrameImageKey = '';
   let failedImageUrl = '';
   const explorerPreferenceKey = preferenceKey('explorer');
+  const liveProcessingPresetKey = preferenceKey('processing-preset:live');
+  let processingPresets: ProcessingPreset[] = [];
+  let selectedProcessingPresetKey = 'live:live';
+  let presetMessage: string | null = null;
+  let presetError: string | null = null;
+  let presetsLoading = false;
+
+  type ExplorerTab = 'preprocessing' | 'threshold' | 'detection' | 'refinement' | 'presets';
+  const explorerTabs: Array<{ id: ExplorerTab; label: string }> = [
+    { id: 'preprocessing', label: 'Preprocessing' },
+    { id: 'threshold', label: 'Threshold' },
+    { id: 'detection', label: 'Candidate Detection' },
+    { id: 'refinement', label: 'Refinement' },
+    { id: 'presets', label: 'Presets' }
+  ];
+  let activeExplorerTab: ExplorerTab = 'preprocessing';
 
   type ExplorerPreferences = {
     selectedAssetId: string;
@@ -285,13 +309,19 @@
   $: selectedFrame = findFrameByNumber(selectedFrameNum);
   $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(explorerPreferenceKey, explorerPreferenceSnapshot);
+  $: liveProcessingPreset = createLiveProcessingPreset(captureProcessingSettings());
+  $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
+  $: if (preferencesReady) writePreferences(liveProcessingPresetKey, liveProcessingPreset);
   $: framePayloadKind = payloadKindForDisplay(frameDisplayMode);
-  $: imageInverted = isFrameDisplayInverted(frameDisplayMode);
+  $: imageInverted = $imageInversionEnabled;
   $: imageUrl =
     selectedAssetId && selectedFrameNum > 0
       ? framePreviewUrl(frameDisplayMode, preprocessedReloadKey, selectedFrame)
       : '';
   $: imageUnavailable = Boolean(imageUrl && failedImageUrl === imageUrl);
+  $: if ((activeExplorerTab === 'threshold' || activeExplorerTab === 'detection') && frameDisplayMode !== 'preprocessed') {
+    frameDisplayMode = 'preprocessed';
+  }
   $: void loadFrameImageHeaders(imageUrl);
   $: boxes = detections.map(toCropBox).filter((box): box is BBox => box !== null);
   $: targetBoxes = detections.map(toTargetBox).filter((box): box is BBox => box !== null);
@@ -302,8 +332,6 @@
     : frameCanvasOverlays(
         boxes,
         targetBoxes,
-        imageUrl,
-        imageInverted,
         bboxCoordinateBasis
       );
   $: canvasMaskOverlays = frameMaskOverlays(
@@ -394,7 +422,15 @@
   );
   $: resetLivePreviewForImageOptions(selectedAssetId, selectedFrameNum, previewOptionsKey);
 
-  onMount(async () => {
+  onMount(() => {
+    window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+    void initializeExplorer();
+    return () => {
+      window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+    };
+  });
+
+  async function initializeExplorer() {
     const client = getClient();
     if (!client) return;
     try {
@@ -405,6 +441,8 @@
       ]);
       applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
       restorePreferences();
+      applyStoredLiveProcessingPreset();
+      await loadProcessingPresets();
       assets = await client.listAssets('video');
       if (!assets.some((asset) => asset.id === selectedAssetId)) {
         selectedAssetId = assets[0]?.id ?? '';
@@ -416,7 +454,7 @@
     } finally {
       loading = false;
     }
-  });
+  }
 
   onDestroy(() => {
     clearMaskDifferenceUrls();
@@ -517,6 +555,249 @@
     };
   }
 
+  function captureProcessingSettings(): ProcessingSettings {
+    return {
+      thresholdMethod,
+      manualThreshold,
+      thresholdingMaximumValue,
+      boundedOtsuMinContrast,
+      boundedOtsuMaxForegroundFraction,
+      cannyEnabled,
+      cannyLowThreshold,
+      cannyHighThreshold,
+      cannyBlurKernel,
+      adaptiveBlockSize,
+      adaptiveC,
+      percentileBackgroundPercentile,
+      percentileMinContrast,
+      hysteresisLowThreshold,
+      hysteresisHighThreshold,
+      hysteresisConnectivity,
+      sobelPercentile,
+      sobelThreshold,
+      sobelKernelSize,
+      maskAugmentationEnabled,
+      maskAugmentationSteps: [...maskAugmentationSteps],
+      dilateKernelW,
+      dilateKernelH,
+      dilateIterations,
+      erodeKernelW,
+      erodeKernelH,
+      erodeIterations,
+      openKernelW,
+      openKernelH,
+      openIterations,
+      closeKernelW,
+      closeKernelH,
+      closeIterations,
+      fillHoles,
+      removeSmallComponents,
+      minComponentArea,
+      clearBorder,
+      roiAssemblyMethod,
+      roiAssemblyConnectivity,
+      backgroundCorrection,
+      backgroundPercentile,
+      flatfieldCorrection,
+      flatfieldQ,
+      flatfieldAxis,
+      flatfieldMinFieldValue,
+      flatfieldMaxFieldValue,
+      applyMask,
+      cropEnabled,
+      cropX,
+      cropY,
+      cropW,
+      cropH,
+      invertIntensity,
+      minArea,
+      maxArea,
+      minPerimeter,
+      maxPerimeter,
+      minWidth,
+      maxWidth,
+      minHeight,
+      maxHeight,
+      minWidthPlusHeight,
+      maxWidthPlusHeight,
+      padding,
+      roiEncoding,
+      zstdMinBytes,
+      alwaysStoreMask,
+      storeRoiPayloadMinArea,
+      storeRoiPayloadMinWidth,
+      storeRoiPayloadMinHeight,
+      storeRoiPayloadMinWidthPlusHeight,
+      refinementModelKind,
+      refinementModelRef,
+      refinementModelRunDir,
+      refinementModelArtifact,
+      refinementTileSize,
+      refinementOverlapFraction,
+      refinementModelBatchSize,
+      refinementOutputThreshold,
+      refinementAllowFrameExpansion,
+      refinementMaxIterations,
+      refinementExpansionPixels,
+      refinementEdgeTouchMargin,
+      refinementEncoding
+    };
+  }
+
+  function applyProcessingSettings(settings: ProcessingSettings) {
+    if ('thresholdMethod' in settings) thresholdMethod = stringPreference(settings.thresholdMethod, thresholdMethod);
+    if ('manualThreshold' in settings) manualThreshold = numberPreference(settings.manualThreshold, manualThreshold);
+    if ('thresholdingMaximumValue' in settings) thresholdingMaximumValue = nullablePreferenceNumber(settings.thresholdingMaximumValue, thresholdingMaximumValue);
+    if ('boundedOtsuMinContrast' in settings) boundedOtsuMinContrast = numberPreference(settings.boundedOtsuMinContrast, boundedOtsuMinContrast);
+    if ('boundedOtsuMaxForegroundFraction' in settings) boundedOtsuMaxForegroundFraction = numberPreference(settings.boundedOtsuMaxForegroundFraction, boundedOtsuMaxForegroundFraction);
+    if ('cannyEnabled' in settings) cannyEnabled = booleanPreference(settings.cannyEnabled, cannyEnabled);
+    if ('cannyLowThreshold' in settings) cannyLowThreshold = numberPreference(settings.cannyLowThreshold, cannyLowThreshold);
+    if ('cannyHighThreshold' in settings) cannyHighThreshold = numberPreference(settings.cannyHighThreshold, cannyHighThreshold);
+    if ('cannyBlurKernel' in settings) cannyBlurKernel = numberPreference(settings.cannyBlurKernel, cannyBlurKernel);
+    if ('adaptiveBlockSize' in settings) adaptiveBlockSize = numberPreference(settings.adaptiveBlockSize, adaptiveBlockSize);
+    if ('adaptiveC' in settings) adaptiveC = numberPreference(settings.adaptiveC, adaptiveC);
+    if ('percentileBackgroundPercentile' in settings) percentileBackgroundPercentile = numberPreference(settings.percentileBackgroundPercentile, percentileBackgroundPercentile);
+    if ('percentileMinContrast' in settings) percentileMinContrast = numberPreference(settings.percentileMinContrast, percentileMinContrast);
+    if ('hysteresisLowThreshold' in settings) hysteresisLowThreshold = numberPreference(settings.hysteresisLowThreshold, hysteresisLowThreshold);
+    if ('hysteresisHighThreshold' in settings) hysteresisHighThreshold = numberPreference(settings.hysteresisHighThreshold, hysteresisHighThreshold);
+    if ('hysteresisConnectivity' in settings) hysteresisConnectivity = numberPreference(settings.hysteresisConnectivity, hysteresisConnectivity);
+    if ('sobelPercentile' in settings) sobelPercentile = numberPreference(settings.sobelPercentile, sobelPercentile);
+    if ('sobelThreshold' in settings) sobelThreshold = nullablePreferenceNumber(settings.sobelThreshold, sobelThreshold);
+    if ('sobelKernelSize' in settings) sobelKernelSize = numberPreference(settings.sobelKernelSize, sobelKernelSize);
+    if ('maskAugmentationEnabled' in settings) maskAugmentationEnabled = booleanPreference(settings.maskAugmentationEnabled, maskAugmentationEnabled);
+    if ('maskAugmentationSteps' in settings) maskAugmentationSteps = new Set(stringArrayPreference(settings.maskAugmentationSteps, [...maskAugmentationSteps]));
+    if ('dilateKernelW' in settings) dilateKernelW = numberPreference(settings.dilateKernelW, dilateKernelW);
+    if ('dilateKernelH' in settings) dilateKernelH = numberPreference(settings.dilateKernelH, dilateKernelH);
+    if ('dilateIterations' in settings) dilateIterations = numberPreference(settings.dilateIterations, dilateIterations);
+    if ('erodeKernelW' in settings) erodeKernelW = numberPreference(settings.erodeKernelW, erodeKernelW);
+    if ('erodeKernelH' in settings) erodeKernelH = numberPreference(settings.erodeKernelH, erodeKernelH);
+    if ('erodeIterations' in settings) erodeIterations = numberPreference(settings.erodeIterations, erodeIterations);
+    if ('openKernelW' in settings) openKernelW = numberPreference(settings.openKernelW, openKernelW);
+    if ('openKernelH' in settings) openKernelH = numberPreference(settings.openKernelH, openKernelH);
+    if ('openIterations' in settings) openIterations = numberPreference(settings.openIterations, openIterations);
+    if ('closeKernelW' in settings) closeKernelW = numberPreference(settings.closeKernelW, closeKernelW);
+    if ('closeKernelH' in settings) closeKernelH = numberPreference(settings.closeKernelH, closeKernelH);
+    if ('closeIterations' in settings) closeIterations = numberPreference(settings.closeIterations, closeIterations);
+    if ('fillHoles' in settings) fillHoles = booleanPreference(settings.fillHoles, fillHoles);
+    if ('removeSmallComponents' in settings) removeSmallComponents = booleanPreference(settings.removeSmallComponents, removeSmallComponents);
+    if ('minComponentArea' in settings) minComponentArea = numberPreference(settings.minComponentArea, minComponentArea);
+    if ('clearBorder' in settings) clearBorder = booleanPreference(settings.clearBorder, clearBorder);
+    if ('roiAssemblyMethod' in settings) roiAssemblyMethod = stringPreference(settings.roiAssemblyMethod, roiAssemblyMethod);
+    if ('roiAssemblyConnectivity' in settings) roiAssemblyConnectivity = numberPreference(settings.roiAssemblyConnectivity, roiAssemblyConnectivity);
+    if ('backgroundCorrection' in settings) backgroundCorrection = booleanPreference(settings.backgroundCorrection, backgroundCorrection);
+    if ('backgroundPercentile' in settings) backgroundPercentile = numberPreference(settings.backgroundPercentile, backgroundPercentile);
+    if ('flatfieldCorrection' in settings) flatfieldCorrection = booleanPreference(settings.flatfieldCorrection, flatfieldCorrection);
+    if ('flatfieldQ' in settings) flatfieldQ = numberPreference(settings.flatfieldQ, flatfieldQ);
+    if ('flatfieldAxis' in settings) flatfieldAxis = numberPreference(settings.flatfieldAxis, flatfieldAxis);
+    if ('flatfieldMinFieldValue' in settings) flatfieldMinFieldValue = numberPreference(settings.flatfieldMinFieldValue, flatfieldMinFieldValue);
+    if ('flatfieldMaxFieldValue' in settings) flatfieldMaxFieldValue = nullablePreferenceNumber(settings.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    if ('applyMask' in settings) applyMask = booleanPreference(settings.applyMask, applyMask);
+    if ('cropEnabled' in settings) cropEnabled = booleanPreference(settings.cropEnabled, cropEnabled);
+    if ('cropX' in settings) cropX = nullablePreferenceNumber(settings.cropX, cropX);
+    if ('cropY' in settings) cropY = nullablePreferenceNumber(settings.cropY, cropY);
+    if ('cropW' in settings) cropW = nullablePreferenceNumber(settings.cropW, cropW);
+    if ('cropH' in settings) cropH = nullablePreferenceNumber(settings.cropH, cropH);
+    if ('invertIntensity' in settings) invertIntensity = booleanPreference(settings.invertIntensity, invertIntensity);
+    if ('minArea' in settings) minArea = nullablePreferenceNumber(settings.minArea, minArea);
+    if ('maxArea' in settings) maxArea = nullablePreferenceNumber(settings.maxArea, maxArea);
+    if ('minPerimeter' in settings) minPerimeter = numberPreference(settings.minPerimeter, minPerimeter);
+    if ('maxPerimeter' in settings) maxPerimeter = nullablePreferenceNumber(settings.maxPerimeter, maxPerimeter);
+    if ('minWidth' in settings) minWidth = nullablePreferenceNumber(settings.minWidth, minWidth);
+    if ('maxWidth' in settings) maxWidth = nullablePreferenceNumber(settings.maxWidth, maxWidth);
+    if ('minHeight' in settings) minHeight = nullablePreferenceNumber(settings.minHeight, minHeight);
+    if ('maxHeight' in settings) maxHeight = nullablePreferenceNumber(settings.maxHeight, maxHeight);
+    if ('minWidthPlusHeight' in settings) minWidthPlusHeight = nullablePreferenceNumber(settings.minWidthPlusHeight, minWidthPlusHeight);
+    if ('maxWidthPlusHeight' in settings) maxWidthPlusHeight = nullablePreferenceNumber(settings.maxWidthPlusHeight, maxWidthPlusHeight);
+    if ('padding' in settings) padding = numberPreference(settings.padding, padding);
+    if ('roiEncoding' in settings) roiEncoding = stringPreference(settings.roiEncoding, roiEncoding);
+    if ('zstdMinBytes' in settings) zstdMinBytes = nullablePreferenceNumber(settings.zstdMinBytes, zstdMinBytes);
+    if ('alwaysStoreMask' in settings) alwaysStoreMask = booleanPreference(settings.alwaysStoreMask, alwaysStoreMask);
+    if ('storeRoiPayloadMinArea' in settings) storeRoiPayloadMinArea = nullablePreferenceNumber(settings.storeRoiPayloadMinArea, storeRoiPayloadMinArea);
+    if ('storeRoiPayloadMinWidth' in settings) storeRoiPayloadMinWidth = nullablePreferenceNumber(settings.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
+    if ('storeRoiPayloadMinHeight' in settings) storeRoiPayloadMinHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
+    if ('storeRoiPayloadMinWidthPlusHeight' in settings) storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
+    if ('refinementModelKind' in settings) refinementModelKind = stringPreference(settings.refinementModelKind, refinementModelKind);
+    if ('refinementModelRef' in settings) refinementModelRef = stringPreference(settings.refinementModelRef, refinementModelRef);
+    if ('refinementModelRunDir' in settings) refinementModelRunDir = stringPreference(settings.refinementModelRunDir, refinementModelRunDir);
+    if ('refinementModelArtifact' in settings) refinementModelArtifact = stringPreference(settings.refinementModelArtifact, refinementModelArtifact);
+    if ('refinementTileSize' in settings) refinementTileSize = numberPreference(settings.refinementTileSize, refinementTileSize);
+    if ('refinementOverlapFraction' in settings) refinementOverlapFraction = numberPreference(settings.refinementOverlapFraction, refinementOverlapFraction);
+    if ('refinementModelBatchSize' in settings) refinementModelBatchSize = nullablePreferenceNumber(settings.refinementModelBatchSize, refinementModelBatchSize);
+    if ('refinementOutputThreshold' in settings) refinementOutputThreshold = numberPreference(settings.refinementOutputThreshold, refinementOutputThreshold);
+    if ('refinementAllowFrameExpansion' in settings) refinementAllowFrameExpansion = booleanPreference(settings.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
+    if ('refinementMaxIterations' in settings) refinementMaxIterations = numberPreference(settings.refinementMaxIterations, refinementMaxIterations);
+    if ('refinementExpansionPixels' in settings) refinementExpansionPixels = nullablePreferenceNumber(settings.refinementExpansionPixels, refinementExpansionPixels);
+    if ('refinementEdgeTouchMargin' in settings) refinementEdgeTouchMargin = numberPreference(settings.refinementEdgeTouchMargin, refinementEdgeTouchMargin);
+    if ('refinementEncoding' in settings) refinementEncoding = stringPreference(settings.refinementEncoding, refinementEncoding);
+  }
+
+  async function loadProcessingPresets() {
+    presetsLoading = true;
+    presetError = null;
+    try {
+      processingPresets = await listProcessingPresets();
+    } catch (err) {
+      presetError = err instanceof Error ? err.message : String(err);
+    } finally {
+      presetsLoading = false;
+    }
+  }
+
+  function selectedProcessingPreset(): ProcessingPreset | null {
+    return processingPresetByKey(availableProcessingPresets, selectedProcessingPresetKey);
+  }
+
+  function applySelectedProcessingPreset(preset = selectedProcessingPreset()) {
+    if (!preset) return;
+    presetMessage = null;
+    presetError = null;
+    if (preset.source === 'live') {
+      presetMessage = 'Current session settings are already active.';
+      return;
+    }
+    applyProcessingSettings(preset.settings);
+    selectedProcessingPresetKey = 'live:live';
+    presetMessage = `Applied ${preset.name}.`;
+  }
+
+  async function saveCurrentProcessingPreset(nameInput: string, descriptionInput: string) {
+    presetMessage = null;
+    presetError = null;
+    const name = nameInput.trim();
+    if (!name) {
+      presetError = 'Enter a preset name before saving.';
+      return;
+    }
+    try {
+      const preset = await saveProcessingPreset({
+        name,
+        description: descriptionInput,
+        settings: captureProcessingSettings()
+      });
+      await loadProcessingPresets();
+      selectedProcessingPresetKey = processingPresetKey(preset);
+      presetMessage = `Saved ${preset.name}.`;
+    } catch (err) {
+      presetError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  function applyStoredLiveProcessingPreset() {
+    const preset = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
+    if (preset?.source === 'live' && preset.settings) {
+      applyProcessingSettings(preset.settings);
+    }
+  }
+
+  function handleHeaderProcessingPresetApplied(event: Event) {
+    const preset = (event as CustomEvent<ProcessingPreset>).detail;
+    if (!preset?.settings) return;
+    applyProcessingSettings(preset.settings);
+    selectedProcessingPresetKey = 'live:live';
+    presetMessage = 'Applied header preset.';
+    presetError = null;
+  }
+
   function restorePreferences() {
     const preferences = readPreferences<ExplorerPreferences>(explorerPreferenceKey);
     if (!preferences) return;
@@ -613,9 +894,8 @@
   }
 
   function frameDisplayModePreference(value: unknown, fallback: FrameDisplayMode): FrameDisplayMode {
-    return value === 'original' || value === 'preprocessed' || value === 'preprocessed-inverted'
-      ? value
-      : fallback;
+    if (value === 'preprocessed-inverted') return 'preprocessed';
+    return value === 'original' || value === 'preprocessed' ? value : fallback;
   }
 
   function applyConfigDefaults(
@@ -1154,24 +1434,6 @@
     }
   }
 
-  async function saveSegmentation() {
-    const client = getClient();
-    const frame = await ensureSelectedFrame();
-    if (!client || !frame?.id) return;
-    message = null;
-    error = null;
-    try {
-      const result = await client.segmentFrame(frame.id, options());
-      detections = result.detections;
-      refinedDetections = [];
-      stageCounts = result.stage_counts ?? {};
-      bboxCoordinateBasis = liveBboxCoordinateBasis(result);
-      message = `Saved segmentation for frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} stored.`;
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
-  }
-
   async function refineCurrentDetections() {
     const client = getClient();
     const frame = await ensureSelectedFrame();
@@ -1270,7 +1532,7 @@
   function markImageUnavailable() {
     if (framePayloadKind === 'preprocessed') {
       failedImageUrl = imageUrl;
-      frameDisplayMode = 'original';
+      if (activeExplorerTab === 'preprocessing') frameDisplayMode = 'original';
       hasLivePreview = false;
       return;
     }
@@ -1568,10 +1830,8 @@
   function frameCanvasOverlays(
     cropBoxes: BBox[],
     targetBoxesForFrame: BBox[],
-    currentImageUrl: string,
-    currentImageInverted: boolean,
     basis: BboxCoordinateBasis
-  ): CanvasOverlayRect[] {
+  ): ImageOverlayRect[] {
     if (imageScaleX === null || imageScaleY === null) return [];
     const scaleX = imageScaleX;
     const scaleY = imageScaleY;
@@ -1587,13 +1847,7 @@
           stroke: '#f5e642',
           lineWidth: 2,
           halo: 'rgba(17, 25, 22, 0.7)',
-          className: 'bbox-hotspot',
-          coordinateSpace: 'image' as const,
-          hoverPreview: {
-            imageUrl: currentImageUrl,
-            inverted: currentImageInverted,
-            imageStyle: cropImageStyle(box)
-          }
+          coordinateSpace: 'image' as const
         };
       }),
       ...targetBoxesForFrame.map((box) => {
@@ -1607,7 +1861,6 @@
           stroke: '#e2322e',
           lineWidth: 3,
           halo: 'rgba(255, 255, 255, 0.8)',
-          className: 'bbox-target',
           coordinateSpace: 'image' as const,
           selected: true
         };
@@ -1623,10 +1876,10 @@
     includeRefinedMasks: boolean,
     includeMaskDifferences: boolean,
     differenceUrls: Map<string, string>
-  ): CanvasOverlayImage[] {
+  ): ImageOverlayImage[] {
     const client = getClient();
     if (!client || imageScaleX === null || imageScaleY === null) return [];
-    const layers: CanvasOverlayImage[] = [];
+    const layers: ImageOverlayImage[] = [];
     if (includeCandidateMasks) {
       for (const [index, detection] of candidateDetections.entries()) {
         if (!detection.id) continue;
@@ -1673,7 +1926,6 @@
           h: scaled.h,
           tint: '#ffd21f',
           opacity: 1,
-          className: 'difference-mask',
           coordinateSpace: 'image'
         });
       }
@@ -1868,16 +2120,16 @@
     maskUrl: string,
     tint: string,
     opacity: number,
-    className: string,
+    layerIdPrefix: string,
     basis: BboxCoordinateBasis
-  ): CanvasOverlayImage | null {
+  ): ImageOverlayImage | null {
     if (imageScaleX === null || imageScaleY === null) return null;
     const box = toCropBox(detection, index);
     if (!box) return null;
     const scaled = scaleBoxToDisplayedFrame(box, imageScaleX, imageScaleY, basis);
     if (scaled.w <= 0 || scaled.h <= 0) return null;
     return {
-      id: `${className}-${detection.id ?? index}`,
+      id: `${layerIdPrefix}-${detection.id ?? index}`,
       imageUrl: maskUrl,
       x: scaled.x,
       y: scaled.y,
@@ -1885,7 +2137,6 @@
       h: scaled.h,
       tint,
       opacity,
-      className,
       coordinateSpace: 'image'
     };
   }
@@ -2010,17 +2261,45 @@
     return width && height ? { width, height } : null;
   }
 
-  function frameRenderSpec(): ImageRenderSpec {
+  function activeFrameCaption(tab: ExplorerTab): string {
+    if (tab === 'threshold') return `${frameCaption(frameDisplayMode)} with threshold mask`;
+    if (tab === 'detection') return `${frameCaption(frameDisplayMode)} with candidate ROI boxes`;
+    return frameCaption(frameDisplayMode);
+  }
+
+  function activeFrameAlt(tab: ExplorerTab): string {
+    if (tab === 'threshold') return 'Selected frame with threshold mask overlay';
+    if (tab === 'detection') return 'Selected frame with candidate ROI overlays';
+    return 'Selected frame';
+  }
+
+  function thresholdMaskOverlays(): ImageOverlayImage[] {
+    return frameMaskOverlays(detections, [], bboxCoordinateBasis, true, false, false, new Map()).map((layer) => ({
+      ...layer,
+      tint: '#ff2020',
+      opacity: 0.36
+    }));
+  }
+
+  function activeImageLayers(tab: ExplorerTab): ImageLayer[] {
+    if (tab === 'threshold') return imageLayersForFrame([], thresholdMaskOverlays());
+    if (tab === 'detection') {
+      return imageLayersForFrame(frameCanvasOverlays(boxes, targetBoxes, bboxCoordinateBasis), []);
+    }
+    return [];
+  }
+
+  function frameRenderSpec(tab: ExplorerTab = activeExplorerTab): ImageRenderSpec {
     const sourceDimensions = frameRenderSourceDimensions();
     return {
       image: {
         url: imageUrl,
-        alt: hasLivePreview ? 'Selected frame with explorer overlays' : 'Selected frame',
+        alt: hasLivePreview ? activeFrameAlt(tab) : 'Selected frame',
         invert: imageInverted,
         sourceWidth: sourceDimensions?.width ?? (imageNaturalWidth || null),
         sourceHeight: sourceDimensions?.height ?? (imageNaturalHeight || null)
       },
-      layers: imageLayersForFrame(canvasOverlays, canvasMaskOverlays),
+      layers: activeImageLayers(tab),
       scaleBar: {
         enabled: true,
         placement: 'inside'
@@ -2047,8 +2326,8 @@
   }
 
   function imageLayersForFrame(
-    rects: CanvasOverlayRect[],
-    masks: CanvasOverlayImage[]
+    rects: ImageOverlayRect[],
+    masks: ImageOverlayImage[]
   ): ImageLayer[] {
     return [
       ...masks.map((mask) => ({
@@ -2085,16 +2364,30 @@
   }
 </script>
 
-<div class="segmentation-layout">
-  <section class="panel image-panel">
-    <div class="panel-heading">
-      <div>
-        <p class="eyebrow">Frame data</p>
-        <h2>Explorer preview</h2>
-      </div>
-      {#if loading}<span class="soft">Loading</span>{/if}
-    </div>
+<section class="panel explorer-nav-panel">
+  <div class="explorer-tabs" role="tablist" aria-label="Explorer workflow sections">
+    {#each explorerTabs as tab}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeExplorerTab === tab.id}
+        class:active={activeExplorerTab === tab.id}
+        on:click={() => (activeExplorerTab = tab.id)}
+      >
+        {tab.label}
+      </button>
+    {/each}
+  </div>
 
+  <div class="panel-heading">
+    <div>
+      <p class="eyebrow">Frame data</p>
+      <h2>Explorer workflow</h2>
+    </div>
+    {#if loading}<span class="soft">Loading</span>{/if}
+  </div>
+
+  {#if activeExplorerTab === 'preprocessing'}
     <div class="asset-row">
       <label>
         Asset
@@ -2118,12 +2411,43 @@
       <span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span>
     </div>
 
-    <FrameDisplayToggle bind:value={frameDisplayMode} />
+    <div class="explorer-display-row">
+      <FrameDisplayToggle bind:value={frameDisplayMode} />
+      <div class="detection-strip compact-strip">
+        <strong>{detections.length}</strong>
+        <span>detections</span>
+        {#if hasRefinementResults}
+          <strong>{refinementSummary.count}</strong>
+          <span>refined</span>
+        {/if}
+      </div>
+    </div>
+  {:else}
+    <div class="selected-frame-strip">
+      <span>{selectedAsset?.filename ?? selectedAssetId ?? 'No asset selected'}</span>
+      <strong>{frameCount ? `Frame ${selectedFrameNum} / ${frameCount}` : 'No frames'}</strong>
+      <span>{detections.length} detection{detections.length === 1 ? '' : 's'}</span>
+      {#if hasRefinementResults}
+        <span>{refinementSummary.count} refined</span>
+      {/if}
+    </div>
+  {/if}
+</section>
+
+<div class:segmentation-layout={activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'} class:single-panel-layout={activeExplorerTab === 'refinement' || activeExplorerTab === 'presets'}>
+  {#if activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'}
+  <section class="panel image-panel">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">{activeExplorerTab}</p>
+        <h2>{activeExplorerTab === 'threshold' ? 'Threshold preview' : activeExplorerTab === 'detection' ? 'Candidate preview' : 'Preprocessing preview'}</h2>
+      </div>
+    </div>
 
     <div class="frame-stage comparison-stage">
       {#if imageUrl}
         <figure>
-          <figcaption>{frameCaption(frameDisplayMode)}</figcaption>
+          <figcaption>{activeFrameCaption(activeExplorerTab)}</figcaption>
           {#if imageUnavailable}
             <div class="preview-placeholder frame-unavailable">
               {#if framePayloadKind === 'preprocessed'}
@@ -2137,7 +2461,7 @@
           {:else}
             {#key imageUrl}
               <KonvaImageCanvas
-                spec={frameRenderSpec()}
+                spec={frameRenderSpec(activeExplorerTab)}
                 mode="viewer"
                 onImageLoad={setImageNaturalSize}
                 onImageError={markImageUnavailable}
@@ -2150,15 +2474,8 @@
       {/if}
     </div>
 
-    <div class="detection-strip">
-      <strong>{detections.length}</strong>
-      <span>detections on selected frame</span>
-      {#if hasRefinementResults}
-        <strong>{refinementSummary.count}</strong>
-        <span>refined ROI{refinementSummary.count === 1 ? '' : 's'}</span>
-      {/if}
-    </div>
   </section>
+  {/if}
 
   <section class="panel controls-panel">
     <div class="panel-heading">
@@ -2167,6 +2484,20 @@
         <h2>Explorer controls</h2>
       </div>
     </div>
+
+    {#if activeExplorerTab === 'presets'}
+      <ProcessingPresetControls
+        presets={availableProcessingPresets}
+        bind:selectedKey={selectedProcessingPresetKey}
+        loading={presetsLoading}
+        message={presetMessage}
+        error={presetError}
+        allowSave={true}
+        onApply={applySelectedProcessingPreset}
+        onRefresh={loadProcessingPresets}
+        onSave={saveCurrentProcessingPreset}
+      />
+    {:else if activeExplorerTab === 'preprocessing'}
 
     <details class="form-section collapsible-section" open>
       <summary class="section-heading">
@@ -2267,6 +2598,8 @@
         </button>
       </div>
     </details>
+
+    {:else if activeExplorerTab === 'threshold'}
 
     <details class="form-section collapsible-section" open>
       <summary class="section-heading">
@@ -2489,6 +2822,12 @@
       {/if}
     </details>
 
+    <div class="button-row">
+      <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Preview threshold</button>
+    </div>
+
+    {:else if activeExplorerTab === 'detection'}
+
     <details class="form-section collapsible-section" open>
       <summary class="section-heading">
         <span>
@@ -2618,6 +2957,12 @@
       </details>
     </details>
 
+    <div class="button-row">
+      <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Refresh candidates</button>
+    </div>
+
+    {:else if activeExplorerTab === 'refinement'}
+
     <details class="form-section collapsible-section" open>
       <summary class="section-heading">
         <span>
@@ -2738,18 +3083,18 @@
     </details>
 
     <div class="button-row">
-      <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Preview live</button>
-      <button class="ghost" type="button" on:click={saveSegmentation} disabled={frameCount < 1}>Save detections</button>
       <button class="ghost" type="button" on:click={refineCurrentDetections} disabled={frameCount < 1 || refining}>
         {refining ? 'Refining' : 'Refine current ROIs'}
       </button>
      </div>
+    {/if}
 
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
   </section>
 </div>
 
+{#if activeExplorerTab === 'detection' || activeExplorerTab === 'refinement'}
 <section class="panel bbox-panel">
   <div class="panel-heading">
     <div>
@@ -2824,3 +3169,4 @@
     <p class="empty">{detections.length ? 'Detections were returned, but no bbox fields could be parsed.' : 'No bounding boxes for the current frame.'}</p>
   {/if}
 </section>
+{/if}

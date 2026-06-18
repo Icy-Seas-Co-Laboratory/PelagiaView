@@ -1,0 +1,56 @@
+[preset]
+id = "high-sensitivity"
+name = "High sensitivity"
+description = "Lower contrast thresholding with fill and cleanup steps for faint ROI candidates."
+
+null_settings = [
+  "maxArea",
+  "maxPerimeter",
+  "maxWidth",
+  "maxHeight",
+  "zstdMinBytes",
+]
+
+[settings]
+thresholdMethod = "bounded_otsu_canny"
+thresholdingMaximumValue = 100
+boundedOtsuMinContrast = 25
+boundedOtsuMaxForegroundFraction = 0.7
+cannyEnabled = true
+cannyLowThreshold = 40
+cannyHighThreshold = 100
+cannyBlurKernel = 5
+maskAugmentationEnabled = true
+maskAugmentationSteps = ["dilate", "fill_holes", "remove_small_components"]
+dilateKernelW = 3
+dilateKernelH = 3
+dilateIterations = 1
+fillHoles = true
+removeSmallComponents = true
+minComponentArea = 4
+clearBorder = false
+roiAssemblyMethod = "connected_components"
+roiAssemblyConnectivity = 8
+backgroundCorrection = true
+backgroundPercentile = 50
+flatfieldCorrection = false
+applyMask = false
+cropEnabled = false
+invertIntensity = false
+minArea = 4
+minPerimeter = 40
+minWidth = 2
+minHeight = 2
+padding = 120
+roiEncoding = "zstd"
+alwaysStoreMask = true
+refinementModelKind = "identity"
+refinementModelArtifact = "auto"
+refinementTileSize = 256
+refinementOverlapFraction = 0.25
+refinementOutputThreshold = 0.45
+refinementAllowFrameExpansion = true
+refinementMaxIterations = 4
+refinementEdgeTouchMargin = 1
+refinementEncoding = "auto"
+

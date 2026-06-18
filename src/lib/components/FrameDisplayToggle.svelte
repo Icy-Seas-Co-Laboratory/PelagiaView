@@ -19,11 +19,4 @@
   >
     Preprocessed
   </button>
-  <button
-    type="button"
-    class:active={value === 'preprocessed-inverted'}
-    on:click={() => (value = 'preprocessed-inverted')}
-  >
-    Preprocessed inverted
-  </button>
 </div>

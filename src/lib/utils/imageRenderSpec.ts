@@ -1,5 +1,5 @@
 export type ImageCoordinateSpace = 'source' | 'image' | 'percent';
-export type ImageCanvasMode = 'thumbnail' | 'static' | 'viewer' | 'interactive';
+export type ImageViewerMode = 'thumbnail' | 'static' | 'viewer' | 'interactive';
 export type ImageExportControls = 'full' | 'menu' | 'copy-menu' | 'none';
 
 export type ImageBaseSpec = {
@@ -46,6 +46,32 @@ export type ImageMaskOverlayLayer = {
 };
 
 export type ImageLayer = ImageRectLayer | ImageMaskOverlayLayer;
+
+export type ImageOverlayRect = {
+  id?: string | number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  stroke: string;
+  lineWidth?: number;
+  halo?: string;
+  coordinateSpace?: ImageCoordinateSpace;
+  selected?: boolean;
+  tooltip?: string;
+};
+
+export type ImageOverlayImage = {
+  id?: string | number;
+  imageUrl: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  tint: string;
+  opacity?: number;
+  coordinateSpace?: ImageCoordinateSpace;
+};
 
 export type ImageScaleBarSpec = {
   enabled?: boolean;

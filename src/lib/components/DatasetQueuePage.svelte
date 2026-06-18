@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ProcessingPresetControls from '$lib/components/ProcessingPresetControls.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
+  import { listProcessingPresets } from '$lib/api/processingPresets';
   import { getClient, session } from '$lib/stores/session';
   import type {
     AssetProcessingState,
@@ -20,6 +22,13 @@
     stringDefault
   } from '$lib/utils/configDefaults';
   import { formatCount } from '$lib/utils/format';
+  import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
+  import {
+    liveProcessingPreset as createLiveProcessingPreset,
+    PROCESSING_PRESET_APPLIED_EVENT,
+    processingPresetByKey,
+    processingPresetKey
+  } from '$lib/processing/settings';
   import {
     booleanPreference,
     nullableNumberPreference as nullablePreferenceNumber,
@@ -109,6 +118,12 @@
   let lastCatalogKey = '';
   let preferencesReady = false;
   let submittedJobIds: string[] = [];
+  const liveProcessingPresetKey = preferenceKey('processing-preset:live');
+  let processingPresets: ProcessingPreset[] = [];
+  let selectedProcessingPresetKey = 'live:live';
+  let presetMessage: string | null = null;
+  let presetError: string | null = null;
+  let presetsLoading = false;
 
   let frameBatchSize = mode === 'roi_refinement' ? 2500 : 100;
   let lastBatchMode: QueueMode | null = null;
@@ -359,6 +374,9 @@
   }
   $: datasetQueuePreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(datasetQueuePreferenceKey(), datasetQueuePreferenceSnapshot);
+  $: liveProcessingPreset = createLiveProcessingPreset(captureProcessingSettings());
+  $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
+  $: if (preferencesReady) writePreferences(liveProcessingPresetKey, liveProcessingPreset);
   $: activeFilters = {
     assetIds: selectedAssetIds,
     collections: selectedCollections,
@@ -418,7 +436,13 @@
   }
 
   onMount(() => {
+    window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+    applyStoredLiveProcessingPreset();
+    void loadProcessingPresets();
     if ($session.connected) void loadCatalog();
+    return () => {
+      window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+    };
   });
 
   function datasetQueuePreferenceKey(): string {
@@ -631,6 +655,157 @@
     return value === 'original' || value === 'preprocessed' ? value : fallback;
   }
 
+  function captureProcessingSettings(): ProcessingSettings {
+    const {
+      selectedAssetIds: _selectedAssetIds,
+      selectedCollections: _selectedCollections,
+      selectedPreprocessStates: _selectedPreprocessStates,
+      selectedDetectionStates: _selectedDetectionStates,
+      selectedRefinementStates: _selectedRefinementStates,
+      frameBatchSize: _frameBatchSize,
+      priority: _priority,
+      ...settings
+    } = buildPreferenceSnapshot();
+    return settings;
+  }
+
+  function applyProcessingSettings(settings: ProcessingSettings) {
+    if ('preprocessingEncoding' in settings) preprocessingEncoding = stringPreference(settings.preprocessingEncoding, preprocessingEncoding);
+    if ('framePayloadKind' in settings) framePayloadKind = framePayloadKindPreference(settings.framePayloadKind, framePayloadKind);
+    if ('applyPreprocessing' in settings) applyPreprocessing = booleanPreference(settings.applyPreprocessing, applyPreprocessing);
+    if ('thresholdMethod' in settings) thresholdMethod = stringPreference(settings.thresholdMethod, thresholdMethod);
+    if ('manualThreshold' in settings) manualThreshold = numberPreference(settings.manualThreshold, manualThreshold);
+    if ('thresholdingMaximumValue' in settings) thresholdingMaximumValue = nullablePreferenceNumber(settings.thresholdingMaximumValue, thresholdingMaximumValue);
+    if ('boundedOtsuMinContrast' in settings) boundedOtsuMinContrast = numberPreference(settings.boundedOtsuMinContrast, boundedOtsuMinContrast);
+    if ('boundedOtsuMaxForegroundFraction' in settings) boundedOtsuMaxForegroundFraction = numberPreference(settings.boundedOtsuMaxForegroundFraction, boundedOtsuMaxForegroundFraction);
+    if ('cannyEnabled' in settings) cannyEnabled = booleanPreference(settings.cannyEnabled, cannyEnabled);
+    if ('cannyLowThreshold' in settings) cannyLowThreshold = numberPreference(settings.cannyLowThreshold, cannyLowThreshold);
+    if ('cannyHighThreshold' in settings) cannyHighThreshold = numberPreference(settings.cannyHighThreshold, cannyHighThreshold);
+    if ('cannyBlurKernel' in settings) cannyBlurKernel = numberPreference(settings.cannyBlurKernel, cannyBlurKernel);
+    if ('adaptiveBlockSize' in settings) adaptiveBlockSize = numberPreference(settings.adaptiveBlockSize, adaptiveBlockSize);
+    if ('adaptiveC' in settings) adaptiveC = numberPreference(settings.adaptiveC, adaptiveC);
+    if ('percentileBackgroundPercentile' in settings) percentileBackgroundPercentile = numberPreference(settings.percentileBackgroundPercentile, percentileBackgroundPercentile);
+    if ('percentileMinContrast' in settings) percentileMinContrast = numberPreference(settings.percentileMinContrast, percentileMinContrast);
+    if ('hysteresisLowThreshold' in settings) hysteresisLowThreshold = numberPreference(settings.hysteresisLowThreshold, hysteresisLowThreshold);
+    if ('hysteresisHighThreshold' in settings) hysteresisHighThreshold = numberPreference(settings.hysteresisHighThreshold, hysteresisHighThreshold);
+    if ('hysteresisConnectivity' in settings) hysteresisConnectivity = numberPreference(settings.hysteresisConnectivity, hysteresisConnectivity);
+    if ('sobelPercentile' in settings) sobelPercentile = numberPreference(settings.sobelPercentile, sobelPercentile);
+    if ('sobelThreshold' in settings) sobelThreshold = nullablePreferenceNumber(settings.sobelThreshold, sobelThreshold);
+    if ('sobelKernelSize' in settings) sobelKernelSize = numberPreference(settings.sobelKernelSize, sobelKernelSize);
+    if ('maskAugmentationEnabled' in settings) maskAugmentationEnabled = booleanPreference(settings.maskAugmentationEnabled, maskAugmentationEnabled);
+    if ('maskAugmentationSteps' in settings) maskAugmentationSteps = new Set(stringArrayPreference(settings.maskAugmentationSteps, [...maskAugmentationSteps]));
+    if ('dilateKernelW' in settings) dilateKernelW = numberPreference(settings.dilateKernelW, dilateKernelW);
+    if ('dilateKernelH' in settings) dilateKernelH = numberPreference(settings.dilateKernelH, dilateKernelH);
+    if ('dilateIterations' in settings) dilateIterations = numberPreference(settings.dilateIterations, dilateIterations);
+    if ('erodeKernelW' in settings) erodeKernelW = numberPreference(settings.erodeKernelW, erodeKernelW);
+    if ('erodeKernelH' in settings) erodeKernelH = numberPreference(settings.erodeKernelH, erodeKernelH);
+    if ('erodeIterations' in settings) erodeIterations = numberPreference(settings.erodeIterations, erodeIterations);
+    if ('openKernelW' in settings) openKernelW = numberPreference(settings.openKernelW, openKernelW);
+    if ('openKernelH' in settings) openKernelH = numberPreference(settings.openKernelH, openKernelH);
+    if ('openIterations' in settings) openIterations = numberPreference(settings.openIterations, openIterations);
+    if ('closeKernelW' in settings) closeKernelW = numberPreference(settings.closeKernelW, closeKernelW);
+    if ('closeKernelH' in settings) closeKernelH = numberPreference(settings.closeKernelH, closeKernelH);
+    if ('closeIterations' in settings) closeIterations = numberPreference(settings.closeIterations, closeIterations);
+    if ('fillHoles' in settings) fillHoles = booleanPreference(settings.fillHoles, fillHoles);
+    if ('removeSmallComponents' in settings) removeSmallComponents = booleanPreference(settings.removeSmallComponents, removeSmallComponents);
+    if ('minComponentArea' in settings) minComponentArea = numberPreference(settings.minComponentArea, minComponentArea);
+    if ('clearBorder' in settings) clearBorder = booleanPreference(settings.clearBorder, clearBorder);
+    if ('roiAssemblyMethod' in settings) roiAssemblyMethod = stringPreference(settings.roiAssemblyMethod, roiAssemblyMethod);
+    if ('roiAssemblyConnectivity' in settings) roiAssemblyConnectivity = numberPreference(settings.roiAssemblyConnectivity, roiAssemblyConnectivity);
+    if ('backgroundCorrection' in settings) backgroundCorrection = booleanPreference(settings.backgroundCorrection, backgroundCorrection);
+    if ('backgroundPercentile' in settings) backgroundPercentile = numberPreference(settings.backgroundPercentile, backgroundPercentile);
+    if ('flatfieldCorrection' in settings) flatfieldCorrection = booleanPreference(settings.flatfieldCorrection, flatfieldCorrection);
+    if ('flatfieldQ' in settings) flatfieldQ = numberPreference(settings.flatfieldQ, flatfieldQ);
+    if ('flatfieldAxis' in settings) flatfieldAxis = numberPreference(settings.flatfieldAxis, flatfieldAxis);
+    if ('flatfieldMinFieldValue' in settings) flatfieldMinFieldValue = numberPreference(settings.flatfieldMinFieldValue, flatfieldMinFieldValue);
+    if ('flatfieldMaxFieldValue' in settings) flatfieldMaxFieldValue = nullablePreferenceNumber(settings.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    if ('applyMask' in settings) applyMask = booleanPreference(settings.applyMask, applyMask);
+    if ('cropEnabled' in settings) cropEnabled = booleanPreference(settings.cropEnabled, cropEnabled);
+    if ('cropX' in settings) cropX = nullablePreferenceNumber(settings.cropX, cropX);
+    if ('cropY' in settings) cropY = nullablePreferenceNumber(settings.cropY, cropY);
+    if ('cropW' in settings) cropW = nullablePreferenceNumber(settings.cropW, cropW);
+    if ('cropH' in settings) cropH = nullablePreferenceNumber(settings.cropH, cropH);
+    if ('invertIntensity' in settings) invertIntensity = booleanPreference(settings.invertIntensity, invertIntensity);
+    if ('minArea' in settings) minArea = nullablePreferenceNumber(settings.minArea, minArea);
+    if ('maxArea' in settings) maxArea = nullablePreferenceNumber(settings.maxArea, maxArea);
+    if ('minPerimeter' in settings) minPerimeter = numberPreference(settings.minPerimeter, minPerimeter);
+    if ('maxPerimeter' in settings) maxPerimeter = nullablePreferenceNumber(settings.maxPerimeter, maxPerimeter);
+    if ('minWidth' in settings) minWidth = nullablePreferenceNumber(settings.minWidth, minWidth);
+    if ('maxWidth' in settings) maxWidth = nullablePreferenceNumber(settings.maxWidth, maxWidth);
+    if ('minHeight' in settings) minHeight = nullablePreferenceNumber(settings.minHeight, minHeight);
+    if ('maxHeight' in settings) maxHeight = nullablePreferenceNumber(settings.maxHeight, maxHeight);
+    if ('minWidthPlusHeight' in settings) minWidthPlusHeight = nullablePreferenceNumber(settings.minWidthPlusHeight, minWidthPlusHeight);
+    if ('maxWidthPlusHeight' in settings) maxWidthPlusHeight = nullablePreferenceNumber(settings.maxWidthPlusHeight, maxWidthPlusHeight);
+    if ('padding' in settings) padding = numberPreference(settings.padding, padding);
+    if ('roiEncoding' in settings) roiEncoding = stringPreference(settings.roiEncoding, roiEncoding);
+    if ('zstdMinBytes' in settings) zstdMinBytes = nullablePreferenceNumber(settings.zstdMinBytes, zstdMinBytes);
+    if ('alwaysStoreMask' in settings) alwaysStoreMask = booleanPreference(settings.alwaysStoreMask, alwaysStoreMask);
+    if ('storeRoiPayloadMinArea' in settings) storeRoiPayloadMinArea = nullablePreferenceNumber(settings.storeRoiPayloadMinArea, storeRoiPayloadMinArea);
+    if ('storeRoiPayloadMinWidth' in settings) storeRoiPayloadMinWidth = nullablePreferenceNumber(settings.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
+    if ('storeRoiPayloadMinHeight' in settings) storeRoiPayloadMinHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
+    if ('storeRoiPayloadMinWidthPlusHeight' in settings) storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
+    if ('refinementModelKind' in settings) refinementModelKind = stringPreference(settings.refinementModelKind, refinementModelKind);
+    if ('refinementModelRef' in settings) refinementModelRef = stringPreference(settings.refinementModelRef, refinementModelRef);
+    if ('refinementModelRunDir' in settings) refinementModelRunDir = stringPreference(settings.refinementModelRunDir, refinementModelRunDir);
+    if ('refinementModelArtifact' in settings) refinementModelArtifact = stringPreference(settings.refinementModelArtifact, refinementModelArtifact);
+    if ('refinementTileSize' in settings) refinementTileSize = numberPreference(settings.refinementTileSize, refinementTileSize);
+    if ('refinementOverlapFraction' in settings) refinementOverlapFraction = numberPreference(settings.refinementOverlapFraction, refinementOverlapFraction);
+    if ('refinementModelBatchSize' in settings) refinementModelBatchSize = nullablePreferenceNumber(settings.refinementModelBatchSize, refinementModelBatchSize);
+    if ('refinementOutputThreshold' in settings) refinementOutputThreshold = numberPreference(settings.refinementOutputThreshold, refinementOutputThreshold);
+    if ('refinementAllowFrameExpansion' in settings) refinementAllowFrameExpansion = booleanPreference(settings.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
+    if ('refinementMaxIterations' in settings) refinementMaxIterations = numberPreference(settings.refinementMaxIterations, refinementMaxIterations);
+    if ('refinementExpansionPixels' in settings) refinementExpansionPixels = nullablePreferenceNumber(settings.refinementExpansionPixels, refinementExpansionPixels);
+    if ('refinementEdgeTouchMargin' in settings) refinementEdgeTouchMargin = numberPreference(settings.refinementEdgeTouchMargin, refinementEdgeTouchMargin);
+    if ('refinementEncoding' in settings) refinementEncoding = stringPreference(settings.refinementEncoding, refinementEncoding);
+    if ('refinementStore' in settings) refinementStore = booleanPreference(settings.refinementStore, refinementStore);
+    if ('refinementDryRun' in settings) refinementDryRun = booleanPreference(settings.refinementDryRun, refinementDryRun);
+  }
+
+  async function loadProcessingPresets() {
+    presetsLoading = true;
+    presetError = null;
+    try {
+      processingPresets = await listProcessingPresets();
+    } catch (err) {
+      presetError = err instanceof Error ? err.message : String(err);
+    } finally {
+      presetsLoading = false;
+    }
+  }
+
+  function selectedProcessingPreset(): ProcessingPreset | null {
+    return processingPresetByKey(availableProcessingPresets, selectedProcessingPresetKey);
+  }
+
+  function applySelectedProcessingPreset(preset = selectedProcessingPreset()) {
+    if (!preset) return;
+    presetMessage = null;
+    presetError = null;
+    if (preset.source === 'live') {
+      presetMessage = 'Current session settings are already active.';
+      return;
+    }
+    applyProcessingSettings(preset.settings);
+    selectedProcessingPresetKey = 'live:live';
+    presetMessage = `Applied ${preset.name}.`;
+  }
+
+  function applyStoredLiveProcessingPreset() {
+    const preset = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
+    if (preset?.source === 'live' && preset.settings) {
+      applyProcessingSettings(preset.settings);
+    }
+  }
+
+  function handleHeaderProcessingPresetApplied(event: Event) {
+    const preset = (event as CustomEvent<ProcessingPreset>).detail;
+    if (!preset?.settings) return;
+    applyProcessingSettings(preset.settings);
+    selectedProcessingPresetKey = 'live:live';
+    presetMessage = 'Applied header preset.';
+    presetError = null;
+  }
+
   async function loadCatalog() {
     const client = getClient();
     if (!client) {
@@ -654,6 +829,7 @@
       preferencesReady = false;
       applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
       restorePreferences();
+      applyStoredLiveProcessingPreset();
       frameRows = processingState ?? (await loadCatalogFallback());
       datasets = datasetsFromFrames(frameRows);
       catalogStatus = processingState
@@ -1655,6 +1831,16 @@
         <h2>{mode === 'preprocessing' ? 'Preprocessing job' : mode === 'segmentation' ? 'Segmentation job' : 'ROI refinement job'}</h2>
       </div>
     </div>
+
+    <ProcessingPresetControls
+      presets={availableProcessingPresets}
+      bind:selectedKey={selectedProcessingPresetKey}
+      loading={presetsLoading}
+      message={presetMessage}
+      error={presetError}
+      onApply={applySelectedProcessingPreset}
+      onRefresh={loadProcessingPresets}
+    />
 
     <details class="form-section collapsible-section" open>
       <summary class="section-heading">

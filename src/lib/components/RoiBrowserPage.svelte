@@ -3,6 +3,7 @@
   import { onMount, tick } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
+  import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient } from '$lib/stores/session';
   import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
   import { processingSection, stringDefault } from '$lib/utils/configDefaults';
@@ -10,13 +11,11 @@
   import {
     displayModeForPayloadKind,
     frameCaption,
-    isFrameDisplayInverted,
     payloadKindForDisplay,
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
   import { formatBytes } from '$lib/utils/format';
-  import type { CanvasOverlayRect } from '$lib/utils/imageCanvas';
-  import type { ImageInfoSpec, ImageLayer, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
+  import type { ImageInfoSpec, ImageLayer, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   type RoiViewMode = 'candidate' | 'refined';
 
@@ -77,7 +76,8 @@
 
   $: visibleCount = detections.filter((detection) => detection.id).length;
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
-  $: detailFrameImageInverted = isFrameDisplayInverted(detailFrameDisplayMode);
+  $: invertImages = $imageInversionEnabled;
+  $: detailFrameImageInverted = $imageInversionEnabled;
   $: detailFrameUrl = selectedDetection ? frameContextUrl(selectedDetection, detailFrameDisplayMode) : '';
   $: detailFrameSourceDimensions = parentFrameDimensions() ?? fallbackSourceDimensions(frameImageNaturalWidth, frameImageNaturalHeight);
   $: detailFrameUnavailable = Boolean(
@@ -108,7 +108,6 @@
     maxBBoxH,
     roiEncoding,
     imageFormat,
-    invertImages,
     applyRoiMask,
     roiViewMode,
     sortBy,
@@ -222,7 +221,6 @@
       maxBBoxH = nullableNumberPreference(preferences.maxBBoxH, maxBBoxH);
       roiEncoding = stringPreference(preferences.roiEncoding, roiEncoding);
       imageFormat = stringPreference(preferences.imageFormat, imageFormat);
-      invertImages = typeof preferences.invertImages === 'boolean' ? preferences.invertImages : invertImages;
       applyRoiMask = typeof preferences.applyRoiMask === 'boolean' ? preferences.applyRoiMask : applyRoiMask;
       roiViewMode = roiViewModePreference(preferences.roiViewMode, roiViewMode);
       sortBy = sortByPreference(preferences.sortBy, sortBy);
@@ -778,10 +776,10 @@
     displayWidth: number,
     displayHeight: number,
     sourceDimensions: { width: number; height: number } | null
-  ): CanvasOverlayRect[] {
+  ): ImageOverlayRect[] {
     if (!displayWidth || !displayHeight || !sourceDimensions) return [];
-    const others: CanvasOverlayRect[] = [];
-    const selectedOverlays: CanvasOverlayRect[] = [];
+    const others: ImageOverlayRect[] = [];
+    const selectedOverlays: ImageOverlayRect[] = [];
     for (const detection of detectionsForFrame) {
       const rect = frameContextOverlayRect(detection, displayWidth, displayHeight, sourceDimensions);
       if (!rect) continue;
@@ -791,7 +789,6 @@
           stroke: '#e2322e',
           lineWidth: 3,
           halo: 'rgba(255, 255, 255, 0.8)',
-          className: 'roi-frame-selected',
           selected: true
         });
       } else {
@@ -799,8 +796,7 @@
           ...rect,
           stroke: '#f5e642',
           lineWidth: 2,
-          halo: 'rgba(17, 25, 22, 0.7)',
-          className: 'roi-frame-other'
+          halo: 'rgba(17, 25, 22, 0.7)'
         });
       }
     }
@@ -812,7 +808,7 @@
     displayWidth: number,
     displayHeight: number,
     sourceDimensions: { width: number; height: number } | null
-  ): Omit<CanvasOverlayRect, 'stroke'> | null {
+  ): Omit<ImageOverlayRect, 'stroke'> | null {
     const bboxX = bboxValue(detection, 'bbox', 'x');
     const bboxY = bboxValue(detection, 'bbox', 'y');
     const bboxW = bboxValue(detection, 'bbox', 'w');
@@ -923,7 +919,7 @@
     };
   }
 
-  function rectLayersForFrameContext(rects: CanvasOverlayRect[]): ImageLayer[] {
+  function rectLayersForFrameContext(rects: ImageOverlayRect[]): ImageLayer[] {
     return rects.map((rect) => ({
       kind: 'rect',
       id: rect.id,
@@ -977,11 +973,6 @@
         <p class="soft">Only detections with stored refined ROI payloads are shown.</p>
       {/if}
       <div class="view-option-stack">
-        <label class="switch-row">
-          <span>Invert grayscale</span>
-          <input type="checkbox" bind:checked={invertImages} />
-          <span class="switch-track" aria-hidden="true"></span>
-        </label>
         <label class="switch-row">
           <span>Apply ROI mask</span>
           <input type="checkbox" bind:checked={applyRoiMask} />
@@ -1120,7 +1111,7 @@
       {#if detections.length}
         <div class="roi-tile-grid">
           {#each detections as detection}
-            {#if detection.id}
+            {#if detection.id && detection.roi_payload_bytes}
               <div class="roi-tile">
                 <div class="roi-image-frame">
                   {#key roiCanvasKey(detection, roiViewMode, imageFormat, applyRoiMask, invertImages)}

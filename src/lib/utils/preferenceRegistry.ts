@@ -83,6 +83,13 @@ export const preferenceDefinitions: PreferenceDefinition[] = [
     resetWithUiState: true
   },
   {
+    key: preferenceKey('processing-preset:live'),
+    label: 'Live processing preset',
+    description: 'The current session processing settings exposed as a live preset.',
+    category: 'workflow',
+    resetWithUiState: true
+  },
+  {
     key: preferenceKey('roi-browser'),
     label: 'ROI browser',
     description: 'ROI filters, sorting, inversion, masking, and tile view options.',
