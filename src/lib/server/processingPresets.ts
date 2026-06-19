@@ -60,7 +60,7 @@ async function readUserPresets(): Promise<ProcessingPreset[]> {
 function parsePresetToml(source: string, fallbackId: string, fallbackSource: 'builtin' | 'user'): ProcessingPreset {
   const parsed = parse(source) as Record<string, unknown>;
   const presetSection = objectValue(parsed.preset);
-  const rawSettings = objectValue(parsed.settings);
+  const rawSettings = flattenSettings(objectValue(parsed.settings));
   const nullSettings = stringArrayValue(parsed.null_settings);
   const settings: ProcessingSettings = {};
   for (const [key, value] of Object.entries(rawSettings)) {
@@ -86,10 +86,10 @@ function serializePresetToml(preset: ProcessingPreset): string {
     .filter(([, value]) => value === null)
     .map(([key]) => key)
     .sort();
-  const serializableSettings = Object.fromEntries(
+  const flatSettings = Object.fromEntries(
     Object.entries(settings).filter(([, value]) => value !== null && value !== undefined)
   );
-  return stringify({
+  const payload: Record<string, unknown> = {
     preset: {
       id: preset.id,
       name: preset.name,
@@ -97,9 +97,10 @@ function serializePresetToml(preset: ProcessingPreset): string {
       source: preset.source,
       updated_at: preset.updatedAt ?? new Date().toISOString()
     },
-    null_settings: nullSettings,
-    settings: serializableSettings
-  });
+    settings: groupSettings(flatSettings)
+  };
+  if (nullSettings.length) payload.null_settings = nullSettings;
+  return stringify(payload);
 }
 
 function cleanSettings(settings: ProcessingSettings): ProcessingSettings {
@@ -114,6 +115,155 @@ function isSettingValue(value: unknown): boolean {
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function flattenSettings(settings: Record<string, unknown>): Record<string, unknown> {
+  const flattened: Record<string, unknown> = {};
+  for (const value of Object.values(settings)) {
+    const group = objectValue(value);
+    for (const [groupKey, groupValue] of Object.entries(group)) {
+      flattened[groupKey] = groupValue;
+    }
+  }
+  return flattened;
+}
+
+function groupSettings(settings: Record<string, unknown>): Record<string, Record<string, unknown>> {
+  const grouped: Record<string, Record<string, unknown>> = {};
+  for (const [key, value] of Object.entries(settings)) {
+    const group = settingGroupForKey(key);
+    grouped[group] = { ...(grouped[group] ?? {}), [key]: value };
+  }
+  return grouped;
+}
+
+function settingGroupForKey(key: string): string {
+  if (
+    [
+      'preprocessingEncoding',
+      'framePayloadKind',
+      'applyPreprocessing',
+      'backgroundCorrection',
+      'backgroundPercentile',
+      'flatfieldCorrection',
+      'flatfieldQ',
+      'flatfieldAxis',
+      'flatfieldMinFieldValue',
+      'flatfieldMaxFieldValue',
+      'applyMask',
+      'cropEnabled',
+      'cropX',
+      'cropY',
+      'cropW',
+      'cropH',
+      'invertIntensity'
+    ].includes(key)
+  ) {
+    return 'preprocessing';
+  }
+  if (
+    [
+      'thresholdMethod',
+      'manualThreshold',
+      'thresholdingMaximumValue',
+      'boundedOtsuMinContrast',
+      'boundedOtsuMaxForegroundFraction',
+      'cannyEnabled',
+      'cannyLowThreshold',
+      'cannyHighThreshold',
+      'cannyBlurKernel',
+      'adaptiveBlockSize',
+      'adaptiveC',
+      'percentileBackgroundPercentile',
+      'percentileMinContrast',
+      'hysteresisLowThreshold',
+      'hysteresisHighThreshold',
+      'hysteresisConnectivity',
+      'sobelPercentile',
+      'sobelThreshold',
+      'sobelKernelSize'
+    ].includes(key)
+  ) {
+    return 'threshold';
+  }
+  if (
+    [
+      'maskAugmentationEnabled',
+      'maskAugmentationSteps',
+      'dilateKernelW',
+      'dilateKernelH',
+      'dilateIterations',
+      'erodeKernelW',
+      'erodeKernelH',
+      'erodeIterations',
+      'openKernelW',
+      'openKernelH',
+      'openIterations',
+      'closeKernelW',
+      'closeKernelH',
+      'closeIterations',
+      'fillHoles',
+      'removeSmallComponents',
+      'minComponentArea',
+      'clearBorder'
+    ].includes(key)
+  ) {
+    return 'mask_augmentation';
+  }
+  if (
+    [
+      'roiAssemblyMethod',
+      'roiAssemblyConnectivity',
+      'minArea',
+      'maxArea',
+      'minPerimeter',
+      'maxPerimeter',
+      'minWidth',
+      'maxWidth',
+      'minHeight',
+      'maxHeight',
+      'minWidthPlusHeight',
+      'maxWidthPlusHeight',
+      'padding'
+    ].includes(key)
+  ) {
+    return 'candidate_detection';
+  }
+  if (
+    [
+      'roiEncoding',
+      'zstdMinBytes',
+      'alwaysStoreMask',
+      'storeRoiPayloadMinArea',
+      'storeRoiPayloadMinWidth',
+      'storeRoiPayloadMinHeight',
+      'storeRoiPayloadMinWidthPlusHeight'
+    ].includes(key)
+  ) {
+    return 'roi_storage';
+  }
+  if (
+    [
+      'refinementModelKind',
+      'refinementModelRef',
+      'refinementModelRunDir',
+      'refinementModelArtifact',
+      'refinementTileSize',
+      'refinementOverlapFraction',
+      'refinementModelBatchSize',
+      'refinementOutputThreshold',
+      'refinementAllowFrameExpansion',
+      'refinementMaxIterations',
+      'refinementExpansionPixels',
+      'refinementEdgeTouchMargin',
+      'refinementEncoding',
+      'refinementStore',
+      'refinementDryRun'
+    ].includes(key)
+  ) {
+    return 'refinement';
+  }
+  return 'other';
 }
 
 function stringValue(value: unknown): string {
@@ -145,4 +295,3 @@ function comparePresets(left: ProcessingPreset, right: ProcessingPreset): number
   if (left.source !== right.source) return left.source === 'builtin' ? -1 : 1;
   return left.name.localeCompare(right.name);
 }
-

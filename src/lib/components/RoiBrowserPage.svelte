@@ -432,17 +432,23 @@
     const client = getClient();
     if (!client || !detection.id) return '';
     const options = { applyMask: maskEnabled };
-    return viewMode === 'refined'
-      ? client.refinedDetectionImageUrl(detection.id, format, options)
-      : client.detectionImageUrl(detection.id, format, options);
+    if (viewMode !== 'refined') return client.detectionImageUrl(detection.id, format, options);
+    if (detection.refined_roi_url) return client.resolveApiUrl(detection.refined_roi_url);
+    if (detection.refined_detection_id) {
+      return client.refinedDetectionRecordImageUrl(detection.refined_detection_id, format, options);
+    }
+    return client.refinedDetectionImageUrl(detection.id, format, options);
   }
 
   function roiImageMaskUrl(detection: DetectionSummary, viewMode = roiViewMode): string {
     const client = getClient();
     if (!client || !detection.id) return '';
-    return viewMode === 'refined'
-      ? client.refinedDetectionMaskUrl(detection.id, 'png')
-      : client.detectionMaskUrl(detection.id, 'png');
+    if (viewMode !== 'refined') return client.detectionMaskUrl(detection.id, 'png');
+    if (detection.refined_mask_url) return client.resolveApiUrl(detection.refined_mask_url);
+    if (detection.refined_detection_id) {
+      return client.refinedDetectionRecordMaskUrl(detection.refined_detection_id, 'png');
+    }
+    return client.refinedDetectionMaskUrl(detection.id, 'png');
   }
 
   function roiCanvasKey(

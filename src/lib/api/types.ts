@@ -37,6 +37,7 @@ export type ProjectSummary = {
   project_name?: string | null;
   name?: string | null;
   description?: string | null;
+  kvstore_root_path?: string | null;
   role?: string | null;
   membership_role?: string | null;
   is_active?: boolean;
@@ -47,6 +48,19 @@ export type AuthUserSummary = {
   username: string;
   display_name?: string | null;
   is_admin?: boolean;
+  is_active?: boolean;
+  project_id?: string | null;
+  project_role?: string | null;
+  role?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type ProjectMembershipSummary = {
+  id?: string;
+  user_id?: string;
+  project_id?: string;
+  role?: string | null;
+  [key: string]: unknown;
 };
 
 export type AuthSessionSummary = {
@@ -370,6 +384,11 @@ export type DetectionSummary = {
   mask_payload_bytes?: number;
   refined_detection_id?: string | null;
   candidate_detection_id?: string | null;
+  candidate_detection_ids?: string[] | null;
+  primary_candidate_detection_id?: string | null;
+  refinement_relationship?: 'one_to_one' | 'split_parent' | 'split_child' | 'merge_keeper' | 'merge_consumed' | 'many_to_many' | string | null;
+  refined_roi_url?: string | null;
+  refined_mask_url?: string | null;
   refinement_method?: string | null;
   metadata?: Record<string, unknown>;
 };

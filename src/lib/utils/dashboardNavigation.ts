@@ -6,24 +6,26 @@ export type DashboardView =
   | 'roi_refinement'
   | 'explorer'
   | 'rois'
-  | 'logs';
+  | 'logs'
+  | 'admin';
 
 export type DashboardViewDefinition = {
   id: DashboardView;
   label: string;
   detail: string;
-  group: 'workflow' | 'analysis' | 'system';
+  group: 'analysis' | 'workflow' | 'system';
   nextView?: DashboardView;
 };
 
 export const dashboardViews: DashboardViewDefinition[] = [
+  { id: 'rois', label: 'ROI Browser', detail: 'detections gallery', group: 'analysis' },
+  { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
   { id: 'status', label: 'Status', detail: 'queue and workers', group: 'system' },
+  { id: 'admin', label: 'Administration', detail: 'projects and users', group: 'system' },
   { id: 'ingestion', label: 'Ingestion', detail: 'server assets', group: 'workflow', nextView: 'preprocessing' },
   { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep', group: 'workflow', nextView: 'segmentation' },
   { id: 'segmentation', label: 'Candidate ROIs', detail: 'queue ROI jobs', group: 'workflow', nextView: 'roi_refinement' },
   { id: 'roi_refinement', label: 'ROI Refinement', detail: 'queue refined ROIs', group: 'workflow', nextView: 'rois' },
-  { id: 'rois', label: 'ROI Browser', detail: 'detections gallery', group: 'analysis' },
-  { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
   { id: 'logs', label: 'Event Log', detail: 'job events', group: 'system' }
 ];
 

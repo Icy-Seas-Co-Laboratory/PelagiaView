@@ -3,6 +3,7 @@ import type {
   AssetProcessingState,
   AuthLoginResponse,
   AuthMeResponse,
+  AuthUserSummary,
   CollectionSummary,
   DetectionListResponse,
   DetectionFilters,
@@ -30,6 +31,7 @@ import type {
   LiveThresholdResponse,
   LogEntry,
   ProjectSummary,
+  ProjectMembershipSummary,
   RawAsset,
   RoiRefinementCapabilities,
   RoiRefinementOptions,
@@ -106,6 +108,27 @@ type ProjectSwitchRequest = {
   project_id?: string | null;
   project_key?: string | null;
   ttl_seconds?: number | null;
+  metadata?: Record<string, unknown>;
+};
+
+type CreateProjectRequest = {
+  project_key: string;
+  project_name?: string | null;
+  description?: string | null;
+  kvstore_root_path?: string | null;
+  is_active?: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+type CreateUserRequest = {
+  username: string;
+  password?: string | null;
+  display_name?: string | null;
+  is_admin?: boolean;
+  is_active?: boolean;
+  project_id?: string | null;
+  project_key?: string | null;
+  role?: string;
   metadata?: Record<string, unknown>;
 };
 
@@ -193,7 +216,10 @@ export class PelagiaApiClient {
     return this.get<HealthResponse>('/health', undefined, 0, { auth: 'none' });
   }
 
-  async systemStatus(): Promise<SystemStatus> {
+  async systemStatus(projectIdOrKey?: string | null): Promise<SystemStatus> {
+    if (projectIdOrKey) {
+      return this.get<SystemStatus>(`/system/status/${encodeURIComponent(projectIdOrKey)}`, undefined, 1500);
+    }
     return this.get<SystemStatus>('/system/status', undefined, 1500, { auth: 'none' });
   }
 
@@ -216,6 +242,46 @@ export class PelagiaApiClient {
   async listProjects(): Promise<ProjectSummary[]> {
     const response = await this.get<{ projects: ProjectSummary[] }>('/projects');
     return response.projects ?? [];
+  }
+
+  async createProject(body: CreateProjectRequest): Promise<{ project: ProjectSummary; membership?: ProjectMembershipSummary | null }> {
+    return this.post('/projects', compact(body));
+  }
+
+  async deleteProject(projectIdOrKey: string): Promise<{ deleted: boolean; project: ProjectSummary }> {
+    return this.delete(`/projects/${encodeURIComponent(projectIdOrKey)}`);
+  }
+
+  async createUser(body: CreateUserRequest): Promise<{ user: AuthUserSummary; membership?: ProjectMembershipSummary | null }> {
+    return this.post('/users', compact(body));
+  }
+
+  async updateProjectUserRole(
+    projectIdOrKey: string,
+    userIdOrUsername: string,
+    role: string
+  ): Promise<{ user?: AuthUserSummary | null; membership?: ProjectMembershipSummary | null }> {
+    return this.post(
+      `/projects/${encodeURIComponent(projectIdOrKey)}/users/${encodeURIComponent(userIdOrUsername)}/role`,
+      { role }
+    );
+  }
+
+  async listUsers(options: { active_only?: boolean; include_all_projects?: boolean } = {}): Promise<AuthUserSummary[]> {
+    const response = await this.get<{ users?: AuthUserSummary[] } | AuthUserSummary[]>('/users', compact(options));
+    return Array.isArray(response) ? response : response.users ?? [];
+  }
+
+  async resetUserPassword(userIdOrUsername: string, password: string): Promise<{ reset: boolean; user: AuthUserSummary | null }> {
+    return this.post(`/users/${encodeURIComponent(userIdOrUsername)}/reset-password`, { password });
+  }
+
+  async deactivateUser(userIdOrUsername: string): Promise<{ deactivated: boolean; user: AuthUserSummary | null }> {
+    return this.post(`/users/${encodeURIComponent(userIdOrUsername)}/deactivate`);
+  }
+
+  async deleteUser(userIdOrUsername: string): Promise<{ deleted: boolean; user: AuthUserSummary | null }> {
+    return this.delete(`/users/${encodeURIComponent(userIdOrUsername)}`);
   }
 
   async switchProject(body: ProjectSwitchRequest): Promise<AuthLoginResponse> {
@@ -405,12 +471,36 @@ export class PelagiaApiClient {
     );
   }
 
+  refinedDetectionRecordUrl(refinedDetectionId: string): string {
+    return this.url(`/refined-detections/${encodeURIComponent(refinedDetectionId)}`);
+  }
+
+  resolveApiUrl(value: string): string {
+    if (/^[a-z][a-z\d+\-.]*:\/\//i.test(value)) return value;
+    return this.url(value);
+  }
+
+  async getRefinedDetection(refinedDetectionId: string): Promise<DetectionSummary> {
+    return this.get<DetectionSummary>(`/refined-detections/${encodeURIComponent(refinedDetectionId)}`);
+  }
+
+  refinedDetectionRecordImageUrl(refinedDetectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/refined-detections/${encodeURIComponent(refinedDetectionId)}/roi`,
+      compact({ format, apply_mask: options.applyMask || undefined })
+    );
+  }
+
   detectionMaskUrl(detectionId: string, format = 'png'): string {
     return this.url(`/detections/${encodeURIComponent(detectionId)}/mask`, { format });
   }
 
   refinedDetectionMaskUrl(detectionId: string, format = 'png'): string {
     return this.url(`/detections/${encodeURIComponent(detectionId)}/refined-mask`, { format });
+  }
+
+  refinedDetectionRecordMaskUrl(refinedDetectionId: string, format = 'png'): string {
+    return this.url(`/refined-detections/${encodeURIComponent(refinedDetectionId)}/mask`, { format });
   }
 
   async frameContext(frameId: string, options: FrameContextOptions = {}): Promise<FrameContextResponse> {
@@ -624,8 +714,7 @@ export class PelagiaApiClient {
 
   private absoluteUrlOrNull(value: string | null | undefined): string | null {
     if (!value) return null;
-    if (/^[a-z][a-z\d+\-.]*:\/\//i.test(value)) return value;
-    return this.url(value);
+    return this.resolveApiUrl(value);
   }
 }
 

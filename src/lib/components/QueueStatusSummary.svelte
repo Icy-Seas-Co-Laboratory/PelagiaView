@@ -119,10 +119,6 @@
 
   <div class="metric-grid metric-grid-dense queue-status-metrics">
     <div class="metric metric-compact">
-      <span>Total</span>
-      <strong>{formatCount(counts.total)}</strong>
-    </div>
-    <div class="metric metric-compact">
       <span>Queued</span>
       <strong>{formatCount(counts.queued)}</strong>
     </div>
@@ -131,26 +127,14 @@
       <strong>{formatCount(counts.running)}</strong>
     </div>
     <div class="metric metric-compact">
-      <span>Done</span>
-      <strong class:tone-good={counts.succeeded > 0}>{formatCount(counts.succeeded)}</strong>
-    </div>
-    <div class="metric metric-compact">
-      <span>Failed</span>
-      <strong class:tone-bad={counts.failed > 0}>{formatCount(counts.failed)}</strong>
+      <span>Done (Failed)</span>
+      <span>
+        <strong class:tone-good={counts.succeeded > 0}>{formatCount(counts.succeeded)}</strong>  
+        <strong class:tone-bad={counts.failed > 0}>({formatCount(counts.failed)})</strong>
+      </span>
     </div>
   </div>
 
   {#if error}<p class="form-error">{error}</p>{/if}
 
-  {#if mode === 'detailed' || recentJobs.length > 0}
-    <JobStatusTable
-      jobs={recentJobs}
-      pageSize={mode === 'compact' ? 5 : 20}
-      compact={mode === 'compact'}
-      emptyLabel="No matching jobs yet."
-      onJobsRefresh={replaceJobs}
-    />
-  {:else}
-    <p class="empty compact-empty">No matching jobs yet.</p>
-  {/if}
 </section>

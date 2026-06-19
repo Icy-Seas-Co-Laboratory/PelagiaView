@@ -1,0 +1,31 @@
+[preset]
+id = "linescan-default"
+name = "Linescan default"
+description = "Manual thresholding with flatfield correction for linescan frame review."
+
+[settings.preprocessing]
+flatfieldCorrection = true
+flatfieldQ = 0.5
+flatfieldAxis = 0
+flatfieldMinFieldValue = 25
+flatfieldMaxFieldValue = 255
+invertIntensity = true
+
+[settings.threshold]
+thresholdMethod = "manual"
+manualThreshold = 100
+
+[settings.mask_augmentation]
+maskAugmentationEnabled = false
+
+[settings.candidate_detection]
+roiAssemblyMethod = "connected_components"
+roiAssemblyConnectivity = 8
+padding = 50
+minWidth = 20
+minHeight = 20
+
+[settings.roi_storage]
+roiEncoding = "zstd"
+alwaysStoreMask = true
+

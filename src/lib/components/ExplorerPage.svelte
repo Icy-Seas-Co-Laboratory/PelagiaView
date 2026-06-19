@@ -29,7 +29,7 @@
     payloadKindForDisplay,
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
-  import { formatCount } from '$lib/utils/format';
+  import { formatBytes, formatCount } from '$lib/utils/format';
   import type {
     ImageLayer,
     ImageOverlayBlendMode,
@@ -202,7 +202,7 @@
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
   const frameImageWidth = 1100;
-  const liveSandboxDeletionDelayMs = 5 * 60 * 1000;
+  const liveSandboxDeletionDelayMs = 900 * 1000;
   const pendingLiveSandboxDeletions = new Map<string, number>();
   let lastFrameImageKey = '';
   let failedImageUrl = '';
@@ -231,6 +231,11 @@
     { value: 'darken', label: 'Darken' },
     { value: 'lighten', label: 'Lighten' }
   ];
+  let refinementMaskOverlayColorMode: ImageOverlayColorMode = 'red';
+  let refinementMaskOverlayBlendMode: ImageOverlayBlendMode | 'auto' = 'auto';
+  let refinementMaskOverlayOpacity = 1;
+  const refinementRoiDisplayMaxWidth = 360;
+  const refinementRoiDisplayMaxHeight = 280;
   let lastDetectionPreviewKey = '';
   let lastAutoThresholdPreviewKey = '';
   let thresholdPreviewTimer: number | null = null;
@@ -369,6 +374,7 @@
   $: targetBoxes = detections.map(toTargetBox).filter((box): box is BBox => box !== null);
   $: detectionOverlayKey = detectionOverlaySignature(boxes, targetBoxes, bboxCoordinateBasis);
   $: hasRefinementResults = refinedDetections.length > 0;
+  $: refinementRoiPairs = buildRefinementRoiPairs(detections, refinedDetections);
   $: refinementSummary = summarizeRefinedDetections(refinedDetections);
   $: canvasOverlays = hasRefinementResults
     ? []
@@ -1719,7 +1725,13 @@
       let storedDetections = detections.filter((detection) => detection.id);
       let refreshedRoiPayloads = false;
       if (!storedDetections.length || storedDetections.some((detection) => !hasRoiPayload(detection))) {
-        const result = await client.segmentFrame(frame.id, forceRoiPayloadRecordingOptions());
+        const sandboxFrameId = await ensureLivePreprocessedFrame(frame);
+        const result = await client.segmentFrame(sandboxFrameId, {
+          ...forceRoiPayloadRecordingOptions(),
+          frame_payload_kind: 'preprocessed',
+          apply_preprocessing: false,
+          apply_mask: false
+        });
         detections = result.detections;
         refinedDetections = [];
         storedDetections = result.detections.filter((detection) => detection.id);
@@ -1729,7 +1741,12 @@
       }
       const detectionIds = storedDetections.map((detection) => detection.id).filter((id): id is string => Boolean(id));
       if (!detectionIds.length) {
-        throw new Error('No stored candidate detections are available to refine.');
+        const candidateCount = detections.length;
+        throw new Error(
+          candidateCount
+            ? `Candidate detection returned ${candidateCount} ROI${candidateCount === 1 ? '' : 's'}, but none had stored detection IDs for refinement.`
+            : 'No candidate ROIs were stored for the current sandbox frame. Refresh candidates, then refine again.'
+        );
       }
       if (storedDetections.some((detection) => !hasRoiPayload(detection))) {
         throw new Error('Candidate detections still do not include ROI payload data after refreshing segmentation.');
@@ -1879,6 +1896,19 @@
     h: number;
     area?: number;
     perimeter?: number;
+  };
+
+  type RefinementRoiRelation = 'matched' | 'inferred' | 'split' | 'merge' | 'many-to-many' | 'missing' | 'orphan';
+
+  type RefinementRoiPair = {
+    key: string;
+    index: number;
+    candidates: DetectionSummary[];
+    candidateIds: string[];
+    refinedDetections: DetectionSummary[];
+    inferredByIndex: boolean;
+    relation: RefinementRoiRelation;
+    notes: string[];
   };
 
   type RefinementSummary = {
@@ -2192,11 +2222,12 @@
     if (includeRefinedMasks) {
       for (const [index, detection] of refined.entries()) {
         const candidateId = candidateIdForRefinedDetection(detection, index);
-        if (!candidateId) continue;
+        const maskUrl = refinedMaskUrlForDetection(detection, index);
+        if (!candidateId || !maskUrl) continue;
         const layer = maskOverlayForDetection(
           detection,
           index,
-          client.refinedDetectionMaskUrl(candidateId),
+          maskUrl,
           '#1688ff',
           0.38,
           'refined-mask',
@@ -2254,7 +2285,7 @@
       if (!candidateBox || !refinedBox) continue;
       const unionBox = unionCropBox(candidateBox, refinedBox);
       const candidateUrl = client.detectionMaskUrl(candidateId);
-      const refinedUrl = client.refinedDetectionMaskUrl(candidateId);
+      const refinedUrl = refinedMaskUrlForDetection(refinedDetection, index) || client.refinedDetectionMaskUrl(candidateId);
       const key = [
         candidateId,
         refinedDetection.id ?? index,
@@ -2438,6 +2469,386 @@
     const direct = detection.candidate_detection_id ?? stringValue(detection.metadata?.candidate_detection_id);
     if (direct) return direct;
     return detections[index]?.id ?? null;
+  }
+
+  function buildRefinementRoiPairs(
+    candidates: DetectionSummary[],
+    refined: DetectionSummary[]
+  ): RefinementRoiPair[] {
+    const candidateById = new Map(candidates.filter((candidate) => candidate.id).map((candidate) => [candidate.id as string, candidate]));
+    const candidateOrder = new Map(candidates.map((candidate, index) => [candidate.id ?? `index:${index}`, index]));
+    const groups = new Map<string, {
+      candidateIds: Set<string>;
+      refinedDetections: DetectionSummary[];
+      inferredByIndex: boolean;
+      notes: Set<string>;
+    }>();
+    const orphanGroups: RefinementRoiPair[] = [];
+
+    for (const [index, refinedDetection] of refined.entries()) {
+      const explicitIds = explicitCandidateIdsForRefinedDetection(refinedDetection);
+      const knownIds = explicitIds.filter((id) => candidateById.has(id));
+      let anchorId = knownIds[0] ?? null;
+      let inferredByIndex = false;
+      if (!anchorId && explicitIds.length === 0 && candidates[index]?.id) {
+        anchorId = candidates[index].id ?? null;
+        inferredByIndex = true;
+      }
+      if (!anchorId) {
+        orphanGroups.push(finalizeRefinementRoiPair({
+          key: `orphan-${refinedDetection.id ?? index}`,
+          index,
+          candidateIds: new Set(explicitIds),
+          refinedDetections: [refinedDetection],
+          inferredByIndex: false,
+          notes: new Set(explicitIds.length ? [`Unmatched candidate id: ${explicitIds.join(', ')}`] : ['No candidate relationship metadata'])
+        }, candidateById, candidateOrder));
+        continue;
+      }
+
+      const group = groups.get(anchorId) ?? {
+        candidateIds: new Set<string>(),
+        refinedDetections: [],
+        inferredByIndex: false,
+        notes: new Set<string>()
+      };
+      const idsToRecord = knownIds.length ? knownIds : [anchorId];
+      for (const id of idsToRecord) group.candidateIds.add(id);
+      for (const id of explicitIds) {
+        if (!candidateById.has(id)) group.notes.add(`Related candidate not in current detection set: ${id}`);
+      }
+      if (inferredByIndex) {
+        group.inferredByIndex = true;
+        group.notes.add('Matched by result order because no candidate id metadata was supplied');
+      }
+      const childCount = numberValue(refinedDetection.metadata?.residual_discovery_child_count);
+      if (childCount && childCount > 0) group.notes.add(`Discovered ${formatCount(childCount)} residual child ROI${childCount === 1 ? '' : 's'}`);
+      group.refinedDetections.push(refinedDetection);
+      groups.set(anchorId, group);
+    }
+
+    const assignedCandidateIds = new Set<string>();
+    const comparisons = [...groups.entries()].map(([key, group], index) => {
+      for (const id of group.candidateIds) assignedCandidateIds.add(id);
+      return finalizeRefinementRoiPair({ key, index, ...group }, candidateById, candidateOrder);
+    });
+    for (const [index, candidate] of candidates.entries()) {
+      if (candidate.id && assignedCandidateIds.has(candidate.id)) continue;
+      comparisons.push({
+        key: candidate.id ?? `candidate-${index}`,
+        index,
+        candidates: [candidate],
+        candidateIds: candidate.id ? [candidate.id] : [],
+        refinedDetections: [],
+        inferredByIndex: false,
+        relation: 'missing',
+        notes: []
+      });
+    }
+    return [...comparisons, ...orphanGroups].sort((a, b) => a.index - b.index);
+  }
+
+  function finalizeRefinementRoiPair(
+    group: {
+      key: string;
+      index: number;
+      candidateIds: Set<string>;
+      refinedDetections: DetectionSummary[];
+      inferredByIndex: boolean;
+      notes: Set<string>;
+    },
+    candidateById: Map<string, DetectionSummary>,
+    candidateOrder: Map<string, number>
+  ): RefinementRoiPair {
+    const candidateIds = [...group.candidateIds];
+    const candidates = candidateIds
+      .map((id) => candidateById.get(id))
+      .filter((candidate): candidate is DetectionSummary => Boolean(candidate))
+      .sort((a, b) => (candidateOrder.get(a.id ?? '') ?? 0) - (candidateOrder.get(b.id ?? '') ?? 0));
+    const relation = refinementRoiRelation(candidates, group.refinedDetections, group.inferredByIndex);
+    const firstCandidateIndex = candidates.length
+      ? candidateOrder.get(candidates[0].id ?? '') ?? group.index
+      : group.index;
+    return {
+      key: group.key,
+      index: firstCandidateIndex,
+      candidates,
+      candidateIds,
+      refinedDetections: group.refinedDetections,
+      inferredByIndex: group.inferredByIndex,
+      relation,
+      notes: [...group.notes]
+    };
+  }
+
+  function refinementRoiRelation(
+    candidates: DetectionSummary[],
+    refined: DetectionSummary[],
+    inferredByIndex: boolean
+  ): RefinementRoiRelation {
+    if (!candidates.length) return 'orphan';
+    if (!refined.length) return 'missing';
+    const splitHint = refined.some((detection) =>
+      Boolean(
+        detection.metadata?.split_from_candidate_detection_id ??
+        detection.metadata?.residual_parent_candidate_detection_id ??
+        numberValue(detection.metadata?.residual_discovery_child_count)
+      )
+    );
+    if (candidates.length > 1 && refined.length > 1) return 'many-to-many';
+    if (candidates.length > 1) return 'merge';
+    if (refined.length > 1 || splitHint) return 'split';
+    if (inferredByIndex) return 'inferred';
+    return 'matched';
+  }
+
+  function explicitCandidateIdsForRefinedDetection(detection: DetectionSummary): string[] {
+    const metadata = detection.metadata ?? {};
+    return uniqueStrings([
+      detection.primary_candidate_detection_id,
+      detection.candidate_detection_id,
+      ...stringArrayValue(detection.candidate_detection_ids),
+      stringValue(metadata.primary_candidate_detection_id),
+      stringValue(metadata.candidate_detection_id),
+      ...stringArrayValue(metadata.candidate_detection_ids),
+      ...stringArrayValue(metadata.source_candidate_detection_ids),
+      ...stringArrayValue(metadata.merged_candidate_detection_ids),
+      stringValue(metadata.split_from_candidate_detection_id),
+      stringValue(metadata.residual_parent_candidate_detection_id),
+      ...stringArrayValue(metadata.consumed_candidate_detection_ids),
+      ...consumedCandidateIds(metadata.overlap_reconciliation_consumed)
+    ]);
+  }
+
+  function storageCandidateIdForRefinedDetection(detection: DetectionSummary): string | null {
+    const metadata = detection.metadata ?? {};
+    return (
+      detection.primary_candidate_detection_id ??
+      stringValue(metadata.primary_candidate_detection_id) ??
+      stringValue(metadata.split_from_candidate_detection_id) ??
+      stringValue(metadata.residual_parent_candidate_detection_id) ??
+      detection.candidate_detection_id ??
+      stringValue(metadata.candidate_detection_id) ??
+      detection.id ??
+      null
+    );
+  }
+
+  function refinedDetectionRecordId(detection: DetectionSummary): string | null {
+    const metadata = detection.metadata ?? {};
+    return (
+      detection.refined_detection_id ??
+      stringValue(metadata.refined_detection_id) ??
+      (detection.refinement_relationship || detection.primary_candidate_detection_id || detection.candidate_detection_ids?.length
+        ? detection.id ?? null
+        : null)
+    );
+  }
+
+  function refinedMaskUrlForDetection(detection: DetectionSummary, index: number): string {
+    const client = getClient();
+    if (!client) return '';
+    if (detection.refined_mask_url) return client.resolveApiUrl(detection.refined_mask_url);
+    const refinedRecordId = refinedDetectionRecordId(detection);
+    if (refinedRecordId) return client.refinedDetectionRecordMaskUrl(refinedRecordId, 'png');
+    const candidateId = candidateIdForRefinedDetection(detection, index);
+    return candidateId ? client.refinedDetectionMaskUrl(candidateId, 'png') : '';
+  }
+
+  function consumedCandidateIds(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value.map((entry) => stringValue((entry as { candidate_detection_id?: unknown })?.candidate_detection_id)).filter((id): id is string => Boolean(id));
+  }
+
+  function stringArrayValue(value: unknown): string[] {
+    if (Array.isArray(value)) return value.map(stringValue).filter((id): id is string => Boolean(id));
+    if (typeof value === 'string') return value.split(',').map((part) => part.trim()).filter(Boolean);
+    return [];
+  }
+
+  function uniqueStrings(values: Array<string | null | undefined>): string[] {
+    return [...new Set(values.filter((value): value is string => Boolean(value)))];
+  }
+
+  function resolvedRefinementMaskOverlayBlendMode(): ImageOverlayBlendMode {
+    if (refinementMaskOverlayBlendMode !== 'auto') return refinementMaskOverlayBlendMode;
+    return $imageInversionEnabled ? 'add' : 'subtract';
+  }
+
+  function refinementRoiSourceBox(detection: DetectionSummary, index: number): BBox | null {
+    return toCropBox(detection, index) ?? toTargetBox(detection, index);
+  }
+
+  function refinementRoiSourceWidth(detection: DetectionSummary, index: number): number | null {
+    const width = refinementRoiSourceBox(detection, index)?.w ?? null;
+    return width && width > 0 ? width : null;
+  }
+
+  function refinementRoiSourceHeight(detection: DetectionSummary, index: number): number | null {
+    const height = refinementRoiSourceBox(detection, index)?.h ?? null;
+    return height && height > 0 ? height : null;
+  }
+
+  function refinementRoiImageUrl(pair: RefinementRoiPair, detection: DetectionSummary, kind: 'candidate' | 'refined'): string {
+    const client = getClient();
+    if (!client) return '';
+    if (kind === 'refined') {
+      if (detection.refined_roi_url) return client.resolveApiUrl(detection.refined_roi_url);
+      const refinedRecordId = refinedDetectionRecordId(detection);
+      if (refinedRecordId) return client.refinedDetectionRecordImageUrl(refinedRecordId, 'png', { applyMask: false });
+      const refinedId = storageCandidateIdForRefinedDetection(detection) ?? pair.candidateIds[0] ?? detection.id;
+      return refinedId ? client.refinedDetectionImageUrl(refinedId, 'png', { applyMask: false }) : '';
+    }
+    return detection.id ? client.detectionImageUrl(detection.id, 'png', { applyMask: false }) : '';
+  }
+
+  function refinementRoiMaskUrl(pair: RefinementRoiPair, detection: DetectionSummary, kind: 'candidate' | 'refined'): string {
+    const client = getClient();
+    if (!client) return '';
+    if (kind === 'refined') {
+      if (detection.refined_mask_url) return client.resolveApiUrl(detection.refined_mask_url);
+      const refinedRecordId = refinedDetectionRecordId(detection);
+      if (refinedRecordId) return client.refinedDetectionRecordMaskUrl(refinedRecordId, 'png');
+      const refinedId = storageCandidateIdForRefinedDetection(detection) ?? pair.candidateIds[0] ?? detection.id;
+      return refinedId ? client.refinedDetectionMaskUrl(refinedId, 'png') : '';
+    }
+    return detection.id ? client.detectionMaskUrl(detection.id, 'png') : '';
+  }
+
+  function refinementRoiFilename(
+    pair: RefinementRoiPair,
+    detection: DetectionSummary,
+    kind: 'candidate' | 'refined',
+    version = 'roi'
+  ): string {
+    const primaryCandidate = pair.candidates[0];
+    const assetName =
+      selectedAsset?.filename?.replace(/\.[^.]+$/, '') ??
+      detection.asset_filename?.replace(/\.[^.]+$/, '') ??
+      primaryCandidate?.asset_filename?.replace(/\.[^.]+$/, '') ??
+      selectedAssetId ??
+      'asset';
+    const frame = detection.frame_index ?? primaryCandidate?.frame_index ?? selectedFrameNum ?? 'frame';
+    const roi = detection.roi_index ?? primaryCandidate?.roi_index ?? pair.index + 1;
+    return `${assetName}_frame_${frame}_roi_${roi}_${kind}_${version}.png`;
+  }
+
+  function refinementRoiCanvasKey(pair: RefinementRoiPair, detection: DetectionSummary, kind: 'candidate' | 'refined'): string {
+    return [
+      kind,
+      pair.key,
+      detection.id ?? detection.candidate_detection_id ?? detection.refined_detection_id ?? 'roi',
+      pair.refinedDetections.map((refinedDetection) => refinedDetection.id ?? refinedDetection.candidate_detection_id ?? 'refined').join(','),
+      $imageInversionEnabled ? 'inverted' : 'normal',
+      kind === 'candidate' ? showCandidateMasks : showRefinedMasks,
+      refinementMaskOverlayColorMode,
+      refinementMaskOverlayBlendMode,
+      refinementMaskOverlayOpacity
+    ].join('|');
+  }
+
+  function refinementRoiRenderSpec(pair: RefinementRoiPair, detection: DetectionSummary, kind: 'candidate' | 'refined'): ImageRenderSpec {
+    const imageUrl = refinementRoiImageUrl(pair, detection, kind);
+    const maskUrl = refinementRoiMaskUrl(pair, detection, kind);
+    const fallbackCandidate = pair.candidates[0] ?? detection;
+    const sourceWidth = refinementRoiSourceWidth(detection, pair.index) ?? refinementRoiSourceWidth(fallbackCandidate, pair.index);
+    const sourceHeight = refinementRoiSourceHeight(detection, pair.index) ?? refinementRoiSourceHeight(fallbackCandidate, pair.index);
+    const maskEnabled = kind === 'candidate' ? showCandidateMasks : showRefinedMasks;
+    const layers: ImageLayer[] =
+      maskEnabled && maskUrl
+        ? [
+            {
+              kind: 'mask-overlay',
+              id: `${kind}-mask-${pair.key}`,
+              imageUrl: maskUrl,
+              x: 0,
+              y: 0,
+              w: 100,
+              h: 100,
+              tint: '#ff2020',
+              colorMode: refinementMaskOverlayColorMode,
+              blendMode: resolvedRefinementMaskOverlayBlendMode(),
+              opacity: refinementMaskOverlayOpacity,
+              coordinateSpace: 'percent'
+            }
+          ]
+        : [];
+    return {
+      key: refinementRoiCanvasKey(pair, detection, kind),
+      image: {
+        url: imageUrl,
+        alt: `${kind === 'refined' ? 'Refined' : 'Candidate'} ROI ${detection.roi_index ?? pair.index + 1}`,
+        invert: $imageInversionEnabled,
+        sourceWidth,
+        sourceHeight
+      },
+      layers,
+      scaleBar: {
+        enabled: true,
+        placement: 'below',
+        maxPercent: 55
+      },
+      toolbar: {
+        exportControls: 'menu',
+        filename: refinementRoiFilename(pair, detection, kind, 'roi'),
+        annotatedFilename: refinementRoiFilename(pair, detection, kind, 'overlay'),
+        originalUrl: imageUrl,
+        originalFilename: refinementRoiFilename(pair, detection, kind, 'original'),
+        maskUrl,
+        maskFilename: refinementRoiFilename(pair, detection, kind, 'mask'),
+        info: {
+          assetFilename: selectedAsset?.filename ?? detection.asset_filename ?? selectedAssetId ?? null,
+          frameNumber: detection.frame_index ?? selectedFrameNum,
+          collections: selectedAsset?.collections ?? null
+        }
+      },
+      display: {
+        maxWidth: refinementRoiDisplayMaxWidth,
+        maxHeight: refinementRoiDisplayMaxHeight,
+        background: '#111916'
+      }
+    };
+  }
+
+  function refinementRoiBboxLabel(detection: DetectionSummary, index: number): string {
+    const box = refinementRoiSourceBox(detection, index);
+    if (!box) return 'bbox unavailable';
+    return `x=${Math.round(box.x)}, y=${Math.round(box.y)}, w=${Math.round(box.w)}, h=${Math.round(box.h)}`;
+  }
+
+  function refinementRoiMetricSummary(detection: DetectionSummary): string {
+    const parts: string[] = [];
+    if (detection.area !== undefined) parts.push(`area=${formatCount(Math.round(detection.area))}`);
+    if (detection.perimeter !== undefined) parts.push(`perimeter=${formatCount(Math.round(detection.perimeter))}`);
+    if (detection.roi_payload_bytes !== undefined) parts.push(formatBytes(detection.roi_payload_bytes));
+    if (detection.mask_payload_bytes !== undefined) parts.push(`mask ${formatBytes(detection.mask_payload_bytes)}`);
+    return parts.join(' · ') || 'metrics unavailable';
+  }
+
+  function refinementRelationLabel(relation: RefinementRoiRelation): string {
+    if (relation === 'many-to-many') return 'many-to-many';
+    return relation;
+  }
+
+  function refinementRelationDescription(pair: RefinementRoiPair): string {
+    if (pair.relation === 'split') return `${pair.refinedDetections.length} refined ROI${pair.refinedDetections.length === 1 ? '' : 's'} for one candidate`;
+    if (pair.relation === 'merge') return `${pair.candidates.length} candidates represented by one refined ROI`;
+    if (pair.relation === 'many-to-many') return `${pair.candidates.length} candidates and ${pair.refinedDetections.length} refined ROIs share relationship metadata`;
+    if (pair.relation === 'missing') return 'No refined ROI matched this candidate';
+    if (pair.relation === 'orphan') return 'Refined ROI has no matching candidate in this frame result';
+    if (pair.relation === 'inferred') return 'Matched by result order; backend should provide candidate ids';
+    return 'Matched by candidate id';
+  }
+
+  function refinementTileRelationLabel(pair: RefinementRoiPair, kind: 'candidate' | 'refined'): string | null {
+    if (pair.relation === 'matched') return null;
+    if (kind === 'candidate' && pair.relation === 'merge') return 'merged';
+    if (kind === 'refined' && pair.relation === 'split') return 'split';
+    if (pair.relation === 'many-to-many') return 'many-to-many';
+    if (pair.relation === 'inferred') return 'inferred';
+    if (pair.relation === 'missing') return 'missing';
+    if (pair.relation === 'orphan') return 'orphan';
+    return null;
   }
 
   function stringValue(value: unknown): string | null {
@@ -2838,25 +3249,18 @@
       />
     {:else if activeExplorerTab === 'preprocessing'}
 
-    <details class="form-section collapsible-section" open>
-      <summary class="section-heading">
+    <div class="form-section">
+      <div class="section-heading">
         <span>
-          <p class="eyebrow">Background + flatfield</p>
-          <strong>Correction</strong>
+          <p class="eyebrow">Default options</p>
+          <strong>Preprocessing</strong>
         </span>
-      </summary>
+      </div>
 
       <label class="check-row">
         <input type="checkbox" bind:checked={backgroundCorrection} />
-        Background removal
+        Background correction
       </label>
-      {#if backgroundCorrection}
-        <label>
-          Background percentile
-          <input type="range" min="0" max="100" step="1" bind:value={backgroundPercentile} />
-          <span class="range-value">{backgroundPercentile}</span>
-        </label>
-      {/if}
 
       <label class="check-row">
         <input type="checkbox" bind:checked={flatfieldCorrection} />
@@ -2868,37 +3272,47 @@
           <input type="range" min="0" max="1" step="0.01" bind:value={flatfieldQ} />
           <span class="range-value">{flatfieldQ.toFixed(2)}</span>
         </label>
-        <label>
-          Min field value
-          <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
-          <span class="range-value">{flatfieldMinFieldValue}</span>
-        </label>
-        <label>
-          Max field value
-          <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
-          <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
-        </label>
-        <label>
-          Flatfield axis
-          <select bind:value={flatfieldAxis}>
-            <option value={0}>0</option>
-            <option value={1}>1</option>
-          </select>
-        </label>
       {/if}
-    </details>
 
-    <details class="form-section collapsible-section" open>
+      <label class="check-row">
+        <input type="checkbox" bind:checked={invertIntensity} />
+        Invert intensity
+      </label>
+    </div>
+
+    <details class="form-section collapsible-section">
       <summary class="section-heading">
         <span>
-          <p class="eyebrow">Crop + invert</p>
-          <strong>Candidate image</strong>
+          <p class="eyebrow">Advanced options</p>
+          <strong>Preprocessing details</strong>
         </span>
       </summary>
 
+      {#if flatfieldCorrection}
+        <div class="form-grid compact-grid">
+          <label>
+            Min field value
+            <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
+            <span class="range-value">{flatfieldMinFieldValue}</span>
+          </label>
+          <label>
+            Max field value
+            <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
+            <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
+          </label>
+          <label>
+            Flatfield axis
+            <select bind:value={flatfieldAxis}>
+              <option value={0}>0</option>
+              <option value={1}>1</option>
+            </select>
+          </label>
+        </div>
+      {/if}
+
       <label class="check-row">
         <input type="checkbox" bind:checked={cropEnabled} />
-        Crop before thresholding
+        Crop image
       </label>
       {#if cropEnabled}
         <div class="form-grid compact-grid">
@@ -2922,12 +3336,11 @@
       {/if}
 
       <label class="check-row">
-        <input type="checkbox" bind:checked={invertIntensity} />
-        Invert intensity
+        <input type="checkbox" bind:checked={applyMask} />
+        Apply frame mask
       </label>
-
-      
     </details>
+
     <div class="button-row">
         <button class="ghost" type="button" on:click={applyPreprocessingNow} disabled={frameCount < 1}>
           Apply
@@ -3208,16 +3621,16 @@
 
     {:else if activeExplorerTab === 'detection'}
 
-    <details class="form-section collapsible-section" open>
-      <summary class="section-heading">
+    <div class="form-section">
+      <div class="section-heading">
         <span>
-          <p class="eyebrow">Assemble</p>
-          <strong>Candidate ROIs</strong>
+          <p class="eyebrow">Default options</p>
+          <strong>Candidate detection</strong>
         </span>
-      </summary>
+      </div>
       <div class="form-grid compact-grid">
         <label>
-          Assembly method
+          Method
           <select bind:value={roiAssemblyMethod}>
             {#each roiAssemblyMethods as method}
               <option value={method}>{method}</option>
@@ -3225,30 +3638,39 @@
           </select>
         </label>
         <label>
-          Connectivity
-          <select bind:value={roiAssemblyConnectivity}>
-            <option value={4}>4</option>
-            <option value={8}>8</option>
-          </select>
-        </label>
-      </div>
-    </details>
-
-    <details class="form-section collapsible-section" open>
-      <summary class="section-heading">
-        <span>
-          <p class="eyebrow">Filter</p>
-          <strong>Candidate geometry</strong>
-        </span>
-      </summary>
-      <div class="form-grid compact-grid">
-        <label>
           Min area
           <input type="number" min="0" bind:value={minArea} placeholder="none" />
         </label>
         <label>
           Max area
           <input type="number" min="0" bind:value={maxArea} placeholder="none" />
+        </label>
+        <label>
+          Min width + height
+          <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
+        </label>
+        <label>
+          Max width + height
+          <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
+        </label>
+      </div>
+    </div>
+
+    <details class="form-section collapsible-section">
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Advanced options</p>
+          <strong>Candidate detection details</strong>
+        </span>
+      </summary>
+
+      <div class="form-grid compact-grid">
+        <label>
+          Connectivity
+          <select bind:value={roiAssemblyConnectivity}>
+            <option value={4}>4</option>
+            <option value={8}>8</option>
+          </select>
         </label>
         <label>
           Min perimeter
@@ -3274,24 +3696,7 @@
           Max height
           <input type="number" min="0" bind:value={maxHeight} placeholder="none" />
         </label>
-        <label>
-          Min width + height
-          <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
-        </label>
-        <label>
-          Max width + height
-          <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
-        </label>
       </div>
-    </details>
-
-    <details class="form-section collapsible-section">
-      <summary class="section-heading">
-        <span>
-          <p class="eyebrow">Record</p>
-          <strong>ROI payloads</strong>
-        </span>
-      </summary>
 
       <label>
         Padding
@@ -3351,18 +3756,35 @@
         </span>
       </summary>
 
-      <div class="legend-row">
+      <div class="refinement-overlay-controls">
         <label class="check-row">
           <input type="checkbox" bind:checked={showCandidateMasks} />
-          <span><i class="legend-swatch candidate-mask-swatch"></i>Candidate masks</span>
+          Candidate mask overlay
         </label>
         <label class="check-row">
           <input type="checkbox" bind:checked={showRefinedMasks} />
-          <span><i class="legend-swatch refined-mask-swatch"></i>Refined masks</span>
+          Refined mask overlay
         </label>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={showMaskDifferences} />
-          <span><i class="legend-swatch difference-mask-swatch"></i>Differences</span>
+        <label>
+          Mask color
+          <select bind:value={refinementMaskOverlayColorMode}>
+            {#each thresholdOverlayColorOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Blend
+          <select bind:value={refinementMaskOverlayBlendMode}>
+            {#each thresholdOverlayBlendOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Opacity
+          <input type="range" min="0" max="1" step="0.01" bind:value={refinementMaskOverlayOpacity} />
+          <span class="range-value">{Number(refinementMaskOverlayOpacity).toFixed(2)}</span>
         </label>
       </div>
 
@@ -3474,7 +3896,146 @@
   </section>
 </div>
 
-{#if activeExplorerTab === 'detection' || activeExplorerTab === 'refinement'}
+{#if activeExplorerTab === 'refinement'}
+<section class="panel bbox-panel refinement-roi-panel">
+  <div class="panel-heading">
+    <div>
+      <p class="eyebrow">ROI refinement</p>
+      <h2>Candidate and refined ROIs</h2>
+    </div>
+    <span class="soft">
+      {detections.length} candidate{detections.length === 1 ? '' : 's'}, {refinedDetections.length} refined, {refinementRoiPairs.length} comparison{refinementRoiPairs.length === 1 ? '' : 's'}
+    </span>
+  </div>
+
+  {#if hasRefinementResults}
+    <div class="refinement-summary-grid">
+      <div>
+        <span>Refined ROIs</span>
+        <strong>{formatCount(refinementSummary.count)}</strong>
+      </div>
+      <div>
+        <span>Total ROI area</span>
+        <strong>{formatStat(refinementSummary.areaCount ? refinementSummary.totalArea : null)}</strong>
+        <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} with area` : 'area unavailable'}</small>
+      </div>
+      <div>
+        <span>Mean area</span>
+        <strong>{formatStat(refinementSummary.meanArea)}</strong>
+      </div>
+      <div>
+        <span>Median area</span>
+        <strong>{formatStat(refinementSummary.medianArea)}</strong>
+      </div>
+      <div>
+        <span>Area range</span>
+        <strong>{formatStat(refinementSummary.minArea)}-{formatStat(refinementSummary.maxArea)}</strong>
+      </div>
+      <div>
+        <span>Total bbox area</span>
+        <strong>{formatStat(refinementSummary.totalBboxArea)}</strong>
+        <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} boxes` : 'bbox unavailable'}</small>
+      </div>
+    </div>
+  {/if}
+
+  {#if refinementRoiPairs.length}
+    <div class="refinement-roi-compare">
+      <div class="refinement-roi-column-heading">Candidate ROIs</div>
+      <div class="refinement-roi-column-heading">Matching refined ROIs</div>
+      {#each refinementRoiPairs as pair}
+        <div class="refinement-roi-comparison-header">
+          <span class={`refinement-relation-badge relation-${pair.relation}`}>
+            {refinementRelationLabel(pair.relation)}
+          </span>
+          <strong>{refinementRelationDescription(pair)}</strong>
+          {#if pair.notes.length}
+            <small>{pair.notes.join(' · ')}</small>
+          {/if}
+        </div>
+
+        <div class="refinement-roi-stack">
+          {#if pair.candidates.length}
+            {#each pair.candidates as candidate, candidateIndex}
+              <div class="roi-tile refinement-roi-tile">
+                {#if candidate.id && hasRoiPayload(candidate)}
+                  <div class="roi-image-frame">
+                    {#if refinementTileRelationLabel(pair, 'candidate')}
+                      <span class={`refinement-tile-badge relation-${pair.relation}`}>
+                        {refinementTileRelationLabel(pair, 'candidate')}
+                      </span>
+                    {/if}
+                    {#key refinementRoiCanvasKey(pair, candidate, 'candidate')}
+                      <KonvaImageCanvas
+                        spec={refinementRoiRenderSpec(pair, candidate, 'candidate')}
+                        mode="thumbnail"
+                      />
+                    {/key}
+                  </div>
+                {:else}
+                  <div class="refinement-roi-placeholder">
+                    Candidate ROI payload is not available yet.
+                  </div>
+                {/if}
+                <div class="roi-tile-meta">
+                  <strong>ROI {candidate.roi_index ?? candidateIndex + 1}</strong>
+                  <code>{refinementRoiBboxLabel(candidate, candidateIndex)}</code>
+                  <small>{refinementRoiMetricSummary(candidate)}</small>
+                </div>
+              </div>
+            {/each}
+          {:else}
+            <div class="refinement-roi-placeholder">
+              No matching candidate ROI was found in the current detection set.
+            </div>
+          {/if}
+        </div>
+
+        <div class="refinement-roi-stack">
+          {#if pair.refinedDetections.length}
+            {#each pair.refinedDetections as refinedDetection, refinedIndex}
+              <div class="roi-tile refinement-roi-tile">
+                <div class="roi-image-frame">
+                  {#if refinementTileRelationLabel(pair, 'refined')}
+                    <span class={`refinement-tile-badge relation-${pair.relation}`}>
+                      {refinementTileRelationLabel(pair, 'refined')}
+                    </span>
+                  {/if}
+                  {#key refinementRoiCanvasKey(pair, refinedDetection, 'refined')}
+                    <KonvaImageCanvas
+                      spec={refinementRoiRenderSpec(pair, refinedDetection, 'refined')}
+                      mode="thumbnail"
+                    />
+                  {/key}
+                </div>
+                <div class="roi-tile-meta">
+                  <strong>ROI {refinedDetection.roi_index ?? refinedIndex + 1}</strong>
+                  <code>{refinementRoiBboxLabel(refinedDetection, refinedIndex)}</code>
+                  <small>{refinementRoiMetricSummary(refinedDetection)}</small>
+                </div>
+              </div>
+            {/each}
+          {:else}
+            <div class="refinement-roi-placeholder">
+              No refined ROI has been generated for this candidate.
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {:else}
+    <p class="empty-state">Refresh candidates before refining ROIs.</p>
+  {/if}
+
+  {#if stageCountEntries(stageCounts).length}
+    <div class="stage-counts">
+      {#each stageCountEntries(stageCounts) as [key, value]}
+        <span><strong>{value}</strong> {key.replaceAll('_', ' ')}</span>
+      {/each}
+    </div>
+  {/if}
+</section>
+{:else if activeExplorerTab === 'detection'}
 <section class="panel bbox-panel">
   <div class="panel-heading">
     <div>

@@ -20,6 +20,7 @@
   let actionError: string | null = null;
   let lastRefreshedAt: Date | null = null;
   let refreshSequence = 0;
+  let lastStatusProjectKey = '';
   let workerSortColumn: WorkerSortColumn = 'worker';
   let workerSortDirection: SortDirection = 'asc';
   let workerPage = 1;
@@ -81,6 +82,11 @@
   $: pausedJobCount = numericValue(globalTotal?.paused) ?? 0;
   $: staleWorkerCount = workers.filter(isWorkerStale).length;
   $: attentionCount = failedJobCount + pausedJobCount + staleWorkerCount;
+  $: statusProjectKey = $session.project?.id ?? $session.project?.project_key ?? '';
+  $: if (statusProjectKey !== lastStatusProjectKey) {
+    lastStatusProjectKey = statusProjectKey;
+    if (lastRefreshedAt) void refreshStatus({ showLoading: true });
+  }
 
   onMount(() => {
     let cancelled = false;
@@ -105,7 +111,7 @@
     refreshing = true;
     try {
       const [nextStatus, nextJobs, nextWorkers, nextSummary, nextKvstore] = await Promise.all([
-        client.systemStatus(),
+        client.systemStatus(statusProjectKey || undefined),
         client.listJobs({ limit: 100, include_progress: true, sort: 'updated_at', direction: 'desc' }),
         client.listWorkers(),
         client.jobsSummary(),
@@ -147,9 +153,9 @@
 
   function kvstoreTotalFileBytes(): number | null {
     return firstFiniteNumber(
+      status?.kvstore?.total_sqlite_file_bytes,
       kvstore?.status?.total_sqlite_file_bytes,
-      kvstore?.total_sqlite_file_bytes,
-      status?.kvstore?.total_sqlite_file_bytes
+      kvstore?.total_sqlite_file_bytes
     );
   }
 
@@ -318,6 +324,9 @@
       <div>
         <p class="eyebrow">System</p>
         <h2>Operations overview</h2>
+        {#if $session.project}
+          <span class="soft">Project: {$session.project.project_name ?? $session.project.name ?? $session.project.project_key ?? $session.project.id}</span>
+        {/if}
       </div>
       <div class="status-refresh">
         <span class="soft">{refreshing ? 'Refreshing' : lastRefreshedLabel()}</span>

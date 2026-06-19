@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
+  import AdministrationPage from './AdministrationPage.svelte';
   import AppSidebar from './AppSidebar.svelte';
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
@@ -47,15 +48,23 @@
       projectSwitchError = error instanceof Error ? error.message : String(error);
     }
   }
-
-  function projectLabel(project: { project_name?: string | null; name?: string | null; project_key?: string; id: string }): string {
-    const label = project.project_name ?? project.name ?? project.project_key ?? project.id;
-    return project.project_key && label !== project.project_key ? `${label} (${project.project_key})` : label;
-  }
 </script>
 
 <main class="app-shell" class:sidebar-is-collapsed={sidebarCollapsed}>
-  <AppSidebar activeView={activeTab} currentUrl={$page.url} collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
+  <AppSidebar
+    activeView={activeTab}
+    currentUrl={$page.url}
+    collapsed={sidebarCollapsed}
+    user={$session.user}
+    project={$session.project}
+    projects={$session.projects}
+    switchingProject={$session.switchingProject}
+    {projectSwitchError}
+    onToggle={toggleSidebar}
+    onProjectChange={selectProject}
+    onPreferences={() => (preferencesOpen = true)}
+    onDisconnect={disconnectSession}
+  />
 
   <div class="app-workspace">
     <header class="topbar">
@@ -66,29 +75,8 @@
         </div>
       </div>
       <div class="session-controls">
-        <span class="endpoint-pill">{$session.baseUrl}</span>
-        <span class="identity-pill" title={$session.user?.username ?? 'Authenticated user'}>
-          {$session.user?.display_name ?? $session.user?.username ?? 'Signed in'}
-        </span>
-        <label class="project-select" title={projectSwitchError ?? 'Active project'}>
-          <span>Project</span>
-          <select
-            value={$session.project?.id ?? ''}
-            on:change={selectProject}
-            disabled={$session.switchingProject || $session.projects.length < 1}
-          >
-            {#if !$session.project}
-              <option value="">No project</option>
-            {/if}
-            {#each $session.projects as project}
-              <option value={project.id}>{projectLabel(project)}</option>
-            {/each}
-          </select>
-        </label>
         <HeaderProcessingPresetSelect />
         <HeaderImageInversionToggle />
-        <button class="ghost" type="button" on:click={() => (preferencesOpen = true)}>Preferences</button>
-        <button class="ghost" type="button" on:click={disconnectSession}>Disconnect</button>
       </div>
     </header>
 
@@ -109,6 +97,8 @@
           <ExplorerPage />
         {:else if activeTab === 'rois'}
           <RoiBrowserPage />
+        {:else if activeTab === 'admin'}
+          <AdministrationPage />
         {:else}
           <EventLogPage />
         {/if}

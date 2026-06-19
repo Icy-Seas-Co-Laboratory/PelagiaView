@@ -113,14 +113,14 @@ async function establishSession(
     });
     const nextClient = new PelagiaApiClient(normalized, { token: login.token });
     setActiveApiToken(login.token);
-    const [systemStatus, me, listedProjects] = await Promise.all([
-      nextClient.systemStatus().catch(() => null),
+    const [me, listedProjects] = await Promise.all([
       nextClient.authMe().catch(() => null),
       nextClient.listProjects().catch(() => [])
     ]);
     const projects = me?.projects?.length ? me.projects : listedProjects.length ? listedProjects : login.project ? [login.project] : [];
     const user = me?.user ?? login.user ?? null;
     const project = me?.project ?? login.project ?? projects.find((candidate) => candidate.id === login.session?.project_id) ?? null;
+    const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
     const connectedAt = new Date().toISOString();
     const expiresAt = login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString();
     client = nextClient;
@@ -202,15 +202,15 @@ async function restoreStoredSession(stored: StoredSession): Promise<void> {
   const nextClient = new PelagiaApiClient(normalized, { token });
 
   try {
-    const [health, systemStatus, me, listedProjects] = await Promise.all([
+    const [health, me, listedProjects] = await Promise.all([
       nextClient.health(),
-      nextClient.systemStatus().catch(() => null),
       nextClient.authMe(),
       nextClient.listProjects().catch(() => [])
     ]);
     const projects = me.projects?.length ? me.projects : listedProjects.length ? listedProjects : me.project ? [me.project] : [];
     const user = me.user ?? stored.user ?? null;
     const project = me.project ?? stored.project ?? projects.find((candidate) => candidate.id === me.auth?.project_id) ?? null;
+    const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
     const connectedAt = stored.connectedAt ?? new Date().toISOString();
     client = nextClient;
     session.set({
@@ -282,8 +282,7 @@ export async function switchSessionProject(projectId: string): Promise<void> {
     const nextSession = await activeClient.switchProject({ project_id: projectId, metadata: { client: 'PelagiaView' } });
     const nextClient = new PelagiaApiClient(state.baseUrl, { token: nextSession.token });
     setActiveApiToken(nextSession.token);
-    const [systemStatus, me, listedProjects] = await Promise.all([
-      nextClient.systemStatus().catch(() => null),
+    const [me, listedProjects] = await Promise.all([
       nextClient.authMe().catch(() => null),
       nextClient.listProjects().catch(() => [])
     ]);
@@ -300,6 +299,7 @@ export async function switchSessionProject(projectId: string): Promise<void> {
       nextSession.project ??
       projects.find((candidate) => candidate.id === projectId) ??
       state.project;
+    const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
     const connectedAt = new Date().toISOString();
     const expiresAt = nextSession.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString();
     client = nextClient;
@@ -338,6 +338,32 @@ export async function switchSessionProject(projectId: string): Promise<void> {
     }));
     throw error;
   }
+}
+
+export async function refreshSessionProjects(): Promise<ProjectSummary[]> {
+  const activeClient = getClient();
+  if (!activeClient) return [];
+  const projects = await activeClient.listProjects();
+  session.update((current) => {
+    const project =
+      projects.find((candidate) => candidate.id === current.project?.id) ??
+      projects.find((candidate) => candidate.project_key === current.project?.project_key) ??
+      current.project;
+    if (browser) {
+      persistStoredSession({
+        baseUrl: current.baseUrl,
+        token: current.token,
+        user: current.user,
+        project,
+        projects,
+        active: current.connected,
+        connectedAt: current.connectedAt,
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      });
+    }
+    return { ...current, project, projects };
+  });
+  return projects;
 }
 
 export function disconnectSession(): void {

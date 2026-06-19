@@ -1,8 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import ProcessingPresetControls from '$lib/components/ProcessingPresetControls.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
-  import { listProcessingPresets } from '$lib/api/processingPresets';
   import { getClient, session } from '$lib/stores/session';
   import type {
     AssetProcessingState,
@@ -26,8 +24,6 @@
   import {
     liveProcessingPreset as createLiveProcessingPreset,
     PROCESSING_PRESET_APPLIED_EVENT,
-    processingPresetByKey,
-    processingPresetKey,
     pruneProcessingSettings
   } from '$lib/processing/settings';
   import {
@@ -120,11 +116,6 @@
   let preferencesReady = false;
   let submittedJobIds: string[] = [];
   const liveProcessingPresetKey = preferenceKey('processing-preset:live');
-  let processingPresets: ProcessingPreset[] = [];
-  let selectedProcessingPresetKey = 'live:live';
-  let presetMessage: string | null = null;
-  let presetError: string | null = null;
-  let presetsLoading = false;
 
   let frameBatchSize = mode === 'roi_refinement' ? 2500 : 100;
   let lastBatchMode: QueueMode | null = null;
@@ -376,7 +367,6 @@
   $: datasetQueuePreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(datasetQueuePreferenceKey(), datasetQueuePreferenceSnapshot);
   $: liveProcessingPreset = createLiveProcessingPreset(captureProcessingSettings());
-  $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
   $: if (preferencesReady) writePreferences(liveProcessingPresetKey, liveProcessingPreset);
   $: activeFilters = {
     assetIds: selectedAssetIds,
@@ -441,7 +431,6 @@
   onMount(() => {
     window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
     applyStoredLiveProcessingPreset();
-    void loadProcessingPresets();
     if ($session.connected) void loadCatalog();
     return () => {
       window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
@@ -764,35 +753,6 @@
     if ('refinementDryRun' in settings) refinementDryRun = booleanPreference(settings.refinementDryRun, refinementDryRun);
   }
 
-  async function loadProcessingPresets() {
-    presetsLoading = true;
-    presetError = null;
-    try {
-      processingPresets = await listProcessingPresets();
-    } catch (err) {
-      presetError = err instanceof Error ? err.message : String(err);
-    } finally {
-      presetsLoading = false;
-    }
-  }
-
-  function selectedProcessingPreset(): ProcessingPreset | null {
-    return processingPresetByKey(availableProcessingPresets, selectedProcessingPresetKey);
-  }
-
-  function applySelectedProcessingPreset(preset = selectedProcessingPreset()) {
-    if (!preset) return;
-    presetMessage = null;
-    presetError = null;
-    if (preset.source === 'live') {
-      presetMessage = 'Current session settings are already active.';
-      return;
-    }
-    applyProcessingSettings(preset.settings);
-    selectedProcessingPresetKey = 'live:live';
-    presetMessage = `Applied ${preset.name}.`;
-  }
-
   function applyStoredLiveProcessingPreset() {
     const preset = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
     if (preset?.source === 'live' && preset.settings) {
@@ -804,9 +764,6 @@
     const preset = (event as CustomEvent<ProcessingPreset>).detail;
     if (!preset?.settings) return;
     applyProcessingSettings(preset.settings);
-    selectedProcessingPresetKey = 'live:live';
-    presetMessage = 'Applied header preset.';
-    presetError = null;
   }
 
   async function loadCatalog() {
@@ -1153,8 +1110,10 @@
 
     if (assetIds.size && !assetIds.has(frame.assetId)) return false;
     if (collections.size && !frame.collections.some((collection) => collections.has(collection))) return false;
-    if (preprocessStates.size && (!preprocessingState || !preprocessStates.has(preprocessingState))) return false;
-    if (mode !== 'preprocessing' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
+    if (mode === 'segmentation' && !frame.hasPreprocessedPayload) return false;
+    if (mode === 'roi_refinement' && detectionState !== 'fully-detected') return false;
+    if (mode === 'preprocessing' && preprocessStates.size && (!preprocessingState || !preprocessStates.has(preprocessingState))) return false;
+    if (mode === 'segmentation' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
       return false;
     }
     if (mode === 'roi_refinement' && refinementStates.size && !frameMatchesRefinementStates(frame, refinementStates)) {
@@ -1426,13 +1385,8 @@
             ...roiAssemblyOptions(),
             ...roiFilterOptions(),
             ...roiRecordingOptions(),
-            frame_payload_kind: framePayloadKind,
-            apply_preprocessing: framePayloadKind === 'original' ? applyPreprocessing : false,
-            flatfield_correction: applyPreprocessing ? flatfieldCorrection : undefined,
-            flatfield_q: applyPreprocessing && flatfieldCorrection ? flatfieldQ : undefined,
-            flatfield_axis: applyPreprocessing && flatfieldCorrection ? flatfieldAxis : undefined,
-            flatfield_min_field_value: applyPreprocessing && flatfieldCorrection ? flatfieldMinFieldValue : undefined,
-            flatfield_max_field_value: applyPreprocessing && flatfieldCorrection ? flatfieldMaxFieldValue : undefined
+            frame_payload_kind: 'preprocessed',
+            apply_preprocessing: false
           });
           if (response.job?.id) nextJobIds.push(response.job.id);
         }
@@ -1757,30 +1711,32 @@
         </div>
       </div>
 
-      <div class="filter-group">
-        <div class="section-heading">
-          <p class="eyebrow">State</p>
-          <strong>Preprocessing state</strong>
-        </div>
-        <div class="compact-select-list">
-          <button class="wildcard-filter" class:active={selectedPreprocessStates.size === 0} type="button" on:click={() => clearGroup('preprocess')}>
-            <span>Any preprocessing state</span>
-            <small>{formatCount(preprocessAnyFrameCount)} frames</small>
-          </button>
-          {#each preprocessStateOptions as option}
-            <button
-              class:active={selectedPreprocessStates.has(option.id)}
-              type="button"
-              on:click={() => togglePreprocessState(option.id)}
-            >
-              <span>{option.label}</span>
-              <small>{formatCount(countFor(preprocessFrameCounts, option.id))} frames</small>
+      {#if mode === 'preprocessing'}
+        <div class="filter-group">
+          <div class="section-heading">
+            <p class="eyebrow">State</p>
+            <strong>Preprocessing state</strong>
+          </div>
+          <div class="compact-select-list">
+            <button class="wildcard-filter" class:active={selectedPreprocessStates.size === 0} type="button" on:click={() => clearGroup('preprocess')}>
+              <span>Any preprocessing state</span>
+              <small>{formatCount(preprocessAnyFrameCount)} frames</small>
             </button>
-          {/each}
+            {#each preprocessStateOptions as option}
+              <button
+                class:active={selectedPreprocessStates.has(option.id)}
+                type="button"
+                on:click={() => togglePreprocessState(option.id)}
+              >
+                <span>{option.label}</span>
+                <small>{formatCount(countFor(preprocessFrameCounts, option.id))} frames</small>
+              </button>
+            {/each}
+          </div>
         </div>
-      </div>
+      {/if}
 
-      {#if mode !== 'preprocessing'}
+      {#if mode === 'segmentation'}
         <div class="filter-group">
           <div class="section-heading">
             <p class="eyebrow">State</p>
@@ -1842,61 +1798,18 @@
       </div>
     </div>
 
-    <ProcessingPresetControls
-      presets={availableProcessingPresets}
-      bind:selectedKey={selectedProcessingPresetKey}
-      loading={presetsLoading}
-      message={presetMessage}
-      error={presetError}
-      onApply={applySelectedProcessingPreset}
-      onRefresh={loadProcessingPresets}
-    />
-
-    <details class="form-section collapsible-section" open>
-      <summary class="section-heading">
-        <span>
-          <p class="eyebrow">Scope</p>
-          <strong>{mode === 'roi_refinement' ? 'ROI batches' : 'Frame batches'}</strong>
-        </span>
-      </summary>
-      <div class="form-grid compact-grid">
-        <label class="span-2">
-          Batch size
-          <input
-            type="range"
-            min={batchSizeMin()}
-            max={batchSizeMax()}
-            step={batchSizeStep()}
-            bind:value={frameBatchSize}
-          />
-          <span class="range-value">{boundedFrameBatchSize()} {mode === 'roi_refinement' ? 'ROIs' : 'frames'} per job</span>
-        </label>
-        <label>
-          Priority
-          <input type="number" bind:value={priority} placeholder="default" />
-        </label>
-      </div>
-    </details>
-
     {#if mode === 'preprocessing'}
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
+      <div class="form-section">
+        <div class="section-heading">
           <span>
-            <p class="eyebrow">Correction</p>
-            <strong>Background and flatfield</strong>
+            <p class="eyebrow">Default options</p>
+            <strong>Preprocessing</strong>
           </span>
-        </summary>
+        </div>
         <label class="check-row">
           <input type="checkbox" bind:checked={backgroundCorrection} />
-          Background removal
+          Background correction
         </label>
-        {#if backgroundCorrection}
-          <label>
-            Background percentile
-            <input type="range" min="0" max="100" step="1" bind:value={backgroundPercentile} />
-            <span class="range-value">{backgroundPercentile}</span>
-          </label>
-        {/if}
         <label class="check-row">
           <input type="checkbox" bind:checked={flatfieldCorrection} />
           Flatfield correction
@@ -1907,36 +1820,63 @@
             <input type="range" min="0" max="1" step="0.01" bind:value={flatfieldQ} />
             <span class="range-value">{flatfieldQ.toFixed(2)}</span>
           </label>
-          <label>
-            Min field value
-            <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
-            <span class="range-value">{flatfieldMinFieldValue}</span>
-          </label>
-          <label>
-            Max field value
-            <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
-            <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
-          </label>
-          <label>
-            Flatfield axis
-            <select bind:value={flatfieldAxis}>
-              <option value={0}>0</option>
-              <option value={1}>1</option>
-            </select>
-          </label>
         {/if}
-      </details>
 
-      <details class="form-section collapsible-section" open>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={invertIntensity} />
+          Invert intensity
+        </label>
+      </div>
+
+      <details class="form-section collapsible-section">
         <summary class="section-heading">
           <span>
-            <p class="eyebrow">Candidate image</p>
-            <strong>Crop, mask, and invert</strong>
+            <p class="eyebrow">Advanced options</p>
+            <strong>Preprocessing details</strong>
           </span>
         </summary>
+
+        <label class="span-2">
+          Batch size
+          <input
+            type="range"
+            min={batchSizeMin()}
+            max={batchSizeMax()}
+            step={batchSizeStep()}
+            bind:value={frameBatchSize}
+          />
+          <span class="range-value">{boundedFrameBatchSize()} frames per job</span>
+        </label>
+        <label>
+          Priority
+          <input type="number" bind:value={priority} placeholder="default" />
+        </label>
+
+        {#if flatfieldCorrection}
+          <div class="form-grid compact-grid">
+            <label>
+              Min field value
+              <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
+              <span class="range-value">{flatfieldMinFieldValue}</span>
+            </label>
+            <label>
+              Max field value
+              <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
+              <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
+            </label>
+            <label>
+              Flatfield axis
+              <select bind:value={flatfieldAxis}>
+                <option value={0}>0</option>
+                <option value={1}>1</option>
+              </select>
+            </label>
+          </div>
+        {/if}
+
         <label class="check-row">
           <input type="checkbox" bind:checked={applyMask} />
-          Apply stored frame mask
+          Apply frame mask
         </label>
         <label class="check-row">
           <input type="checkbox" bind:checked={cropEnabled} />
@@ -1962,10 +1902,6 @@
             </label>
           </div>
         {/if}
-        <label class="check-row">
-          <input type="checkbox" bind:checked={invertIntensity} />
-          Invert intensity
-        </label>
         <label>
           Stored encoding
           <select bind:value={preprocessingEncoding}>
@@ -1977,48 +1913,77 @@
         </label>
       </details>
     {:else if mode === 'segmentation'}
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
+      <div class="form-section">
+        <div class="section-heading">
           <span>
-            <p class="eyebrow">Source</p>
-            <strong>Frame payload</strong>
+            <p class="eyebrow">Default options</p>
+            <strong>Candidate detection</strong>
           </span>
-        </summary>
-        <label>
-          Frame source
-          <select bind:value={framePayloadKind}>
-            <option value="preprocessed">preprocessed</option>
-            <option value="original">original</option>
-          </select>
-        </label>
-        {#if framePayloadKind === 'original'}
-          <label class="check-row">
-            <input type="checkbox" bind:checked={applyPreprocessing} />
-            Apply preprocessing before thresholding
+        </div>
+        <div class="form-grid compact-grid">
+          <label>
+            Threshold method
+            <select bind:value={thresholdMethod}>
+              {#each thresholdMethods as method}
+                <option value={method}>{method}</option>
+              {/each}
+            </select>
           </label>
-        {/if}
-        {#if preprocessedSourceWarning}
-          <p class="callout">
-            {formatCount(missingPreprocessedFrameCount)} selected frame{missingPreprocessedFrameCount === 1 ? '' : 's'} lack preprocessed payloads. Use original frames with preprocessing enabled, run preprocessing first, or filter to fully preprocessed frames.
-          </p>
-        {/if}
-      </details>
+          <label>
+            Method
+            <select bind:value={roiAssemblyMethod}>
+              {#each roiAssemblyMethods as method}
+                <option value={method}>{method}</option>
+              {/each}
+            </select>
+          </label>
+          <label>
+            Min area
+            <input type="number" min="0" bind:value={minArea} placeholder="none" />
+          </label>
+          <label>
+            Max area
+            <input type="number" min="0" bind:value={maxArea} placeholder="none" />
+          </label>
+          <label>
+            Min width + height
+            <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
+          </label>
+          <label>
+            Max width + height
+            <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
+          </label>
+        </div>
+      </div>
 
-      <details class="form-section collapsible-section" open>
+      <details class="form-section collapsible-section">
         <summary class="section-heading">
           <span>
-            <p class="eyebrow">Threshold</p>
-            <strong>Candidate ROIs</strong>
+            <p class="eyebrow">Advanced options</p>
+            <strong>Candidate detection details</strong>
           </span>
         </summary>
-        <label>
-          Method
-          <select bind:value={thresholdMethod}>
-            {#each thresholdMethods as method}
-              <option value={method}>{method}</option>
-            {/each}
-          </select>
-        </label>
+
+        <div class="form-grid compact-grid">
+          <label class="span-2">
+            Batch size
+            <input
+              type="range"
+              min={batchSizeMin()}
+              max={batchSizeMax()}
+              step={batchSizeStep()}
+              bind:value={frameBatchSize}
+            />
+            <span class="range-value">{boundedFrameBatchSize()} frames per job</span>
+          </label>
+          <label>
+            Priority
+            <input type="number" bind:value={priority} placeholder="default" />
+          </label>
+        </div>
+
+        <details class="control-details" open>
+          <summary>Threshold</summary>
         {#if thresholdMethod === 'manual'}
           <label>
             Manual threshold
@@ -2125,15 +2090,10 @@
             </label>
           </div>
         {/if}
-      </details>
+        </details>
 
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Mask</p>
-            <strong>Augment threshold mask</strong>
-          </span>
-        </summary>
+        <details class="control-details" open>
+          <summary>Mask augmentation</summary>
         <label class="check-row">
           <input type="checkbox" bind:checked={maskAugmentationEnabled} />
           Enable mask augmentation
@@ -2222,49 +2182,17 @@
             </label>
           </details>
         {/if}
-      </details>
+        </details>
 
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Assemble</p>
-            <strong>Candidate ROIs</strong>
-          </span>
-        </summary>
+        <details class="control-details" open>
+          <summary>Assembly and secondary geometry</summary>
         <div class="form-grid compact-grid">
-          <label>
-            Assembly method
-            <select bind:value={roiAssemblyMethod}>
-              {#each roiAssemblyMethods as method}
-                <option value={method}>{method}</option>
-              {/each}
-            </select>
-          </label>
           <label>
             Connectivity
             <select bind:value={roiAssemblyConnectivity}>
               <option value={4}>4</option>
               <option value={8}>8</option>
             </select>
-          </label>
-        </div>
-      </details>
-
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Filter</p>
-            <strong>Candidate geometry</strong>
-          </span>
-        </summary>
-        <div class="form-grid compact-grid">
-          <label>
-            Min area
-            <input type="number" min="0" bind:value={minArea} placeholder="none" />
-          </label>
-          <label>
-            Max area
-            <input type="number" min="0" bind:value={maxArea} placeholder="none" />
           </label>
           <label>
             Min perimeter
@@ -2290,24 +2218,11 @@
             Max height
             <input type="number" min="0" bind:value={maxHeight} placeholder="none" />
           </label>
-          <label>
-            Min width + height
-            <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
-          </label>
-          <label>
-            Max width + height
-            <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
-          </label>
         </div>
-      </details>
+        </details>
 
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Record</p>
-            <strong>ROI payloads</strong>
-          </span>
-        </summary>
+        <details class="control-details" open>
+          <summary>ROI payloads</summary>
         <label>
           Padding
           <input type="range" min="0" max="500" step="1" bind:value={padding} />
@@ -2350,15 +2265,16 @@
             </label>
           </div>
         </details>
+        </details>
       </details>
     {:else}
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
+      <div class="form-section">
+        <div class="section-heading">
           <span>
             <p class="eyebrow">Model selection</p>
             <strong>Refinement model</strong>
           </span>
-        </summary>
+        </div>
         <label>
           Model kind
           <select bind:value={refinementModelKind}>
@@ -2399,95 +2315,105 @@
             </select>
           </label>
         {/if}
-      </details>
+      </div>
 
-      <details class="form-section collapsible-section" open>
+      <details class="form-section collapsible-section">
         <summary class="section-heading">
           <span>
-            <p class="eyebrow">Tiling</p>
-            <strong>Model input geometry</strong>
+            <p class="eyebrow">Advanced options</p>
+            <strong>ROI refinement details</strong>
           </span>
         </summary>
-        <label>
-          Tile size
-          <input type="number" min="1" step="1" bind:value={refinementTileSize} />
-        </label>
-        <label>
-          Overlap fraction
-          <input type="range" min="0" max="0.99" step="0.01" bind:value={refinementOverlapFraction} />
-          <span class="range-value">{Number(refinementOverlapFraction).toFixed(2)}</span>
-        </label>
-        <label>
-          Model batch size
-          <input type="number" min="1" bind:value={refinementModelBatchSize} placeholder="default" />
-        </label>
-      </details>
 
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Prediction</p>
-            <strong>Mask threshold</strong>
-          </span>
-        </summary>
-        <label>
-          Output threshold
-          <input type="range" min="0" max="1" step="0.01" bind:value={refinementOutputThreshold} />
-          <span class="range-value">{Number(refinementOutputThreshold).toFixed(2)}</span>
-        </label>
-      </details>
+        <details class="control-details" open>
+          <summary>Scope</summary>
+          <div class="form-grid compact-grid">
+            <label class="span-2">
+              Batch size
+              <input
+                type="range"
+                min={batchSizeMin()}
+                max={batchSizeMax()}
+                step={batchSizeStep()}
+                bind:value={frameBatchSize}
+              />
+              <span class="range-value">{boundedFrameBatchSize()} ROIs per job</span>
+            </label>
+            <label>
+              Priority
+              <input type="number" bind:value={priority} placeholder="default" />
+            </label>
+          </div>
+        </details>
 
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Expansion</p>
-            <strong>Frame-aware ROI growth</strong>
-          </span>
-        </summary>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={refinementAllowFrameExpansion} />
-          Allow frame expansion
-        </label>
-        <label>
-          Max iterations
-          <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
-        </label>
-        <label>
-          Expansion pixels
-          <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
-        </label>
-        <label>
-          Edge touch margin
-          <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
-        </label>
-      </details>
+        <details class="control-details" open>
+          <summary>Model input geometry</summary>
+          <label>
+            Tile size
+            <input type="number" min="1" step="1" bind:value={refinementTileSize} />
+          </label>
+          <label>
+            Overlap fraction
+            <input type="range" min="0" max="0.99" step="0.01" bind:value={refinementOverlapFraction} />
+            <span class="range-value">{Number(refinementOverlapFraction).toFixed(2)}</span>
+          </label>
+          <label>
+            Model batch size
+            <input type="number" min="1" bind:value={refinementModelBatchSize} placeholder="default" />
+          </label>
+        </details>
 
-      <details class="form-section collapsible-section" open>
-        <summary class="section-heading">
-          <span>
-            <p class="eyebrow">Record</p>
-            <strong>Refined detections</strong>
-          </span>
-        </summary>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={refinementStore} />
-          Store refined detections
-        </label>
-        <label>
-          Encoding
-          <select bind:value={refinementEncoding}>
-            <option value="auto">default</option>
-            {#each refinementEncodingOptions as encoding}
-              {#if encoding !== 'auto'}
-                <option value={encoding}>{encoding}</option>
-              {/if}
-            {/each}
-          </select>
-        </label>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={refinementDryRun} />
-          Dry run
-        </label>
+        <details class="control-details" open>
+          <summary>Prediction</summary>
+          <label>
+            Output threshold
+            <input type="range" min="0" max="1" step="0.01" bind:value={refinementOutputThreshold} />
+            <span class="range-value">{Number(refinementOutputThreshold).toFixed(2)}</span>
+          </label>
+        </details>
+
+        <details class="control-details" open>
+          <summary>Frame-aware ROI growth</summary>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={refinementAllowFrameExpansion} />
+            Allow frame expansion
+          </label>
+          <label>
+            Max iterations
+            <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
+          </label>
+          <label>
+            Expansion pixels
+            <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
+          </label>
+          <label>
+            Edge touch margin
+            <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
+          </label>
+        </details>
+
+        <details class="control-details" open>
+          <summary>Refined detections</summary>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={refinementStore} />
+            Store refined detections
+          </label>
+          <label>
+            Encoding
+            <select bind:value={refinementEncoding}>
+              <option value="auto">default</option>
+              {#each refinementEncodingOptions as encoding}
+                {#if encoding !== 'auto'}
+                  <option value={encoding}>{encoding}</option>
+                {/if}
+              {/each}
+            </select>
+          </label>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={refinementDryRun} />
+            Dry run
+          </label>
+        </details>
       </details>
     {/if}
 

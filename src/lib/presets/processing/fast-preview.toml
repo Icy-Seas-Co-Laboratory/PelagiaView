@@ -1,48 +1,29 @@
 [preset]
 id = "fast-preview"
 name = "Fast preview"
-description = "Minimal mask operations for quick interactive passes while tuning frames."
+description = "Minimal threshold and mask work for quick interactive passes while tuning frames."
 
-null_settings = [
-  "minArea",
-  "maxArea",
-  "maxPerimeter",
-  "minWidth",
-  "maxWidth",
-  "minHeight",
-  "maxHeight",
-  "zstdMinBytes",
-]
-
-[settings]
+[settings.threshold]
 thresholdMethod = "bounded_otsu"
 thresholdingMaximumValue = 100
 boundedOtsuMinContrast = 60
 boundedOtsuMaxForegroundFraction = 0.45
-cannyEnabled = false
+
+[settings.mask_augmentation]
 maskAugmentationEnabled = false
-maskAugmentationSteps = ["none"]
-fillHoles = false
-removeSmallComponents = false
-clearBorder = false
+
+[settings.candidate_detection]
 roiAssemblyMethod = "connected_components"
 roiAssemblyConnectivity = 8
-backgroundCorrection = false
-flatfieldCorrection = false
-applyMask = false
-cropEnabled = false
-invertIntensity = false
 minPerimeter = 120
 padding = 80
+
+[settings.roi_storage]
 roiEncoding = "png"
 alwaysStoreMask = false
-refinementModelKind = "identity"
-refinementModelArtifact = "auto"
-refinementTileSize = 256
+
+[settings.refinement]
 refinementOverlapFraction = 0.2
-refinementOutputThreshold = 0.5
 refinementAllowFrameExpansion = true
 refinementMaxIterations = 2
-refinementEdgeTouchMargin = 1
-refinementEncoding = "auto"
 

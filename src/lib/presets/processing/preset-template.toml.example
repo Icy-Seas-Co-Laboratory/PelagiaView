@@ -1,0 +1,107 @@
+# Copy this file to a `.toml` preset file and uncomment only the settings that
+# should override server-provided defaults.
+
+[preset]
+# id = "my-preset"
+# name = "My preset"
+# description = "Short description shown in PelagiaView."
+
+[settings.preprocessing]
+# preprocessingEncoding = "png"
+# backgroundCorrection = true
+# backgroundPercentile = 50
+# flatfieldCorrection = true
+# flatfieldQ = 0.95
+# flatfieldAxis = 0
+# flatfieldMinFieldValue = 1
+# flatfieldMaxFieldValue = 255
+# applyMask = false
+# cropEnabled = false
+# cropX = 0
+# cropY = 0
+# cropW = 1024
+# cropH = 1024
+# invertIntensity = false
+
+[settings.threshold]
+# thresholdMethod = "bounded_otsu_canny"
+# manualThreshold = 100
+# thresholdingMaximumValue = 100
+# boundedOtsuMinContrast = 50
+# boundedOtsuMaxForegroundFraction = 0.5
+# cannyEnabled = false
+# cannyLowThreshold = 60
+# cannyHighThreshold = 120
+# cannyBlurKernel = 5
+# adaptiveBlockSize = 31
+# adaptiveC = 5
+# percentileBackgroundPercentile = 50
+# percentileMinContrast = 50
+# hysteresisLowThreshold = 30
+# hysteresisHighThreshold = 80
+# hysteresisConnectivity = 8
+# sobelPercentile = 90
+# sobelThreshold = 100
+# sobelKernelSize = 3
+
+[settings.mask_augmentation]
+# maskAugmentationEnabled = true
+# maskAugmentationSteps = ["dilate"]
+# dilateKernelW = 3
+# dilateKernelH = 3
+# dilateIterations = 1
+# erodeKernelW = 3
+# erodeKernelH = 3
+# erodeIterations = 1
+# openKernelW = 3
+# openKernelH = 3
+# openIterations = 1
+# closeKernelW = 3
+# closeKernelH = 3
+# closeIterations = 1
+# fillHoles = false
+# removeSmallComponents = false
+# minComponentArea = 1
+# clearBorder = false
+
+[settings.candidate_detection]
+# roiAssemblyMethod = "connected_components"
+# roiAssemblyConnectivity = 8
+# minArea = 1
+# maxArea = 10000
+# minPerimeter = 100
+# maxPerimeter = 10000
+# minWidth = 1
+# maxWidth = 1024
+# minHeight = 1
+# maxHeight = 1024
+# minWidthPlusHeight = 1
+# maxWidthPlusHeight = 2048
+# padding = 100
+
+[settings.roi_storage]
+# roiEncoding = "zstd"
+# zstdMinBytes = 1024
+# alwaysStoreMask = true
+# storeRoiPayloadMinArea = 1
+# storeRoiPayloadMinWidth = 1
+# storeRoiPayloadMinHeight = 1
+# storeRoiPayloadMinWidthPlusHeight = 1
+
+[settings.refinement]
+# refinementModelKind = "identity"
+# refinementModelRef = ""
+# refinementModelRunDir = ""
+# refinementModelArtifact = "auto"
+# refinementTileSize = 256
+# refinementOverlapFraction = 0.25
+# refinementModelBatchSize = 8
+# refinementOutputThreshold = 0.5
+# refinementAllowFrameExpansion = true
+# refinementMaxIterations = 3
+# refinementExpansionPixels = 128
+# refinementEdgeTouchMargin = 1
+# refinementEncoding = "auto"
+# refinementStore = true
+# refinementDryRun = false
+
