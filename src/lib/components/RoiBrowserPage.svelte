@@ -77,7 +77,7 @@
   $: visibleCount = detections.filter((detection) => detection.id).length;
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
   $: invertImages = $imageInversionEnabled;
-  $: detailFrameImageInverted = $imageInversionEnabled;
+  $: detailFrameImageInverted = detailFramePayloadKind !== 'original' && $imageInversionEnabled;
   $: detailFrameUrl = selectedDetection ? frameContextUrl(selectedDetection, detailFrameDisplayMode) : '';
   $: detailFrameSourceDimensions = parentFrameDimensions() ?? fallbackSourceDimensions(frameImageNaturalWidth, frameImageNaturalHeight);
   $: detailFrameUnavailable = Boolean(

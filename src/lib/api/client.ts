@@ -1,6 +1,8 @@
 import type {
   AssetDetectionStats,
   AssetProcessingState,
+  AuthLoginResponse,
+  AuthMeResponse,
   CollectionSummary,
   DetectionListResponse,
   DetectionFilters,
@@ -21,8 +23,13 @@ import type {
   JobsSummaryOptions,
   JobsSummaryResponse,
   KvStoreOverview,
+  LiveDetectionCandidateResponse,
   LivePreprocessResponse,
+  LiveSandboxDeleteResponse,
+  LiveSandboxListResponse,
+  LiveThresholdResponse,
   LogEntry,
+  ProjectSummary,
   RawAsset,
   RoiRefinementCapabilities,
   RoiRefinementOptions,
@@ -82,6 +89,50 @@ type DetectionImageOptions = {
 
 type QueryParamValue = string | number | boolean | Array<string | number | boolean> | null | undefined;
 
+type ClientOptions = {
+  token?: string | null;
+};
+
+type LoginRequest = {
+  username: string;
+  password: string;
+  project_id?: string | null;
+  project_key?: string | null;
+  ttl_seconds?: number | null;
+  metadata?: Record<string, unknown>;
+};
+
+type ProjectSwitchRequest = {
+  project_id?: string | null;
+  project_key?: string | null;
+  ttl_seconds?: number | null;
+  metadata?: Record<string, unknown>;
+};
+
+type RequestOptions = {
+  auth?: 'required' | 'none';
+};
+
+let activeApiToken: string | null = null;
+
+export function setActiveApiToken(token: string | null): void {
+  activeApiToken = token || null;
+}
+
+export function authenticatedRequestInit(init: RequestInit = {}, token = activeApiToken): RequestInit {
+  const headers = new Headers(init.headers);
+  if (token) {
+    headers.set('authorization', `Bearer ${token}`);
+  } else {
+    headers.delete('authorization');
+  }
+  return { ...init, headers };
+}
+
+export function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  return fetch(input, authenticatedRequestInit(init));
+}
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
@@ -96,13 +147,15 @@ export class ApiError extends Error {
 
 export class PelagiaApiClient {
   readonly baseUrl: string;
+  readonly token: string | null;
   private cache = new Map<string, CacheRecord<unknown>>();
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, options: ClientOptions = {}) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
+    this.token = options.token ?? null;
   }
 
-  async get<T>(path: string, params?: Record<string, QueryParamValue>, ttlMs = 0): Promise<T> {
+  async get<T>(path: string, params?: Record<string, QueryParamValue>, ttlMs = 0, options: RequestOptions = {}): Promise<T> {
     const url = this.url(path, params);
     if (ttlMs > 0) {
       const cached = this.cache.get(url) as CacheRecord<T> | undefined;
@@ -111,49 +164,78 @@ export class PelagiaApiClient {
       }
     }
 
-    const value = await this.request<T>(url);
+    const value = await this.request<T>(url, undefined, options);
     if (ttlMs > 0) {
       this.cache.set(url, { expiresAt: Date.now() + ttlMs, value });
     }
     return value;
   }
 
-  async post<T>(path: string, body?: unknown): Promise<T> {
+  async post<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
     const value = await this.request<T>(this.url(path), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body)
-    });
+    }, options);
+    this.cache.clear();
+    return value;
+  }
+
+  async delete<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    const value = await this.request<T>(this.url(path), {
+      method: 'DELETE'
+    }, options);
     this.cache.clear();
     return value;
   }
 
   async health(): Promise<HealthResponse> {
-    return this.get<HealthResponse>('/health');
+    return this.get<HealthResponse>('/health', undefined, 0, { auth: 'none' });
   }
 
   async systemStatus(): Promise<SystemStatus> {
-    return this.get<SystemStatus>('/system/status', undefined, 1500);
+    return this.get<SystemStatus>('/system/status', undefined, 1500, { auth: 'none' });
   }
 
   async systemUse(): Promise<Record<string, unknown>> {
-    return this.get<Record<string, unknown>>('/system/use', undefined, 15000);
+    return this.get<Record<string, unknown>>('/system/use', undefined, 15000, { auth: 'none' });
   }
 
   async systemConfig(): Promise<SystemConfigResponse> {
-    return this.get<SystemConfigResponse>('/system/config', undefined, 15000);
+    return this.get<SystemConfigResponse>('/system/config', undefined, 15000, { auth: 'none' });
+  }
+
+  async login(body: LoginRequest): Promise<AuthLoginResponse> {
+    return this.post<AuthLoginResponse>('/auth/login', compact(body), { auth: 'none' });
+  }
+
+  async authMe(): Promise<AuthMeResponse> {
+    return this.get<AuthMeResponse>('/auth/me');
+  }
+
+  async listProjects(): Promise<ProjectSummary[]> {
+    const response = await this.get<{ projects: ProjectSummary[] }>('/projects');
+    return response.projects ?? [];
+  }
+
+  async switchProject(body: ProjectSwitchRequest): Promise<AuthLoginResponse> {
+    return this.post<AuthLoginResponse>('/auth/switch-project', compact(body));
+  }
+
+  async logout(): Promise<{ revoked?: boolean }> {
+    return this.post<{ revoked?: boolean }>('/auth/logout');
   }
 
   async segmentationOptions(): Promise<SegmentationCapabilities> {
-    return this.get<SegmentationCapabilities>('/segmentation/options', undefined, 15000);
+    return this.get<SegmentationCapabilities>('/segmentation/options', undefined, 15000, { auth: 'none' });
   }
 
   async roiRefinementOptions(): Promise<RoiRefinementCapabilities> {
-    return this.get<RoiRefinementCapabilities>('/roi-refinement/options', undefined, 15000);
+    return this.get<RoiRefinementCapabilities>('/roi-refinement/options', undefined, 15000, { auth: 'none' });
   }
 
   async kvStoreOverview(): Promise<KvStoreOverview> {
-    return this.get<KvStoreOverview>('/kvstore', undefined, 1500);
+    return this.get<KvStoreOverview>('/kvstore', undefined, 1500, { auth: 'none' });
   }
 
   async listJobs(options: number | JobListOptions = 100): Promise<Job[]> {
@@ -198,14 +280,14 @@ export class PelagiaApiClient {
   }
 
   async listWorkers(limit = 100): Promise<WorkerSession[]> {
-    const response = await this.get<{ workers: WorkerSession[] }>('/workers', { limit }, 1500);
+    const response = await this.get<{ workers: WorkerSession[] }>('/workers', { limit }, 1500, { auth: 'none' });
     return response.workers ?? [];
   }
 
   async requestWorkerShutdown(workerId: string): Promise<WorkerSession> {
     const response = await this.post<{ worker: WorkerSession }>(`/workers/${encodeURIComponent(workerId)}/shutdown`, {
       reason: 'Shutdown requested from PelagiaView'
-    });
+    }, { auth: 'none' });
     return response.worker;
   }
 
@@ -371,31 +453,21 @@ export class PelagiaApiClient {
     return this.post(`/segmentation/frames/${encodeURIComponent(frameId)}`, compact(options));
   }
 
-  async liveSegmentFrame(frameId: string, options: SegmentationOptions): Promise<{
-    frame_id: string;
-    run_id?: string;
-    asset_id?: string;
-    saved: boolean;
-    frame_payload_kind?: string;
-    apply_preprocessing?: boolean;
-    apply_mask?: boolean;
-    crop_enabled?: boolean;
-    crop_x?: number | null;
-    crop_y?: number | null;
-    crop_w?: number | null;
-    crop_h?: number | null;
-    bbox_coordinate_space?: string | null;
-    coordinate_space?: string | null;
-    resolved_options?: SegmentationResolvedOptions;
-    processed_frame_shape?: number[] | null;
-    stage_counts?: Record<string, number>;
-    background_correction?: boolean;
-    background_percentile?: number;
-    intensity_inverted?: boolean;
-    detection_count: number;
-    detections: DetectionSummary[];
-  }> {
-    return this.get('/live/segmentation', {
+  async liveThresholdFrame(frameId: string, options: SegmentationOptions & {
+    include_mask_payload?: boolean;
+    mask_encoding?: string | null;
+  }): Promise<LiveThresholdResponse> {
+    return this.get('/live/threshold', {
+      frame_id: frameId,
+      ...compact(options)
+    });
+  }
+
+  async liveDetectionCandidateFrame(frameId: string, options: SegmentationOptions & {
+    include_detection_payloads?: boolean;
+    max_detections?: number | null;
+  }): Promise<LiveDetectionCandidateResponse> {
+    return this.get('/live/detection-candidate', {
       frame_id: frameId,
       ...compact(options)
     });
@@ -421,19 +493,36 @@ export class PelagiaApiClient {
     frameId: string,
     options: FramePreprocessOptions = {}
   ): Promise<LivePreprocessResponse> {
+    if (!this.token) {
+      throw new ApiError(401, 'Pelagia session token is required.');
+    }
     const { encoding = 'png', ...preprocessOptions } = options;
+    const params = {
+      frame_id: frameId,
+      encoding,
+      ...compact(preprocessOptions)
+    };
     const value = await this.request<LivePreprocessResponse>(
-      this.url('/live/preprocess', {
-        frame_id: frameId,
-        encoding,
-        ...compact(preprocessOptions)
-      }),
+      this.url('/live/preprocess', params),
       {
         method: 'POST'
       }
     );
     this.cache.clear();
     return value;
+  }
+
+  async listLiveSandboxFrames(options: {
+    source_frame_id?: string | null;
+    operation?: string | null;
+    limit?: number | null;
+    offset?: number | null;
+  } = {}): Promise<LiveSandboxListResponse> {
+    return this.get('/live/sandbox', options);
+  }
+
+  async deleteLiveSandboxFrame(frameId: string): Promise<LiveSandboxDeleteResponse> {
+    return this.delete(`/live/sandbox/${encodeURIComponent(frameId)}`);
   }
 
   async queueSegmentationJob(body: Record<string, unknown>): Promise<{ job: Job }> {
@@ -470,7 +559,7 @@ export class PelagiaApiClient {
       const response = await this.get<{
         directory?: string;
         entries?: Array<DirectoryEntry & { is_dir?: boolean }>;
-      }>('/live/files', { directory: path });
+      }>('/live/files', { directory: path }, 0, { auth: 'none' });
       return {
         path: response.directory ?? path,
         entries: (response.entries ?? []).map((entry) => ({
@@ -488,14 +577,15 @@ export class PelagiaApiClient {
     }
   }
 
-  private async request<T>(input: string, init?: RequestInit): Promise<T> {
+  private async request<T>(input: string, init?: RequestInit, options: RequestOptions = {}): Promise<T> {
     let response: Response;
+    const requestInit = options.auth === 'none' ? { ...(init ?? {}) } : authenticatedRequestInit(init, this.token);
     const started = performance.now();
     try {
-      response = await fetch(input, init);
-      recordApiRequest(input, init, response, performance.now() - started);
+      response = await fetch(input, requestInit);
+      recordApiRequest(input, requestInit, response, performance.now() - started);
     } catch (error) {
-      recordApiRequest(input, init, null, performance.now() - started, error);
+      recordApiRequest(input, requestInit, null, performance.now() - started, error);
       throw new ApiError(
         0,
         `Unable to reach Pelagia at ${this.baseUrl}. Check that the server is running and allows browser requests from PelagiaView.`,
@@ -503,12 +593,7 @@ export class PelagiaApiClient {
       );
     }
     if (!response.ok) {
-      let detail: unknown;
-      try {
-        detail = await response.json();
-      } catch {
-        detail = await response.text();
-      }
+      const detail = await responseDetail(response);
       const message =
         typeof detail === 'object' && detail && 'detail' in detail
           ? String((detail as { detail: unknown }).detail)
@@ -554,6 +639,24 @@ function compact<T extends Record<string, unknown>>(input: T): T {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== '')
   ) as T;
+}
+
+async function responseDetail(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('json')) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function withDetectionPageFallback(

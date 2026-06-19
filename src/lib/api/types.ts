@@ -31,6 +31,58 @@ export type SystemConfigResponse = {
   defaults?: Record<string, unknown>;
 };
 
+export type ProjectSummary = {
+  id: string;
+  project_key?: string;
+  project_name?: string | null;
+  name?: string | null;
+  description?: string | null;
+  role?: string | null;
+  membership_role?: string | null;
+  is_active?: boolean;
+};
+
+export type AuthUserSummary = {
+  id: string;
+  username: string;
+  display_name?: string | null;
+  is_admin?: boolean;
+};
+
+export type AuthSessionSummary = {
+  id?: string;
+  user_id?: string;
+  project_id?: string;
+  project_key?: string;
+  project_name?: string | null;
+  project_role?: string | null;
+  expires_at?: string | null;
+  [key: string]: unknown;
+};
+
+export type AuthLoginResponse = {
+  token: string;
+  session?: AuthSessionSummary;
+  user?: AuthUserSummary;
+  project?: ProjectSummary;
+};
+
+export type AuthMeResponse = {
+  auth?: {
+    user_id?: string;
+    username?: string;
+    project_id?: string;
+    project_key?: string;
+    role?: string;
+    is_admin?: boolean;
+    session_id?: string | null;
+    [key: string]: unknown;
+  };
+  user?: AuthUserSummary;
+  project?: ProjectSummary;
+  projects?: ProjectSummary[];
+};
+
 export type KvStoreOverview = {
   root_path?: string;
   configured_hash_algorithm?: string;
@@ -501,6 +553,63 @@ export type SegmentationOptions = {
 
 export type SegmentationResolvedOptions = Record<string, Record<string, unknown>>;
 
+export type LiveSandboxFields = {
+  frame_id: string;
+  source_frame_id?: string | null;
+  sandbox_frame_id?: string | null;
+  sandboxed?: boolean;
+  sandbox_created?: boolean;
+  run_id?: string | null;
+  asset_id?: string | null;
+  saved?: boolean;
+  frame_payload_kind?: string | null;
+  apply_preprocessing?: boolean | null;
+  resolved_options?: SegmentationResolvedOptions;
+  processed_frame_shape?: number[] | null;
+  stage_counts?: Record<string, number>;
+  stage_durations_ms?: Record<string, number>;
+};
+
+export type LiveThresholdResponse = LiveSandboxFields & {
+  mask?: {
+    shape?: number[];
+    dtype?: string;
+    foreground_pixels?: number;
+    foreground_fraction?: number;
+    mask_payload_base64?: string;
+    mask_payload_bytes?: number;
+    mask_encoding?: string;
+    mask_format?: string;
+  };
+};
+
+export type LiveDetectionCandidateResponse = LiveSandboxFields & {
+  bbox_coordinate_space?: string | null;
+  coordinate_space?: string | null;
+  payloads_encoded?: boolean;
+  max_detections?: number | null;
+  candidate_limit_applied?: boolean | null;
+  candidate_detection_count?: number;
+  detection_count: number;
+  candidate_detections?: DetectionSummary[];
+  detections: DetectionSummary[];
+};
+
+export type LiveSandboxListResponse = {
+  sandbox_frames: FrameSummary[];
+  limit: number;
+  offset: number;
+  count: number;
+};
+
+export type LiveSandboxDeleteResponse = {
+  status: string;
+  sandbox_frame_id: string;
+  frame?: FrameSummary;
+  generated_kvstore_keys?: string[];
+  deleted_kvstore_keys?: Array<Record<string, unknown>>;
+};
+
 export type SegmentationCapabilities = {
   pipeline_stage_order?: string[];
   supported?: {
@@ -587,6 +696,10 @@ export type LivePreprocessResponse = {
   status?: string;
   saved?: boolean;
   frame_id: string;
+  source_frame_id?: string | null;
+  sandbox_frame_id?: string | null;
+  sandboxed?: boolean;
+  sandbox_created?: boolean;
   run_id?: string | null;
   asset_id?: string | null;
   old_preprocessed_key?: string | null;

@@ -16,7 +16,7 @@ export type JobStatusCounts = {
 export const jobStageAliases: Record<JobStageKey, string[]> = {
   ingestion: ['ingest', 'ingestion', 'video_ingest', 'frame_ingest', 'extract_frames', 'frame_extraction'],
   preprocessing: ['preprocess', 'preprocessing', 'frame_preprocess', 'frame_preprocessing', 'preprocess_frames'],
-  segmentation: ['segment', 'segmentation', 'candidate', 'candidates', 'detection', 'detection_candidate', 'candidate_generation'],
+  segmentation: ['segment', 'segmentation', 'candidate', 'candidates', 'detection', 'detection-candidate', 'candidate-generation'],
   roi_refinement: ['roi_refinement', 'refinement', 'refine', 'refined_roi', 'roi_refine']
 };
 

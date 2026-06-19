@@ -124,7 +124,7 @@ export function liveProcessingPreset(settings: ProcessingSettings): ProcessingPr
     name: 'Current session',
     description: 'The settings currently active in this browser session.',
     source: 'live',
-    settings
+    settings: pruneProcessingSettings(settings)
   };
 }
 
@@ -133,4 +133,149 @@ export function processingPresetByKey(
   key: string
 ): ProcessingPreset | null {
   return presets.find((preset) => processingPresetKey(preset) === key) ?? null;
+}
+
+export function pruneProcessingSettings(settings: ProcessingSettings): ProcessingSettings {
+  const pruned: ProcessingSettings = {};
+
+  const has = (key: keyof ProcessingSettings) => key in settings && settings[key] !== undefined;
+  const copy = <K extends keyof ProcessingSettings>(key: K) => {
+    if (has(key)) pruned[key] = settings[key] as never;
+  };
+  const copyIfPresentValue = <K extends keyof ProcessingSettings>(key: K) => {
+    const value = settings[key];
+    if (value !== undefined && value !== null && value !== '') pruned[key] = value as never;
+  };
+
+  copy('preprocessingEncoding');
+  copy('framePayloadKind');
+  copy('applyPreprocessing');
+
+  copy('backgroundCorrection');
+  if (settings.backgroundCorrection) copy('backgroundPercentile');
+
+  copy('flatfieldCorrection');
+  if (settings.flatfieldCorrection) {
+    copy('flatfieldQ');
+    copy('flatfieldAxis');
+    copy('flatfieldMinFieldValue');
+    copy('flatfieldMaxFieldValue');
+  }
+
+  copy('applyMask');
+  copy('cropEnabled');
+  if (settings.cropEnabled) {
+    copy('cropX');
+    copy('cropY');
+    copy('cropW');
+    copy('cropH');
+  }
+  copy('invertIntensity');
+
+  const thresholdMethod = settings.thresholdMethod;
+  copy('thresholdMethod');
+  if (thresholdMethod === 'manual') copy('manualThreshold');
+  if (thresholdMethod === 'otsu' || thresholdMethod === 'bounded_otsu' || thresholdMethod === 'bounded_otsu_canny') {
+    copy('thresholdingMaximumValue');
+  }
+  if (thresholdMethod === 'bounded_otsu' || thresholdMethod === 'bounded_otsu_canny') {
+    copy('boundedOtsuMinContrast');
+    copy('boundedOtsuMaxForegroundFraction');
+  }
+  if (thresholdMethod === 'bounded_otsu_canny') copy('cannyEnabled');
+  if (thresholdMethod === 'canny' || (thresholdMethod === 'bounded_otsu_canny' && settings.cannyEnabled)) {
+    copy('cannyLowThreshold');
+    copy('cannyHighThreshold');
+    copy('cannyBlurKernel');
+  }
+  if (thresholdMethod === 'adaptive_mean' || thresholdMethod === 'adaptive_gaussian') {
+    copy('adaptiveBlockSize');
+    copy('adaptiveC');
+  }
+  if (thresholdMethod === 'percentile_background') {
+    copy('percentileBackgroundPercentile');
+    copy('percentileMinContrast');
+  }
+  if (thresholdMethod === 'hysteresis') {
+    copy('hysteresisLowThreshold');
+    copy('hysteresisHighThreshold');
+    copy('hysteresisConnectivity');
+  }
+  if (thresholdMethod === 'sobel_edges') {
+    copy('sobelPercentile');
+    copy('sobelThreshold');
+    copy('sobelKernelSize');
+  }
+
+  copy('maskAugmentationEnabled');
+  if (settings.maskAugmentationEnabled) {
+    const steps = (settings.maskAugmentationSteps ?? []).filter((step) => step && step !== 'none');
+    if (steps.length) pruned.maskAugmentationSteps = steps;
+    if (steps.includes('dilate')) {
+      copy('dilateKernelW');
+      copy('dilateKernelH');
+      copy('dilateIterations');
+    }
+    if (steps.includes('erode')) {
+      copy('erodeKernelW');
+      copy('erodeKernelH');
+      copy('erodeIterations');
+    }
+    if (steps.includes('open')) {
+      copy('openKernelW');
+      copy('openKernelH');
+      copy('openIterations');
+    }
+    if (steps.includes('close')) {
+      copy('closeKernelW');
+      copy('closeKernelH');
+      copy('closeIterations');
+    }
+    copy('fillHoles');
+    copy('removeSmallComponents');
+    if (settings.removeSmallComponents || steps.includes('remove_small_components')) copy('minComponentArea');
+    copy('clearBorder');
+  }
+
+  copy('roiAssemblyMethod');
+  copy('roiAssemblyConnectivity');
+  copyIfPresentValue('minArea');
+  copyIfPresentValue('maxArea');
+  copy('minPerimeter');
+  copyIfPresentValue('maxPerimeter');
+  copyIfPresentValue('minWidth');
+  copyIfPresentValue('maxWidth');
+  copyIfPresentValue('minHeight');
+  copyIfPresentValue('maxHeight');
+  copyIfPresentValue('minWidthPlusHeight');
+  copyIfPresentValue('maxWidthPlusHeight');
+  copy('padding');
+
+  copy('roiEncoding');
+  if (settings.roiEncoding === 'zstd') copy('zstdMinBytes');
+  copy('alwaysStoreMask');
+  copyIfPresentValue('storeRoiPayloadMinArea');
+  copyIfPresentValue('storeRoiPayloadMinWidth');
+  copyIfPresentValue('storeRoiPayloadMinHeight');
+  copyIfPresentValue('storeRoiPayloadMinWidthPlusHeight');
+
+  copy('refinementModelKind');
+  copyIfPresentValue('refinementModelRef');
+  if (settings.refinementModelKind === 'oracle_builder_unet') copyIfPresentValue('refinementModelRunDir');
+  if (settings.refinementModelKind === 'keras_artifact') copyIfPresentValue('refinementModelArtifact');
+  copy('refinementTileSize');
+  copy('refinementOverlapFraction');
+  copy('refinementModelBatchSize');
+  copy('refinementOutputThreshold');
+  copy('refinementAllowFrameExpansion');
+  if (settings.refinementAllowFrameExpansion) {
+    copy('refinementMaxIterations');
+    copy('refinementExpansionPixels');
+    copy('refinementEdgeTouchMargin');
+  }
+  copy('refinementEncoding');
+  copy('refinementStore');
+  copy('refinementDryRun');
+
+  return pruned;
 }

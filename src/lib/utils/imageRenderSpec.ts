@@ -1,6 +1,8 @@
 export type ImageCoordinateSpace = 'source' | 'image' | 'percent';
 export type ImageViewerMode = 'thumbnail' | 'static' | 'viewer' | 'interactive';
 export type ImageExportControls = 'full' | 'menu' | 'copy-menu' | 'none';
+export type ImageOverlayBlendMode = 'normal' | 'add' | 'subtract' | 'multiply' | 'screen' | 'darken' | 'lighten';
+export type ImageOverlayColorMode = 'tint' | 'black' | 'white' | 'red';
 
 export type ImageBaseSpec = {
   url: string;
@@ -41,7 +43,10 @@ export type ImageMaskOverlayLayer = {
   w: number;
   h: number;
   tint: string;
+  colorMode?: ImageOverlayColorMode;
+  blendMode?: ImageOverlayBlendMode;
   opacity?: number;
+  compositeOperation?: GlobalCompositeOperation;
   coordinateSpace?: ImageCoordinateSpace;
 };
 
@@ -69,7 +74,10 @@ export type ImageOverlayImage = {
   w: number;
   h: number;
   tint: string;
+  colorMode?: ImageOverlayColorMode;
+  blendMode?: ImageOverlayBlendMode;
   opacity?: number;
+  compositeOperation?: GlobalCompositeOperation;
   coordinateSpace?: ImageCoordinateSpace;
 };
 

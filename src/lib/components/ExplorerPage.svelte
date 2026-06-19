@@ -3,13 +3,14 @@
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import ProcessingPresetControls from '$lib/components/ProcessingPresetControls.svelte';
-  import { ApiError } from '$lib/api/client';
+  import { ApiError, authenticatedFetch } from '$lib/api/client';
   import { listProcessingPresets, saveProcessingPreset } from '$lib/api/processingPresets';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient } from '$lib/stores/session';
   import type {
     DetectionSummary,
     FrameSummary,
+    LiveThresholdResponse,
     RawAsset,
     RoiRefinementCapabilities,
     SegmentationCapabilities,
@@ -29,13 +30,21 @@
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
   import { formatCount } from '$lib/utils/format';
-  import type { ImageLayer, ImageOverlayImage, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
+  import type {
+    ImageLayer,
+    ImageOverlayBlendMode,
+    ImageOverlayColorMode,
+    ImageOverlayImage,
+    ImageOverlayRect,
+    ImageRenderSpec
+  } from '$lib/utils/imageRenderSpec';
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
     liveProcessingPreset as createLiveProcessingPreset,
     PROCESSING_PRESET_APPLIED_EVENT,
     processingPresetByKey,
-    processingPresetKey
+    processingPresetKey,
+    pruneProcessingSettings
   } from '$lib/processing/settings';
   import {
     booleanPreference,
@@ -193,8 +202,40 @@
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
   const frameImageWidth = 1100;
+  const liveSandboxDeletionDelayMs = 5 * 60 * 1000;
+  const pendingLiveSandboxDeletions = new Map<string, number>();
   let lastFrameImageKey = '';
   let failedImageUrl = '';
+  let liveSandboxFrameId = '';
+  let liveSandboxSourceFrameId = '';
+  let liveSandboxPreprocessingKey = '';
+  let thresholdMaskUrl = '';
+  let thresholdForegroundPixels: number | null = null;
+  let thresholdForegroundFraction: number | null = null;
+  let thresholdOverlayColorMode: ImageOverlayColorMode = 'red';
+  let thresholdOverlayBlendMode: ImageOverlayBlendMode | 'auto' = 'auto';
+  let thresholdOverlayOpacity = 1;
+  const thresholdOverlayColorOptions: Array<{ value: ImageOverlayColorMode; label: string }> = [
+    { value: 'red', label: 'Red' },
+    { value: 'white', label: 'White' },
+    { value: 'black', label: 'Black' },
+    { value: 'tint', label: 'Custom red' }
+  ];
+  const thresholdOverlayBlendOptions: Array<{ value: ImageOverlayBlendMode | 'auto'; label: string }> = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'normal', label: 'Normal' },
+    { value: 'add', label: 'Add' },
+    { value: 'subtract', label: 'Subtract' },
+    { value: 'screen', label: 'Screen' },
+    { value: 'multiply', label: 'Multiply' },
+    { value: 'darken', label: 'Darken' },
+    { value: 'lighten', label: 'Lighten' }
+  ];
+  let lastDetectionPreviewKey = '';
+  let lastAutoThresholdPreviewKey = '';
+  let thresholdPreviewTimer: number | null = null;
+  let thresholdPreviewSerial = 0;
+  let detectionPreviewSerial = 0;
   const explorerPreferenceKey = preferenceKey('explorer');
   const liveProcessingPresetKey = preferenceKey('processing-preset:live');
   let processingPresets: ProcessingPreset[] = [];
@@ -202,6 +243,7 @@
   let presetMessage: string | null = null;
   let presetError: string | null = null;
   let presetsLoading = false;
+  let livePresetSettings: ProcessingSettings | null = null;
 
   type ExplorerTab = 'preprocessing' | 'threshold' | 'detection' | 'refinement' | 'presets';
   const explorerTabs: Array<{ id: ExplorerTab; label: string }> = [
@@ -309,14 +351,14 @@
   $: selectedFrame = findFrameByNumber(selectedFrameNum);
   $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(explorerPreferenceKey, explorerPreferenceSnapshot);
-  $: liveProcessingPreset = createLiveProcessingPreset(captureProcessingSettings());
+  $: liveProcessingPreset = createLiveProcessingPreset(livePresetSettings ?? captureProcessingSettings());
   $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
   $: if (preferencesReady) writePreferences(liveProcessingPresetKey, liveProcessingPreset);
   $: framePayloadKind = payloadKindForDisplay(frameDisplayMode);
-  $: imageInverted = $imageInversionEnabled;
+  $: imageInverted = framePayloadKind !== 'original' && $imageInversionEnabled;
   $: imageUrl =
     selectedAssetId && selectedFrameNum > 0
-      ? framePreviewUrl(frameDisplayMode, preprocessedReloadKey, selectedFrame)
+      ? framePreviewUrl(frameDisplayMode, preprocessedReloadKey, selectedFrame, liveSandboxFrameId)
       : '';
   $: imageUnavailable = Boolean(imageUrl && failedImageUrl === imageUrl);
   $: if ((activeExplorerTab === 'threshold' || activeExplorerTab === 'detection') && frameDisplayMode !== 'preprocessed') {
@@ -325,6 +367,7 @@
   $: void loadFrameImageHeaders(imageUrl);
   $: boxes = detections.map(toCropBox).filter((box): box is BBox => box !== null);
   $: targetBoxes = detections.map(toTargetBox).filter((box): box is BBox => box !== null);
+  $: detectionOverlayKey = detectionOverlaySignature(boxes, targetBoxes, bboxCoordinateBasis);
   $: hasRefinementResults = refinedDetections.length > 0;
   $: refinementSummary = summarizeRefinedDetections(refinedDetections);
   $: canvasOverlays = hasRefinementResults
@@ -344,8 +387,22 @@
     maskDifferenceUrls
   );
   $: void updateMaskDifferenceUrls(showMaskDifferences, detections, refinedDetections);
-  $: previewOptionsKey = optionsKey(
-    frameDisplayMode,
+  $: preprocessingPreviewKey = preprocessingOptionsKey(
+    backgroundCorrection,
+    backgroundPercentile,
+    flatfieldCorrection,
+    flatfieldQ,
+    flatfieldAxis,
+    flatfieldMinFieldValue,
+    flatfieldMaxFieldValue,
+    cropEnabled,
+    cropX,
+    cropY,
+    cropW,
+    cropH,
+    invertIntensity
+  );
+  $: thresholdPreviewKey = thresholdOptionsKey(
     thresholdMethod,
     manualThreshold,
     thresholdingMaximumValue,
@@ -366,21 +423,10 @@
     hysteresisConnectivity,
     sobelPercentile,
     sobelThreshold,
-    sobelKernelSize,
-    backgroundCorrection,
-    backgroundPercentile,
-    flatfieldCorrection,
-    flatfieldQ,
-    flatfieldAxis,
-    flatfieldMinFieldValue,
-    flatfieldMaxFieldValue,
-    applyMask,
-    cropEnabled,
-    cropX,
-    cropY,
-    cropW,
-    cropH,
-    invertIntensity,
+    sobelKernelSize
+  );
+  $: detectionPreviewKey = detectionOptionsKey(
+    thresholdPreviewKey,
     minPerimeter,
     maxPerimeter,
     padding,
@@ -420,7 +466,9 @@
       storeRoiPayloadMinWidthPlusHeight
     }
   );
-  $: resetLivePreviewForImageOptions(selectedAssetId, selectedFrameNum, previewOptionsKey);
+  $: resetLivePreviewForImageOptions(selectedAssetId, selectedFrameNum, preprocessingPreviewKey);
+  $: resetCandidatePreviewForDetectionOptions(selectedFrame?.id ?? '', detectionPreviewKey);
+  $: scheduleThresholdAutoPreview(activeExplorerTab, selectedFrame?.id ?? '', preprocessingPreviewKey, thresholdPreviewKey);
 
   onMount(() => {
     window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
@@ -457,7 +505,9 @@
   }
 
   onDestroy(() => {
+    clearThresholdPreviewTimer();
     clearMaskDifferenceUrls();
+    void cleanupLiveSandboxFrame();
   });
 
   function buildPreferenceSnapshot(): ExplorerPreferences {
@@ -556,7 +606,7 @@
   }
 
   function captureProcessingSettings(): ProcessingSettings {
-    return {
+    return pruneProcessingSettings({
       thresholdMethod,
       manualThreshold,
       thresholdingMaximumValue,
@@ -641,7 +691,7 @@
       refinementExpansionPixels,
       refinementEdgeTouchMargin,
       refinementEncoding
-    };
+    });
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
@@ -785,6 +835,7 @@
   function applyStoredLiveProcessingPreset() {
     const preset = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
     if (preset?.source === 'live' && preset.settings) {
+      livePresetSettings = pruneProcessingSettings(preset.settings);
       applyProcessingSettings(preset.settings);
     }
   }
@@ -793,9 +844,19 @@
     const preset = (event as CustomEvent<ProcessingPreset>).detail;
     if (!preset?.settings) return;
     applyProcessingSettings(preset.settings);
-    selectedProcessingPresetKey = 'live:live';
+    if (preset.source === 'live') {
+      livePresetSettings = pruneProcessingSettings(preset.settings);
+      selectedProcessingPresetKey = 'live:live';
+    } else {
+      selectedProcessingPresetKey = processingPresetKey(preset);
+    }
     presetMessage = 'Applied header preset.';
     presetError = null;
+  }
+
+  function commitLivePresetSettings() {
+    livePresetSettings = captureProcessingSettings();
+    selectedProcessingPresetKey = 'live:live';
   }
 
   function restorePreferences() {
@@ -1048,6 +1109,7 @@
     const client = getClient();
     if (!client || !selectedAssetId) return;
     error = null;
+    await cleanupLiveSandboxFrame();
     hasLivePreview = false;
     selectedAsset = await client.getAsset(selectedAssetId);
     frameCount = selectedAsset.frame_count ?? 0;
@@ -1063,6 +1125,7 @@
   async function loadDetections() {
     const client = getClient();
     if (!client || !selectedAssetId) return;
+    await cleanupLiveSandboxFrame();
     hasLivePreview = false;
     const frame = await ensureSelectedFrame();
     if (!frame?.id) {
@@ -1268,18 +1331,38 @@
     };
   }
 
+  function livePreprocessingOptions() {
+    return {
+      ...preprocessingOptions(),
+      apply_mask: false
+    };
+  }
+
+  function liveDetectionCandidateOptions(): SegmentationOptions {
+    return {
+      ...thresholdOptions(),
+      ...maskAugmentationOptions(),
+      ...roiAssemblyOptions(),
+      ...roiFilterOptions(),
+      ...roiRecordingOptions()
+    };
+  }
+
   function framePreviewUrl(
     mode: FrameDisplayMode,
     reloadKey: number,
-    frame: FrameSummary | undefined
+    frame: FrameSummary | undefined,
+    sandboxFrameId = ''
   ): string {
     const client = getClient();
     if (!client || !selectedAssetId || selectedFrameNum < 1) return '';
     const kind = payloadKindForDisplay(mode);
+    if (kind === 'preprocessed' && !sandboxFrameId) return '';
+    const frameId = kind === 'preprocessed' ? sandboxFrameId : frame?.id;
     const base = {
-      frame_id: frame?.id,
-      asset_id: frame?.id ? undefined : selectedAssetId,
-      frame_num: frame?.id ? undefined : selectedFrameNum,
+      frame_id: frameId,
+      asset_id: frameId ? undefined : selectedAssetId,
+      frame_num: frameId ? undefined : selectedFrameNum,
       format: 'jpg',
       width: frameImageWidth,
       cache_bust: kind === 'preprocessed' && reloadKey ? reloadKey : undefined
@@ -1287,8 +1370,39 @@
     return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
   }
 
-  function optionsKey(
-    mode: FrameDisplayMode,
+  function preprocessingOptionsKey(
+    backgroundEnabled: boolean,
+    backgroundValue: number,
+    flatfieldEnabled: boolean,
+    flatfieldValue: number,
+    flatfieldAxisValue: number,
+    flatfieldMinFieldValue: number,
+    flatfieldMaxFieldValue: number | null,
+    cropIsEnabled: boolean,
+    cropXValue: number | null,
+    cropYValue: number | null,
+    cropWValue: number | null,
+    cropHValue: number | null,
+    invertEnabled: boolean
+  ): string {
+    return JSON.stringify({
+      background_correction: backgroundEnabled,
+      background_percentile: backgroundEnabled ? backgroundValue : undefined,
+      flatfield_correction: flatfieldEnabled,
+      flatfield_q: flatfieldEnabled ? flatfieldValue : undefined,
+      flatfield_axis: flatfieldEnabled ? flatfieldAxisValue : undefined,
+      flatfield_min_field_value: flatfieldEnabled ? flatfieldMinFieldValue : undefined,
+      flatfield_max_field_value: flatfieldEnabled ? flatfieldMaxFieldValue : undefined,
+      crop_enabled: cropIsEnabled,
+      crop_x: cropIsEnabled ? cropXValue : undefined,
+      crop_y: cropIsEnabled ? cropYValue : undefined,
+      crop_w: cropIsEnabled ? cropWValue : undefined,
+      crop_h: cropIsEnabled ? cropHValue : undefined,
+      invert_intensity: invertEnabled
+    });
+  }
+
+  function thresholdOptionsKey(
     thresholdMethodValue: string,
     manualThresholdValue: number,
     thresholdMaximumValue: number | null,
@@ -1309,29 +1423,9 @@
     hysteresisConnectivityValue: number,
     sobelPercentileValue: number,
     sobelThresholdValue: number | null,
-    sobelKernelValue: number,
-    backgroundEnabled: boolean,
-    backgroundValue: number,
-    flatfieldEnabled: boolean,
-    flatfieldValue: number,
-    flatfieldAxisValue: number,
-    flatfieldMinFieldValue: number,
-    flatfieldMaxFieldValue: number | null,
-    maskEnabled: boolean,
-    cropIsEnabled: boolean,
-    cropXValue: number | null,
-    cropYValue: number | null,
-    cropWValue: number | null,
-    cropHValue: number | null,
-    invertEnabled: boolean,
-    minPerimeterValue: number,
-    maxPerimeterValue: number | null,
-    paddingValue: number,
-    extraValues: unknown = null
+    sobelKernelValue: number
   ): string {
     return JSON.stringify({
-      frame_display_mode: mode,
-      frame_payload_kind: payloadKindForDisplay(mode),
       threshold_method: thresholdMethodValue,
       manual_threshold: manualThresholdValue,
       thresholding_maximum_value: thresholdMaximumValue,
@@ -1352,21 +1446,19 @@
       hysteresis_connectivity: hysteresisConnectivityValue,
       sobel_percentile: sobelPercentileValue,
       sobel_threshold: sobelThresholdValue,
-      sobel_kernel_size: sobelKernelValue,
-      background_correction: backgroundEnabled,
-      background_percentile: backgroundEnabled ? backgroundValue : undefined,
-      flatfield_correction: flatfieldEnabled,
-      flatfield_q: flatfieldEnabled ? flatfieldValue : undefined,
-      flatfield_axis: flatfieldEnabled ? flatfieldAxisValue : undefined,
-      flatfield_min_field_value: flatfieldEnabled ? flatfieldMinFieldValue : undefined,
-      flatfield_max_field_value: flatfieldEnabled ? flatfieldMaxFieldValue : undefined,
-      apply_mask: maskEnabled,
-      crop_enabled: cropIsEnabled,
-      crop_x: cropIsEnabled ? cropXValue : undefined,
-      crop_y: cropIsEnabled ? cropYValue : undefined,
-      crop_w: cropIsEnabled ? cropWValue : undefined,
-      crop_h: cropIsEnabled ? cropHValue : undefined,
-      invert_intensity: invertEnabled,
+      sobel_kernel_size: sobelKernelValue
+    });
+  }
+
+  function detectionOptionsKey(
+    thresholdKey: string,
+    minPerimeterValue: number,
+    maxPerimeterValue: number | null,
+    paddingValue: number,
+    extraValues: unknown = null
+  ): string {
+    return JSON.stringify({
+      threshold_key: thresholdKey,
       min_perimeter: minPerimeterValue,
       max_perimeter: maxPerimeterValue,
       padding: paddingValue,
@@ -1381,6 +1473,7 @@
   ) {
     const key = `${assetId}:${frameNum}:${optionKey}`;
     if (lastFrameImageKey && key !== lastFrameImageKey) {
+      void cleanupLiveSandboxFrame();
       hasLivePreview = false;
       detections = [];
       refinedDetections = [];
@@ -1389,46 +1482,227 @@
     lastFrameImageKey = key;
   }
 
-  async function segmentNow() {
+  function resetCandidatePreviewForDetectionOptions(frameId: string, optionKey: string) {
+    const key = `${frameId}:${optionKey}`;
+    if (lastDetectionPreviewKey && key !== lastDetectionPreviewKey) {
+      detections = [];
+      refinedDetections = [];
+      stageCounts = {};
+      bboxCoordinateBasis = 'preprocessed-local';
+    }
+    lastDetectionPreviewKey = key;
+  }
+
+  function clearThresholdPreviewTimer() {
+    if (thresholdPreviewTimer !== null && typeof window !== 'undefined') {
+      window.clearTimeout(thresholdPreviewTimer);
+    }
+    thresholdPreviewTimer = null;
+  }
+
+  function scheduleThresholdAutoPreview(
+    tab: ExplorerTab,
+    frameId: string,
+    preprocessingKey: string,
+    thresholdKey: string
+  ) {
+    if (typeof window === 'undefined') return;
+    if (tab !== 'threshold' || !frameId) {
+      clearThresholdPreviewTimer();
+      return;
+    }
+    const key = `${frameId}:${preprocessingKey}:${thresholdKey}`;
+    if (key === lastAutoThresholdPreviewKey || thresholdPreviewTimer !== null) {
+      if (key === lastAutoThresholdPreviewKey) return;
+      clearThresholdPreviewTimer();
+    }
+    thresholdMaskUrl = '';
+    thresholdPreviewTimer = window.setTimeout(() => {
+      thresholdPreviewTimer = null;
+      if (activeExplorerTab !== 'threshold' || selectedFrame?.id !== frameId) return;
+      lastAutoThresholdPreviewKey = key;
+      void previewThresholdNow({ silent: true });
+    }, 250);
+  }
+
+  function adoptLiveSandboxFrame(
+    result: { sandbox_frame_id?: string | null; frame_id?: string | null },
+    sourceFrameId: string
+  ) {
+    const sandboxFrameId = result.sandbox_frame_id ?? result.frame_id;
+    if (!sandboxFrameId) return;
+    cancelScheduledLiveSandboxDeletion(sandboxFrameId);
+    liveSandboxFrameId = sandboxFrameId;
+    liveSandboxSourceFrameId = sourceFrameId;
+    liveSandboxPreprocessingKey = preprocessingPreviewKey;
+  }
+
+  function cancelScheduledLiveSandboxDeletion(sandboxFrameId: string) {
+    if (typeof window === 'undefined') return;
+    const timer = pendingLiveSandboxDeletions.get(sandboxFrameId);
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    pendingLiveSandboxDeletions.delete(sandboxFrameId);
+  }
+
+  function scheduleLiveSandboxDeletion(sandboxFrameId: string) {
+    if (typeof window === 'undefined' || pendingLiveSandboxDeletions.has(sandboxFrameId)) return;
+    const timer = window.setTimeout(() => {
+      pendingLiveSandboxDeletions.delete(sandboxFrameId);
+      void deleteLiveSandboxFrame(sandboxFrameId);
+    }, liveSandboxDeletionDelayMs);
+    pendingLiveSandboxDeletions.set(sandboxFrameId, timer);
+  }
+
+  async function deleteLiveSandboxFrame(sandboxFrameId: string) {
+    const client = getClient();
+    if (!client) return;
+    try {
+      await client.deleteLiveSandboxFrame(sandboxFrameId);
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 404) {
+        // Sandbox cleanup is best-effort; a stale live frame should not interrupt the explorer.
+      }
+    }
+  }
+
+  async function cleanupLiveSandboxFrame(options: { invalidateRequests?: boolean } = {}) {
+    if (options.invalidateRequests ?? true) {
+      thresholdPreviewSerial += 1;
+      detectionPreviewSerial += 1;
+    }
+    clearThresholdPreviewTimer();
+    const sandboxFrameId = liveSandboxFrameId;
+    liveSandboxFrameId = '';
+    liveSandboxSourceFrameId = '';
+    liveSandboxPreprocessingKey = '';
+    thresholdMaskUrl = '';
+    thresholdForegroundPixels = null;
+    thresholdForegroundFraction = null;
+    lastAutoThresholdPreviewKey = '';
+    if (!sandboxFrameId) return;
+    scheduleLiveSandboxDeletion(sandboxFrameId);
+  }
+
+  async function ensureLivePreprocessedFrame(frame: FrameSummary, options: { force?: boolean } = {}): Promise<string> {
+    const client = getClient();
+    if (!client || !frame.id) throw new Error('No selected frame is available.');
+    if (
+      !options.force &&
+      liveSandboxFrameId &&
+      liveSandboxSourceFrameId === frame.id &&
+      liveSandboxPreprocessingKey === preprocessingPreviewKey
+    ) {
+      return liveSandboxFrameId;
+    }
+    if (liveSandboxFrameId) await cleanupLiveSandboxFrame({ invalidateRequests: false });
+    const result = await client.livePreprocessFrame(frame.id, {
+      ...livePreprocessingOptions(),
+      encoding: 'png'
+    });
+    adoptLiveSandboxFrame(result, frame.id);
+    preprocessedReloadKey = Date.now();
+    failedImageUrl = '';
+    frameDisplayMode = 'preprocessed';
+    if (!liveSandboxFrameId) throw new Error('Live preprocessing did not return a sandbox frame.');
+    return liveSandboxFrameId;
+  }
+
+  function thresholdMaskDataUrl(result: LiveThresholdResponse): string {
+    const payload = result.mask?.mask_payload_base64;
+    if (!payload) return '';
+    const format = result.mask?.mask_format || result.mask?.mask_encoding || 'png';
+    return `data:image/${format};base64,${payload}`;
+  }
+
+  function resolvedThresholdOverlayBlendMode(): ImageOverlayBlendMode {
+    if (thresholdOverlayBlendMode !== 'auto') return thresholdOverlayBlendMode;
+    return imageInverted ? 'add' : 'subtract';
+  }
+
+  async function previewThresholdNow(options: { silent?: boolean } = {}) {
     const client = getClient();
     const frame = await ensureSelectedFrame();
     if (!client || !frame?.id) return;
-    message = null;
+    const serial = ++thresholdPreviewSerial;
+    if (!options.silent) message = null;
     error = null;
     try {
-      const result = await client.liveSegmentFrame(frame.id, options());
-      detections = result.detections;
+      const sandboxFrameId = await ensureLivePreprocessedFrame(frame);
+      const result = await client.liveThresholdFrame(sandboxFrameId, {
+        ...thresholdOptions(),
+        frame_payload_kind: 'preprocessed',
+        apply_preprocessing: false,
+        include_mask_payload: true,
+        mask_encoding: 'png'
+      });
+      if (serial !== thresholdPreviewSerial) return;
+      adoptLiveSandboxFrame(result, frame.id);
+      thresholdMaskUrl = thresholdMaskDataUrl(result);
+      thresholdForegroundPixels = result.mask?.foreground_pixels ?? null;
+      thresholdForegroundFraction = result.mask?.foreground_fraction ?? null;
       refinedDetections = [];
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
-      message = `Previewed frame ${selectedFrameNum}; ${result.detection_count} ROI${result.detection_count === 1 ? '' : 's'} detected.`;
+      commitLivePresetSettings();
+      if (!options.silent) message = `Previewed threshold mask for frame ${selectedFrameNum}.`;
     } catch (err) {
+      if (serial !== thresholdPreviewSerial) return;
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function previewDetectionCandidatesNow() {
+    const client = getClient();
+    const frame = await ensureSelectedFrame();
+    if (!client || !frame?.id) return;
+    const serial = ++detectionPreviewSerial;
+    message = null;
+    error = null;
+    try {
+      const sandboxFrameId = await ensureLivePreprocessedFrame(frame);
+      const result = await client.liveDetectionCandidateFrame(sandboxFrameId, {
+        ...liveDetectionCandidateOptions(),
+        frame_payload_kind: 'preprocessed',
+        apply_preprocessing: false,
+        apply_mask: false,
+        include_detection_payloads: false,
+        max_detections: 500
+      });
+      if (serial !== detectionPreviewSerial) return;
+      adoptLiveSandboxFrame(result, frame.id);
+      detections = result.candidate_detections ?? result.detections ?? [];
+      refinedDetections = [];
+      stageCounts = result.stage_counts ?? {};
+      bboxCoordinateBasis = liveBboxCoordinateBasis(result);
+      hasLivePreview = true;
+      commitLivePresetSettings();
+      const count = result.candidate_detection_count ?? result.detection_count ?? detections.length;
+      message = `Previewed frame ${selectedFrameNum}; ${count} candidate ROI${count === 1 ? '' : 's'} detected.`;
+    } catch (err) {
+      if (serial !== detectionPreviewSerial) return;
       error = err instanceof Error ? err.message : String(err);
     }
   }
 
   async function applyPreprocessingNow() {
-    const client = getClient();
     const frame = await ensureSelectedFrame();
-    if (!client || !frame?.id) return;
+    if (!frame?.id) return;
     message = null;
     error = null;
     try {
-      await client.preprocessFrame({
-        frame_id: frame.id,
-        ...preprocessingOptions(),
-        store: true,
-        encoding: 'png'
-      });
-      frameDisplayMode = 'preprocessed';
-      preprocessedReloadKey = Date.now();
+      await ensureLivePreprocessedFrame(frame, { force: true });
       hasLivePreview = false;
       detections = [];
       refinedDetections = [];
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
-      message = `Applied preprocessing to frame ${selectedFrameNum} and reloaded the preprocessed image.`;
+      thresholdMaskUrl = '';
+      thresholdForegroundPixels = null;
+      thresholdForegroundFraction = null;
+      commitLivePresetSettings();
+      message = `Previewed preprocessing for frame ${selectedFrameNum} in a live sandbox.`;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     }
@@ -1532,7 +1806,6 @@
   function markImageUnavailable() {
     if (framePayloadKind === 'preprocessed') {
       failedImageUrl = imageUrl;
-      if (activeExplorerTab === 'preprocessing') frameDisplayMode = 'original';
       hasLivePreview = false;
       return;
     }
@@ -1550,7 +1823,7 @@
     imageScaleY = null;
     if (!url || typeof window === 'undefined') return;
     try {
-      const headResponse = await fetch(url, { method: 'HEAD' });
+      const headResponse = await authenticatedFetch(url, { method: 'HEAD' });
       if (serial !== imageHeaderSerial) return;
       const headScale = scaleHeaders(headResponse);
       if (headScale) {
@@ -1559,7 +1832,7 @@
         return;
       }
 
-      const imageResponse = await fetch(url);
+      const imageResponse = await authenticatedFetch(url);
       if (serial !== imageHeaderSerial) {
         await imageResponse.body?.cancel();
         return;
@@ -1796,8 +2069,17 @@
   }
 
   function cropImageStyle(box: BBox): string {
-    if (!imageNaturalWidth || !imageNaturalHeight || imageScaleX === null || imageScaleY === null) return '';
-    const scaled = scaleBoxToDisplayedFrame(box, imageScaleX, imageScaleY, bboxCoordinateBasis);
+    if (!imageNaturalWidth || !imageNaturalHeight) return '';
+    const imageScale = displayedImagePreviewScale();
+    if (!imageScale) return '';
+    const local = boxInDisplayedFrame(box, bboxCoordinateBasis);
+    const scaled = {
+      ...local,
+      x: local.x * imageScale.x,
+      y: local.y * imageScale.y,
+      w: local.w * imageScale.x,
+      h: local.h * imageScale.y
+    };
     const scale = Math.min(
       12,
       Math.max(1.5, Math.min(cropPreviewWidth / Math.max(scaled.w, 1), cropPreviewHeight / Math.max(scaled.h, 1)))
@@ -1811,19 +2093,24 @@
     return `width: ${scaledWidth}px; height: ${scaledHeight}px; transform: translate(${translateX}px, ${translateY}px);`;
   }
 
-  function scaleBoxToDisplayedFrame(
-    box: BBox,
-    scaleX: number,
-    scaleY: number,
-    basis: BboxCoordinateBasis
-  ): BBox {
+  function boxInDisplayedFrame(box: BBox, basis: BboxCoordinateBasis): BBox {
     const origin = overlayOrigin(basis);
     return {
       ...box,
-      x: (box.x - origin.x) * scaleX,
-      y: (box.y - origin.y) * scaleY,
-      w: box.w * scaleX,
-      h: box.h * scaleY
+      x: box.x - origin.x,
+      y: box.y - origin.y
+    };
+  }
+
+  function displayedImagePreviewScale(): { x: number; y: number } | null {
+    if (imageScaleX !== null && imageScaleY !== null) return { x: imageScaleX, y: imageScaleY };
+    const sourceDimensions = frameRenderSourceDimensions();
+    if (!sourceDimensions?.width || !sourceDimensions.height || !imageNaturalWidth || !imageNaturalHeight) {
+      return null;
+    }
+    return {
+      x: imageNaturalWidth / sourceDimensions.width,
+      y: imageNaturalHeight / sourceDimensions.height
     };
   }
 
@@ -1832,40 +2119,47 @@
     targetBoxesForFrame: BBox[],
     basis: BboxCoordinateBasis
   ): ImageOverlayRect[] {
-    if (imageScaleX === null || imageScaleY === null) return [];
-    const scaleX = imageScaleX;
-    const scaleY = imageScaleY;
     return [
       ...cropBoxes.map((box) => {
-        const scaled = scaleBoxToDisplayedFrame(box, scaleX, scaleY, basis);
+        const local = boxInDisplayedFrame(box, basis);
         return {
           id: `crop-${box.index}`,
-          x: scaled.x,
-          y: scaled.y,
-          w: scaled.w,
-          h: scaled.h,
+          x: local.x,
+          y: local.y,
+          w: local.w,
+          h: local.h,
           stroke: '#f5e642',
-          lineWidth: 2,
-          halo: 'rgba(17, 25, 22, 0.7)',
-          coordinateSpace: 'image' as const
+          lineWidth: 1,
+          coordinateSpace: 'source' as const
         };
       }),
       ...targetBoxesForFrame.map((box) => {
-        const scaled = scaleBoxToDisplayedFrame(box, scaleX, scaleY, basis);
+        const local = boxInDisplayedFrame(box, basis);
         return {
           id: `target-${box.index}`,
-          x: scaled.x,
-          y: scaled.y,
-          w: scaled.w,
-          h: scaled.h,
+          x: local.x,
+          y: local.y,
+          w: local.w,
+          h: local.h,
           stroke: '#e2322e',
-          lineWidth: 3,
-          halo: 'rgba(255, 255, 255, 0.8)',
-          coordinateSpace: 'image' as const,
+          lineWidth: 1,
+          coordinateSpace: 'source' as const,
           selected: true
         };
       })
     ];
+  }
+
+  function detectionOverlaySignature(
+    cropBoxes: BBox[],
+    targetBoxesForFrame: BBox[],
+    basis: BboxCoordinateBasis
+  ): string {
+    return [
+      basis,
+      ...cropBoxes.map((box) => `c:${box.index}:${box.x}:${box.y}:${box.w}:${box.h}`),
+      ...targetBoxesForFrame.map((box) => `t:${box.index}:${box.x}:${box.y}:${box.w}:${box.h}`)
+    ].join('|');
   }
 
   function frameMaskOverlays(
@@ -1878,7 +2172,7 @@
     differenceUrls: Map<string, string>
   ): ImageOverlayImage[] {
     const client = getClient();
-    if (!client || imageScaleX === null || imageScaleY === null) return [];
+    if (!client) return [];
     const layers: ImageOverlayImage[] = [];
     if (includeCandidateMasks) {
       for (const [index, detection] of candidateDetections.entries()) {
@@ -1915,18 +2209,18 @@
       for (const request of maskDifferenceRequests(candidateDetections, refined)) {
         const imageUrl = differenceUrls.get(request.key);
         if (!imageUrl) continue;
-        const scaled = scaleBoxToDisplayedFrame(request.unionBox, imageScaleX, imageScaleY, basis);
-        if (scaled.w <= 0 || scaled.h <= 0) continue;
+        const local = boxInDisplayedFrame(request.unionBox, basis);
+        if (local.w <= 0 || local.h <= 0) continue;
         layers.push({
           id: `mask-difference-${request.key}`,
           imageUrl,
-          x: scaled.x,
-          y: scaled.y,
-          w: scaled.w,
-          h: scaled.h,
+          x: local.x,
+          y: local.y,
+          w: local.w,
+          h: local.h,
           tint: '#ffd21f',
           opacity: 1,
-          coordinateSpace: 'image'
+          coordinateSpace: 'source'
         });
       }
     }
@@ -2056,7 +2350,7 @@
   }
 
   async function loadMaskBitmap(url: string): Promise<ImageBitmap> {
-    const response = await fetch(url);
+    const response = await authenticatedFetch(url);
     if (!response.ok) throw new Error(`Mask image request failed: ${response.status}`);
     return createImageBitmap(await response.blob());
   }
@@ -2123,21 +2417,20 @@
     layerIdPrefix: string,
     basis: BboxCoordinateBasis
   ): ImageOverlayImage | null {
-    if (imageScaleX === null || imageScaleY === null) return null;
     const box = toCropBox(detection, index);
     if (!box) return null;
-    const scaled = scaleBoxToDisplayedFrame(box, imageScaleX, imageScaleY, basis);
-    if (scaled.w <= 0 || scaled.h <= 0) return null;
+    const local = boxInDisplayedFrame(box, basis);
+    if (local.w <= 0 || local.h <= 0) return null;
     return {
       id: `${layerIdPrefix}-${detection.id ?? index}`,
       imageUrl: maskUrl,
-      x: scaled.x,
-      y: scaled.y,
-      w: scaled.w,
-      h: scaled.h,
+      x: local.x,
+      y: local.y,
+      w: local.w,
+      h: local.h,
       tint,
       opacity,
-      coordinateSpace: 'image'
+      coordinateSpace: 'source'
     };
   }
 
@@ -2223,12 +2516,36 @@
     if (!frame) return null;
     if (framePayloadKind === 'preprocessed') {
       const preprocessed =
+        (liveSandboxFrameId ? preprocessingOutputDimensions(frame) : null) ??
         dimensionsFromShape(frame.preprocessed_payload_shape) ??
         dimensionsFromShape(frame.preprocessed_metadata?.shape) ??
         dimensionsFromShape(frame.preprocessed_metadata?.payload_shape) ??
         dimensionsFromBox(frame.preprocessed_metadata?.crop_bbox) ??
         dimensionsFromShape(frame.metadata?.preprocessed_payload_shape);
       if (preprocessed) return preprocessed;
+    }
+    const width = numberValue(frame.width);
+    const height = numberValue(frame.height);
+    if (width && height) return { width, height };
+    return (
+      dimensionsFromShape(frame.payload_shape) ??
+      dimensionsFromShape(frame.shape) ??
+      dimensionsFromShape(frame.metadata?.payload_shape) ??
+      dimensionsFromShape(frame.metadata?.shape)
+    );
+  }
+
+  function preprocessingOutputDimensions(
+    frame: FrameSummary & {
+      width?: unknown;
+      height?: unknown;
+      shape?: unknown;
+      payload_shape?: unknown;
+      metadata?: Record<string, unknown>;
+    }
+  ): { width: number; height: number } | null {
+    if (cropEnabled && cropW !== null && cropH !== null && cropW > 0 && cropH > 0) {
+      return { width: cropW, height: cropH };
     }
     const width = numberValue(frame.width);
     const height = numberValue(frame.height);
@@ -2274,11 +2591,22 @@
   }
 
   function thresholdMaskOverlays(): ImageOverlayImage[] {
-    return frameMaskOverlays(detections, [], bboxCoordinateBasis, true, false, false, new Map()).map((layer) => ({
-      ...layer,
-      tint: '#ff2020',
-      opacity: 0.36
-    }));
+    if (!thresholdMaskUrl) return [];
+    return [
+      {
+        id: 'threshold-mask',
+        imageUrl: thresholdMaskUrl,
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+        tint: '#ff2020',
+        colorMode: thresholdOverlayColorMode,
+        blendMode: resolvedThresholdOverlayBlendMode(),
+        opacity: thresholdOverlayOpacity,
+        coordinateSpace: 'percent'
+      }
+    ];
   }
 
   function activeImageLayers(tab: ExplorerTab): ImageLayer[] {
@@ -2292,6 +2620,20 @@
   function frameRenderSpec(tab: ExplorerTab = activeExplorerTab): ImageRenderSpec {
     const sourceDimensions = frameRenderSourceDimensions();
     return {
+      key: [
+        tab,
+        imageUrl,
+        imageInverted ? 'inverted' : 'normal',
+        liveSandboxFrameId,
+        preprocessedReloadKey,
+        thresholdMaskUrl,
+        thresholdOverlayColorMode,
+        thresholdOverlayBlendMode,
+        thresholdOverlayOpacity,
+        detectionOverlayKey,
+        sourceDimensions?.width ?? imageNaturalWidth,
+        sourceDimensions?.height ?? imageNaturalHeight
+      ].join('|'),
       image: {
         url: imageUrl,
         alt: hasLivePreview ? activeFrameAlt(tab) : 'Selected frame',
@@ -2339,7 +2681,10 @@
         w: mask.w,
         h: mask.h,
         tint: mask.tint,
+        colorMode: mask.colorMode,
+        blendMode: mask.blendMode,
         opacity: mask.opacity,
+        compositeOperation: mask.compositeOperation,
         coordinateSpace: mask.coordinateSpace
       })),
       ...rects.map((rect) => ({
@@ -2364,8 +2709,7 @@
   }
 </script>
 
-<section class="panel explorer-nav-panel">
-  <div class="explorer-tabs" role="tablist" aria-label="Explorer workflow sections">
+<div class="explorer-tabs" role="tablist" aria-label="Explorer workflow sections">
     {#each explorerTabs as tab}
       <button
         type="button"
@@ -2378,14 +2722,9 @@
       </button>
     {/each}
   </div>
+<section class="panel explorer-nav-panel">
+  
 
-  <div class="panel-heading">
-    <div>
-      <p class="eyebrow">Frame data</p>
-      <h2>Explorer workflow</h2>
-    </div>
-    {#if loading}<span class="soft">Loading</span>{/if}
-  </div>
 
   {#if activeExplorerTab === 'preprocessing'}
     <div class="asset-row">
@@ -2410,31 +2749,14 @@
       </label>
       <span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span>
     </div>
-
-    <div class="explorer-display-row">
-      <FrameDisplayToggle bind:value={frameDisplayMode} />
-      <div class="detection-strip compact-strip">
-        <strong>{detections.length}</strong>
-        <span>detections</span>
-        {#if hasRefinementResults}
-          <strong>{refinementSummary.count}</strong>
-          <span>refined</span>
-        {/if}
-      </div>
-    </div>
-  {:else}
-    <div class="selected-frame-strip">
-      <span>{selectedAsset?.filename ?? selectedAssetId ?? 'No asset selected'}</span>
-      <strong>{frameCount ? `Frame ${selectedFrameNum} / ${frameCount}` : 'No frames'}</strong>
-      <span>{detections.length} detection{detections.length === 1 ? '' : 's'}</span>
-      {#if hasRefinementResults}
-        <span>{refinementSummary.count} refined</span>
-      {/if}
-    </div>
   {/if}
-</section>
 
-<div class:segmentation-layout={activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'} class:single-panel-layout={activeExplorerTab === 'refinement' || activeExplorerTab === 'presets'}>
+
+<div
+  class:segmentation-layout={activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'}
+  class:single-panel-layout={activeExplorerTab === 'refinement'}
+  class:preset-panel-layout={activeExplorerTab === 'presets'}
+>
   {#if activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'}
   <section class="panel image-panel">
     <div class="panel-heading">
@@ -2459,7 +2781,7 @@
               {/if}
             </div>
           {:else}
-            {#key imageUrl}
+            {#key `${imageUrl}|${imageInverted}|${liveSandboxFrameId}|${preprocessedReloadKey}|${thresholdMaskUrl}|${thresholdOverlayColorMode}|${thresholdOverlayBlendMode}|${thresholdOverlayOpacity}|${detectionOverlayKey}`}
               <KonvaImageCanvas
                 spec={frameRenderSpec(activeExplorerTab)}
                 mode="viewer"
@@ -2470,7 +2792,11 @@
           {/if}
         </figure>
       {:else}
-        <p class="empty">Select an ingested asset with stored frames to preview segmentation.</p>
+        <p class="empty">
+          {framePayloadKind === 'preprocessed'
+            ? 'Run Preview / Apply in preprocessing to create a live preprocessed sandbox.'
+            : 'Select an ingested asset with stored frames to preview segmentation.'}
+        </p>
       {/if}
     </div>
 
@@ -2484,6 +2810,19 @@
         <h2>Explorer controls</h2>
       </div>
     </div>
+    {#if activeExplorerTab === 'preprocessing'}
+    <div class="explorer-display-row">
+      <FrameDisplayToggle bind:value={frameDisplayMode} />
+      <div class="detection-strip compact-strip">
+        <strong>{detections.length}</strong>
+        <span>detections</span>
+        {#if hasRefinementResults}
+          <strong>{refinementSummary.count}</strong>
+          <span>refined</span>
+        {/if}
+      </div>
+    </div>
+    {/if}
 
     {#if activeExplorerTab === 'presets'}
       <ProcessingPresetControls
@@ -2552,15 +2891,10 @@
     <details class="form-section collapsible-section" open>
       <summary class="section-heading">
         <span>
-          <p class="eyebrow">Crop + mask + invert</p>
+          <p class="eyebrow">Crop + invert</p>
           <strong>Candidate image</strong>
         </span>
       </summary>
-
-      <label class="check-row">
-        <input type="checkbox" bind:checked={applyMask} />
-        Apply stored frame mask
-      </label>
 
       <label class="check-row">
         <input type="checkbox" bind:checked={cropEnabled} />
@@ -2592,12 +2926,13 @@
         Invert intensity
       </label>
 
-      <div class="button-row">
+      
+    </details>
+    <div class="button-row">
         <button class="ghost" type="button" on:click={applyPreprocessingNow} disabled={frameCount < 1}>
-          Apply preprocessing
+          Apply
         </button>
       </div>
-    </details>
 
     {:else if activeExplorerTab === 'threshold'}
 
@@ -2725,7 +3060,7 @@
       {/if}
     </details>
 
-    <details class="form-section collapsible-section" open>
+    <details class="form-section collapsible-section">
       <summary class="section-heading">
         <span>
           <p class="eyebrow">Mask</p>
@@ -2822,9 +3157,54 @@
       {/if}
     </details>
 
+    <details class="form-section collapsible-section">
+      <summary class="section-heading">
+        <span>
+          <p class="eyebrow">Display layer</p>
+          <strong>Threshold overlay</strong>
+        </span>
+      </summary>
+      <div class="form-grid compact-grid">
+        <label>
+          Color
+          <select bind:value={thresholdOverlayColorMode}>
+            {#each thresholdOverlayColorOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Blend
+          <select bind:value={thresholdOverlayBlendMode}>
+            {#each thresholdOverlayBlendOptions as option}
+              <option value={option.value}>
+                {option.value === 'auto'
+                  ? `Auto (${imageInverted ? 'Add' : 'Subtract'})`
+                  : option.label}
+              </option>
+            {/each}
+          </select>
+        </label>
+        <label class="span-2">
+          Opacity
+          <input type="range" min="0" max="1" step="0.01" bind:value={thresholdOverlayOpacity} />
+          <span class="range-value">{Number(thresholdOverlayOpacity).toFixed(2)}</span>
+        </label>
+      </div>
+    </details>
+
     <div class="button-row">
-      <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Preview threshold</button>
+      <button type="button" on:click={() => previewThresholdNow()} disabled={frameCount < 1}>Preview threshold</button>
     </div>
+
+    {#if thresholdForegroundPixels !== null}
+      <div class="stage-counts">
+        <span><strong>{formatCount(thresholdForegroundPixels)}</strong> foreground pixels</span>
+        {#if thresholdForegroundFraction !== null}
+          <span><strong>{(thresholdForegroundFraction * 100).toFixed(2)}%</strong> foreground</span>
+        {/if}
+      </div>
+    {/if}
 
     {:else if activeExplorerTab === 'detection'}
 
@@ -2905,7 +3285,7 @@
       </div>
     </details>
 
-    <details class="form-section collapsible-section" open>
+    <details class="form-section collapsible-section">
       <summary class="section-heading">
         <span>
           <p class="eyebrow">Record</p>
@@ -2958,7 +3338,7 @@
     </details>
 
     <div class="button-row">
-      <button type="button" on:click={segmentNow} disabled={frameCount < 1}>Refresh candidates</button>
+      <button type="button" on:click={previewDetectionCandidatesNow} disabled={frameCount < 1}>Refresh candidates</button>
     </div>
 
     {:else if activeExplorerTab === 'refinement'}
@@ -3143,30 +3523,6 @@
       {/each}
     </div>
   {/if}
-
-  {#if boxes.length}
-    <ol class="bbox-list">
-      {#each boxes as box}
-        <li>
-          <span class="bbox-index">#{box.index}</span>
-          <code>x={box.x}, y={box.y}, w={box.w}, h={box.h}</code>
-          {#if box.area !== undefined || box.perimeter !== undefined}
-            <small>
-              {#if box.area !== undefined}area={Math.round(box.area)}{/if}
-              {#if box.area !== undefined && box.perimeter !== undefined} · {/if}
-              {#if box.perimeter !== undefined}perimeter={Math.round(box.perimeter)}{/if}
-            </small>
-          {/if}
-          {#if imageUrl && !imageUnavailable && imageNaturalWidth && imageNaturalHeight}
-            <div class="bbox-hover-preview" aria-hidden="true">
-              <img class:inverted-frame={imageInverted} src={imageUrl} alt="" style={cropImageStyle(box)} />
-            </div>
-          {/if}
-        </li>
-      {/each}
-    </ol>
-  {:else}
-    <p class="empty">{detections.length ? 'Detections were returned, but no bbox fields could be parsed.' : 'No bounding boxes for the current frame.'}</p>
-  {/if}
 </section>
 {/if}
+</section>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Konva from 'konva';
   import { onDestroy, onMount } from 'svelte';
+  import { authenticatedFetch } from '$lib/api/client';
   import { recordClientEvent } from '$lib/utils/analytics';
   import { composeImage, loadElementImage } from '$lib/utils/imageLoader';
   import { displayScale, projectRect, scaleBarLength } from '$lib/utils/imageProjection';
@@ -46,6 +47,9 @@
   let metadataText = '';
   let zoomPreviewWidth = 260;
   let zoomPreviewHeight = 220;
+  let zoomPreviewUrl: string | null = null;
+  let zoomPreviewSourceUrl = '';
+  let zoomPreviewSerial = 0;
 
   const defaultScaleBarLengths = [1000, 500, 100, 50, 10];
 
@@ -70,14 +74,59 @@
     spec?.image?.invert ? 'invert' : 'normal',
     spec?.baseMask?.enabled ? 'mask-on' : 'mask-off',
     spec?.baseMask?.url ?? '',
-    spec?.layers?.length ?? 0,
+    layerSignature(spec?.layers ?? []),
     mode === 'viewer' ? availableWidth : ''
   ].join('|');
   $: if (mounted && renderSignature !== lastRenderSignature) void render(spec, renderSignature);
+  $: if (mounted) void syncZoomPreview(activePanel, spec?.image?.url ?? '');
+
+  function layerSignature(layers: ImageLayer[]): string {
+    return layers
+      .map((layer) => {
+        if (layer.kind === 'mask-overlay') {
+          return [
+            layer.kind,
+            layer.id ?? '',
+            layer.imageUrl,
+            layer.x,
+            layer.y,
+            layer.w,
+            layer.h,
+            layer.tint,
+            layer.colorMode ?? '',
+            layer.blendMode ?? '',
+            layer.opacity ?? '',
+            layer.compositeOperation ?? '',
+            layer.coordinateSpace ?? ''
+          ].join(':');
+        }
+        return [
+          layer.kind,
+          layer.id ?? '',
+          layer.x,
+          layer.y,
+          layer.w,
+          layer.h,
+          layer.stroke,
+          layer.lineWidth ?? '',
+          layer.halo ?? '',
+          layer.selected ? 'selected' : '',
+          layer.coordinateSpace ?? ''
+        ].join(':');
+      })
+      .join('|');
+  }
 
   function cleanup() {
     abortController?.abort();
     abortController = null;
+    cleanupZoomPreview();
+    clearStage();
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+  }
+
+  function clearStage() {
     stage?.destroy();
     stage = null;
     contentGroup = null;
@@ -86,8 +135,6 @@
     measurementLabel = null;
     measurementStart = null;
     stageReady = false;
-    resizeObserver?.disconnect();
-    resizeObserver = null;
   }
 
   async function render(_spec = spec, signature = renderSignature) {
@@ -99,6 +146,9 @@
     error = null;
     stageReady = false;
     metadataText = '';
+    activePanel = null;
+    cleanupZoomPreview();
+    clearStage();
     if (!_spec?.image?.url || !container || typeof window === 'undefined') return;
 
     try {
@@ -113,12 +163,6 @@
       if (serial !== renderSerial || controller.signal.aborted) return;
       onImageLoad?.({ width: composed.width, height: composed.height });
 
-      stage?.destroy();
-      contentGroup = null;
-      measurementLayer = null;
-      measurementLine = null;
-      measurementLabel = null;
-      measurementStart = null;
       const sourceWidth = positiveNumber(composed.sourceWidth) ?? positiveNumber(_spec.image.sourceWidth) ?? composed.width;
       const sourceHeight = positiveNumber(composed.sourceHeight) ?? positiveNumber(_spec.image.sourceHeight) ?? composed.height;
       metadataText = `${Math.round(sourceWidth)} x ${Math.round(sourceHeight)} px · 8-bit grayscale · ${formatBytes(composed.byteSize)}`;
@@ -273,6 +317,7 @@
         width: projected.w,
         height: projected.h,
         opacity: mask.opacity ?? 1,
+        globalCompositeOperation: mask.compositeOperation ?? compositeOperationForBlendMode(mask.blendMode),
         listening: false
       })
     );
@@ -287,8 +332,9 @@
     if (!context) return canvas;
     context.drawImage(loaded.element, 0, 0, width, height);
     const imageData = context.getImageData(0, 0, width, height);
-    const color = rgbFromCss(mask.tint);
+    const color = overlayColor(mask);
     for (let index = 0; index < imageData.data.length; index += 4) {
+      const sourceAlpha = imageData.data[index + 3] / 255;
       const luminance =
         imageData.data[index] * 0.2126 +
         imageData.data[index + 1] * 0.7152 +
@@ -296,10 +342,27 @@
       imageData.data[index] = color.r;
       imageData.data[index + 1] = color.g;
       imageData.data[index + 2] = color.b;
-      imageData.data[index + 3] = Math.round((luminance / 255) * 255);
+      imageData.data[index + 3] = Math.round(sourceAlpha * (luminance / 255) * 255);
     }
     context.putImageData(imageData, 0, 0);
     return canvas;
+  }
+
+  function overlayColor(mask: ImageMaskOverlayLayer): { r: number; g: number; b: number } {
+    if (mask.colorMode === 'black') return { r: 0, g: 0, b: 0 };
+    if (mask.colorMode === 'white') return { r: 255, g: 255, b: 255 };
+    if (mask.colorMode === 'red') return { r: 255, g: 32, b: 32 };
+    return rgbFromCss(mask.tint);
+  }
+
+  function compositeOperationForBlendMode(mode: ImageMaskOverlayLayer['blendMode']): GlobalCompositeOperation {
+    if (mode === 'add') return 'lighter';
+    if (mode === 'subtract') return 'multiply';
+    if (mode === 'multiply') return 'multiply';
+    if (mode === 'screen') return 'screen';
+    if (mode === 'darken') return 'darken';
+    if (mode === 'lighten') return 'lighten';
+    return 'source-over';
   }
 
   function addScaleBar(
@@ -465,6 +528,36 @@
   function runMoreAction() {
     activePanel = null;
     onMoreAction?.();
+  }
+
+  async function syncZoomPreview(panel: typeof activePanel, imageUrl: string) {
+    if (panel !== 'zoom' || !imageUrl) {
+      cleanupZoomPreview();
+      return;
+    }
+    if (zoomPreviewUrl && zoomPreviewSourceUrl === imageUrl) return;
+    cleanupZoomPreview();
+    const serial = ++zoomPreviewSerial;
+    try {
+      const response = await authenticatedFetch(imageUrl, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Preview image request failed (${response.status}).`);
+      const blob = await response.blob();
+      if (serial !== zoomPreviewSerial) return;
+      zoomPreviewUrl = URL.createObjectURL(blob);
+      zoomPreviewSourceUrl = imageUrl;
+    } catch {
+      if (serial === zoomPreviewSerial) {
+        zoomPreviewUrl = null;
+        zoomPreviewSourceUrl = '';
+      }
+    }
+  }
+
+  function cleanupZoomPreview() {
+    zoomPreviewSerial += 1;
+    if (zoomPreviewUrl) URL.revokeObjectURL(zoomPreviewUrl);
+    zoomPreviewUrl = null;
+    zoomPreviewSourceUrl = '';
   }
 
   async function runToolbarDownload(variant: 'original' | 'mask' | 'masked' | 'annotated') {
@@ -703,7 +796,9 @@
           on:click|stopPropagation
           on:keydown|stopPropagation
         >
-          <img src={spec.image.url} alt={spec.image.alt ?? 'Magnified image preview'} class:inverted-preview={spec.image.invert} />
+          {#if zoomPreviewUrl}
+            <img src={zoomPreviewUrl} alt={spec.image.alt ?? 'Magnified image preview'} class:inverted-preview={spec.image.invert} />
+          {/if}
         </div>
       {/if}
 

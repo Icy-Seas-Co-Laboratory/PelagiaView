@@ -93,7 +93,7 @@ export function recordRouteChange(route: string) {
 
 export function recordApiRequest(input: string, init: RequestInit | undefined, response: Response | null, durationMs: number, error?: unknown) {
   if (!browser) return;
-  const url = new URL(input);
+  const url = new URL(input, window.location.href);
   const method = String(init?.method ?? 'GET').toUpperCase();
   recordClientEvent('client_api_request', {
     method,
@@ -108,7 +108,15 @@ export function recordApiRequest(input: string, init: RequestInit | undefined, r
   });
 }
 
-export function recordSessionEvent(eventType: 'client_session_connected' | 'client_session_restored' | 'client_session_disconnected' | 'client_session_failed', payload: Record<string, unknown> = {}) {
+export function recordSessionEvent(
+  eventType:
+    | 'client_session_connected'
+    | 'client_session_restored'
+    | 'client_session_disconnected'
+    | 'client_session_failed'
+    | 'client_session_project_switched',
+  payload: Record<string, unknown> = {}
+) {
   recordClientEvent(eventType, payload);
 }
 

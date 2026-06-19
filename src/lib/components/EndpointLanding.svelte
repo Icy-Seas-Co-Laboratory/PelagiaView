@@ -2,12 +2,21 @@
   import { connectSession, session } from '$lib/stores/session';
 
   let endpoint = $session.baseUrl;
+  let username = '';
+  let password = '';
+  let projectKey = '';
   let localError: string | null = null;
 
   async function connect() {
     localError = null;
     try {
-      await connectSession(endpoint);
+      await connectSession({
+        baseUrl: endpoint,
+        username,
+        password,
+        projectKey
+      });
+      password = '';
     } catch (error) {
       localError = error instanceof Error ? error.message : String(error);
     }
@@ -38,14 +47,28 @@
           {$session.connecting ? 'Connecting' : 'Connect'}
         </button>
       </div>
+      <div class="credential-grid">
+        <label>
+          <span>Username</span>
+          <input bind:value={username} autocomplete="username" required />
+        </label>
+        <label>
+          <span>Password</span>
+          <input bind:value={password} type="password" autocomplete="current-password" required />
+        </label>
+        <label>
+          <span>Project key</span>
+          <input bind:value={projectKey} autocomplete="off" placeholder="optional" />
+        </label>
+      </div>
       {#if localError ?? $session.error}
         <p class="form-error">{localError ?? $session.error}</p>
       {/if}
     </form>
 
     <div class="endpoint-notes">
-      <p>PelagiaView keeps the active endpoint in browser storage and caches short-lived API reads during the session.</p>
-      <p>The dashboard uses the current Pelagia HTTP API and marks planned live endpoints where the backend is still TBD.</p>
+      <p>PelagiaView keeps the active endpoint and session token in browser storage. Passwords stay out of local storage.</p>
+      <p>Project membership controls the datasets, frames, and generated resources available to the dashboard.</p>
     </div>
   </section>
 </main>

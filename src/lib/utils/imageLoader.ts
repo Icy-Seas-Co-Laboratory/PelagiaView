@@ -1,3 +1,5 @@
+import { authenticatedFetch } from '$lib/api/client';
+
 export type LoadedImage = {
   element: HTMLImageElement;
   width: number;
@@ -32,7 +34,7 @@ export type ComposeImageOptions = {
 };
 
 export async function loadElementImage(url: string, signal?: AbortSignal): Promise<LoadedImage> {
-  const response = await fetch(url, { cache: 'no-store', signal });
+  const response = await authenticatedFetch(url, { cache: 'no-store', signal });
   if (!response.ok) throw new Error(`Could not load image (${response.status}).`);
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);

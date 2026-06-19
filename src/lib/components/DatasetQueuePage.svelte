@@ -27,7 +27,8 @@
     liveProcessingPreset as createLiveProcessingPreset,
     PROCESSING_PRESET_APPLIED_EVENT,
     processingPresetByKey,
-    processingPresetKey
+    processingPresetKey,
+    pruneProcessingSettings
   } from '$lib/processing/settings';
   import {
     booleanPreference,
@@ -411,6 +412,7 @@
   $: prospectiveRefinedDetectionCount = filteredFrames.reduce((total, frame) => total + frame.refinedDetectionCount, 0);
   $: prospectiveRefinementCandidateCount = refinementCandidateCountForFrames(filteredFrames);
   $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
+  $: missingPreprocessedFrameCount = filteredFrames.filter((frame) => !frame.hasPreprocessedPayload).length;
   $: prospectiveBatchCount =
     mode === 'roi_refinement'
       ? estimatedDetectionBatchCount(filteredFrames, frameBatchSize)
@@ -427,7 +429,8 @@
   $: preprocessedSourceWarning =
     mode === 'segmentation' &&
     framePayloadKind === 'preprocessed' &&
-    filteredFrames.some((frame) => !frame.hasPreprocessedPayload);
+    missingPreprocessedFrameCount > 0;
+  $: queueBlocked = preprocessedSourceWarning;
 
   $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${mode}`;
   $: if ($session.connected && catalogKey !== lastCatalogKey) {
@@ -666,7 +669,7 @@
       priority: _priority,
       ...settings
     } = buildPreferenceSnapshot();
-    return settings;
+    return pruneProcessingSettings(settings);
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
@@ -1340,6 +1343,13 @@
     let queued = 0;
     const nextJobIds: string[] = [];
 
+    if (queueBlocked) {
+      error =
+        `Cannot queue segmentation from preprocessed frames because ${formatCount(missingPreprocessedFrameCount)} selected frame${missingPreprocessedFrameCount === 1 ? '' : 's'} lack preprocessed payloads.`;
+      queueing = false;
+      return;
+    }
+
     if (mode === 'roi_refinement') {
       const batches = await detectionBatchesForFrames(client, filteredFrames, boundedFrameBatchSize()).catch((err) => {
         error = err instanceof Error ? err.message : String(err);
@@ -1988,7 +1998,9 @@
           </label>
         {/if}
         {#if preprocessedSourceWarning}
-          <p class="callout">Some matched assets have no preprocessed frames. Jobs using the preprocessed source may fail for those assets.</p>
+          <p class="callout">
+            {formatCount(missingPreprocessedFrameCount)} selected frame{missingPreprocessedFrameCount === 1 ? '' : 's'} lack preprocessed payloads. Use original frames with preprocessing enabled, run preprocessing first, or filter to fully preprocessed frames.
+          </p>
         {/if}
       </details>
 
@@ -2488,7 +2500,7 @@
       <small>{formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'}</small>
     </div>
 
-    <button type="button" on:click={queueJobs} disabled={queueing || prospectiveBatchCount === 0}>
+    <button type="button" on:click={queueJobs} disabled={queueing || prospectiveBatchCount === 0 || queueBlocked}>
       {queueing ? 'Queueing' : actionLabel}
     </button>
     <p class="soft">

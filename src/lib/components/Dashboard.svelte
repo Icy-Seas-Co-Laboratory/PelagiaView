@@ -12,7 +12,7 @@
   import RoiBrowserPage from './RoiBrowserPage.svelte';
   import ExplorerPage from './ExplorerPage.svelte';
   import StatusPage from './StatusPage.svelte';
-  import { disconnectSession, session } from '$lib/stores/session';
+  import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
     dashboardViewFromParam,
     type DashboardView
@@ -22,6 +22,7 @@
   let sidebarCollapsed = false;
   let preferencesOpen = false;
   let preferencesReady = false;
+  let projectSwitchError: string | null = null;
   const sidebarPreferenceKey = 'pelagia-view:sidebar-collapsed';
   $: activeTab = dashboardViewFromParam($page.url.searchParams.get('view'));
   $: if (preferencesReady && typeof localStorage !== 'undefined') {
@@ -35,6 +36,21 @@
 
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
+  }
+
+  async function selectProject(event: Event) {
+    const projectId = (event.currentTarget as HTMLSelectElement).value;
+    projectSwitchError = null;
+    try {
+      await switchSessionProject(projectId);
+    } catch (error) {
+      projectSwitchError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function projectLabel(project: { project_name?: string | null; name?: string | null; project_key?: string; id: string }): string {
+    const label = project.project_name ?? project.name ?? project.project_key ?? project.id;
+    return project.project_key && label !== project.project_key ? `${label} (${project.project_key})` : label;
   }
 </script>
 
@@ -51,6 +67,24 @@
       </div>
       <div class="session-controls">
         <span class="endpoint-pill">{$session.baseUrl}</span>
+        <span class="identity-pill" title={$session.user?.username ?? 'Authenticated user'}>
+          {$session.user?.display_name ?? $session.user?.username ?? 'Signed in'}
+        </span>
+        <label class="project-select" title={projectSwitchError ?? 'Active project'}>
+          <span>Project</span>
+          <select
+            value={$session.project?.id ?? ''}
+            on:change={selectProject}
+            disabled={$session.switchingProject || $session.projects.length < 1}
+          >
+            {#if !$session.project}
+              <option value="">No project</option>
+            {/if}
+            {#each $session.projects as project}
+              <option value={project.id}>{projectLabel(project)}</option>
+            {/each}
+          </select>
+        </label>
         <HeaderProcessingPresetSelect />
         <HeaderImageInversionToggle />
         <button class="ghost" type="button" on:click={() => (preferencesOpen = true)}>Preferences</button>

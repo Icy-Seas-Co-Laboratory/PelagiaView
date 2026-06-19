@@ -126,6 +126,14 @@
           <strong>{$session.baseUrl}</strong>
         </div>
         <div>
+          <span>Project</span>
+          <strong>{$session.project?.project_name ?? $session.project?.name ?? $session.project?.project_key ?? 'None'}</strong>
+        </div>
+        <div>
+          <span>User</span>
+          <strong>{$session.user?.display_name ?? $session.user?.username ?? 'None'}</strong>
+        </div>
+        <div>
           <span>Saved entries</span>
           <strong>{presentCount}</strong>
         </div>

@@ -207,6 +207,26 @@ h2 {
   gap: 0.7rem;
 }
 
+.credential-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.credential-grid label {
+  display: grid;
+  gap: 0.35rem;
+  color: #30443d;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.credential-grid span {
+  color: #60746c;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
 .endpoint-notes {
   display: grid;
   gap: 0.4rem;
@@ -322,12 +342,26 @@ h2 {
   white-space: nowrap;
 }
 
+.identity-pill {
+  max-width: min(24vw, 220px);
+  overflow: hidden;
+  border: 1px solid #d9e4df;
+  border-radius: 7px;
+  padding: 0.55rem 0.75rem;
+  color: #30443d;
+  background: #f4f8f6;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-controls {
   flex-wrap: wrap;
   justify-content: flex-end;
   min-width: min(100%, 38rem);
 }
 
+.project-select,
 .header-preset-select {
   display: grid;
   grid-template-columns: auto minmax(9rem, 15rem);
@@ -339,12 +373,14 @@ h2 {
   font-weight: 800;
 }
 
+.project-select span,
 .header-preset-select span {
   color: #60746c;
   font-size: 0.72rem;
   text-transform: uppercase;
 }
 
+.project-select select,
 .header-preset-select select {
   min-height: 2.45rem;
   padding-block: 0.45rem;
@@ -1072,6 +1108,12 @@ button.job-action-muted:hover:not(:disabled) {
 .single-panel-layout {
   display: grid;
   grid-template-columns: minmax(0, 760px);
+  gap: 1rem;
+}
+
+.preset-panel-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1180px);
   gap: 1rem;
 }
 
@@ -2912,6 +2954,7 @@ button.job-action-muted:hover:not(:disabled) {
   }
 
   .endpoint-row,
+  .credential-grid,
   .topbar,
   .session-controls,
   .asset-row {
