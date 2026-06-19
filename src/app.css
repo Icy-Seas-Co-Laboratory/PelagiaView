@@ -1448,6 +1448,29 @@ button.job-action-muted:hover:not(:disabled) {
   background: #f7faf9;
 }
 
+.admin-directory-list {
+  display: grid;
+  gap: 0.45rem;
+  max-height: 18rem;
+  overflow: auto;
+  padding-right: 0.15rem;
+}
+
+.compact-pathbar {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.compact-file-row {
+  grid-template-columns: 2.6rem minmax(0, 1fr) auto;
+  min-height: 3.2rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.compact-file-row .file-icon {
+  width: 2rem;
+  height: 2rem;
+}
+
 .admin-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

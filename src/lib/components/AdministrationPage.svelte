@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { ApiError } from '$lib/api/client';
-  import type { AuthUserSummary, ProjectSummary } from '$lib/api/types';
+  import type { AuthUserSummary, DirectoryEntry, DirectoryListing, ProjectSummary } from '$lib/api/types';
   import { getClient } from '$lib/stores/session';
   import { refreshSessionProjects, session } from '$lib/stores/session';
 
@@ -19,6 +19,10 @@
   let projectName = '';
   let projectDescription = '';
   let kvstoreRootPath = '';
+  let kvstoreDirectoryPath = '.';
+  let kvstoreListing: DirectoryListing | null = null;
+  let kvstoreBrowserLoading = false;
+  let kvstoreBrowserError: string | null = null;
   let creatingProject = false;
   let deletingProjectId = '';
 
@@ -50,7 +54,31 @@
   async function loadAdministrationData() {
     projectError = null;
     userError = null;
-    await Promise.all([refreshProjects(), loadUsers()]);
+    await Promise.all([refreshProjects(), loadUsers(), loadKvstoreDirectory(kvstoreDirectoryPath)]);
+  }
+
+  async function loadKvstoreDirectory(path = kvstoreDirectoryPath) {
+    const client = getClient();
+    if (!client) return;
+    kvstoreBrowserLoading = true;
+    kvstoreBrowserError = null;
+    try {
+      const listing = await client.listRawDirectory(path);
+      if (listing.source !== 'live-files') {
+        kvstoreListing = { ...listing, entries: [] };
+        kvstoreBrowserError = 'Live file browsing is not available from this server.';
+      } else {
+        kvstoreListing = {
+          ...listing,
+          entries: listing.entries.filter((entry) => entry.kind === 'directory')
+        };
+      }
+      kvstoreDirectoryPath = listing.path;
+    } catch (error) {
+      kvstoreBrowserError = error instanceof Error ? error.message : String(error);
+    } finally {
+      kvstoreBrowserLoading = false;
+    }
   }
 
   async function refreshProjects() {
@@ -224,6 +252,17 @@
     userActionTarget = user.username || user.id;
   }
 
+  function parentPath(path: string): string {
+    const normalized = path.replace(/\/+$/, '');
+    if (!normalized || normalized === '.' || normalized === '/') return '.';
+    const parent = normalized.split('/').slice(0, -1).join('/');
+    return parent || '.';
+  }
+
+  function selectKvstoreDirectory(entry: DirectoryEntry) {
+    kvstoreRootPath = entry.path;
+  }
+
   async function updateUserRole(user: AuthUserSummary) {
     const client = getClient();
     const target = user.username || user.id;
@@ -298,6 +337,46 @@
           <input bind:value={kvstoreRootPath} placeholder="Server default" disabled={!canCreateProject || creatingProject} />
         </label>
       </div>
+      <details class="control-details span-2">
+        <summary>Browse server folders</summary>
+        <div class="pathbar compact-pathbar">
+          <input bind:value={kvstoreDirectoryPath} placeholder="Server folder path" disabled={!canCreateProject || kvstoreBrowserLoading} />
+          <button type="button" on:click={() => loadKvstoreDirectory(kvstoreDirectoryPath)} disabled={!canCreateProject || kvstoreBrowserLoading}>
+            {kvstoreBrowserLoading ? 'Opening' : 'Open'}
+          </button>
+        </div>
+        {#if kvstoreBrowserError}
+          <p class="form-error">{kvstoreBrowserError}</p>
+        {/if}
+        <div class="admin-directory-list" role="list" aria-label="KVStore root path folders">
+          {#if kvstoreDirectoryPath}
+            <button class="file-row compact-file-row" type="button" on:click={() => loadKvstoreDirectory(parentPath(kvstoreDirectoryPath))} disabled={!canCreateProject || kvstoreBrowserLoading}>
+              <span class="file-icon">..</span>
+              <span class="file-main">Parent folder</span>
+            </button>
+          {/if}
+          {#each kvstoreListing?.entries ?? [] as entry}
+            <button
+              class="file-row compact-file-row"
+              class:selected={kvstoreRootPath === entry.path}
+              type="button"
+              on:click={() => selectKvstoreDirectory(entry)}
+              on:dblclick={() => loadKvstoreDirectory(entry.path)}
+              disabled={!canCreateProject || kvstoreBrowserLoading}
+            >
+              <span class="file-icon">DIR</span>
+              <span class="file-main">
+                <strong>{entry.name}</strong>
+                <small>{entry.path}</small>
+              </span>
+              <span>Folder</span>
+            </button>
+          {:else}
+            <p class="empty-state">{kvstoreBrowserLoading ? 'Loading folders.' : 'No folders are visible here.'}</p>
+          {/each}
+        </div>
+        <p class="soft">Click a folder to use it as the KVStore root path. Double-click to open it.</p>
+      </details>
       <div class="button-row">
         <button type="button" on:click={createProject} disabled={!canCreateProject || creatingProject || !projectKey.trim()}>
           {creatingProject ? 'Creating' : 'Create project'}
