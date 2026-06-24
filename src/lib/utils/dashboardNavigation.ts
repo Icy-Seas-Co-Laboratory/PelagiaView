@@ -17,6 +17,8 @@ export type DashboardViewDefinition = {
   nextView?: DashboardView;
 };
 
+export const defaultDashboardView: DashboardView = 'rois';
+
 export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'rois', label: 'ROI Browser', detail: 'detections gallery', group: 'analysis' },
   { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
@@ -32,7 +34,7 @@ export const dashboardViews: DashboardViewDefinition[] = [
 const dashboardViewIds = new Set<DashboardView>(dashboardViews.map((view) => view.id));
 
 export function dashboardViewFromParam(value: string | null | undefined): DashboardView {
-  return dashboardViewIds.has(value as DashboardView) ? (value as DashboardView) : 'status';
+  return dashboardViewIds.has(value as DashboardView) ? (value as DashboardView) : defaultDashboardView;
 }
 
 export function dashboardViewDefinition(view: DashboardView): DashboardViewDefinition {

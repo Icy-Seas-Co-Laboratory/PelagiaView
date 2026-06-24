@@ -20,10 +20,13 @@ import type {
   JobEventListOptions,
   JobListOptions,
   JobEvent,
+  JobsClearOptions,
+  JobsClearResponse,
   LogListOptions,
   JobsSummaryOptions,
   JobsSummaryResponse,
   KvStoreOverview,
+  KvStoreOverviewOptions,
   LiveDetectionCandidateResponse,
   LivePreprocessResponse,
   LiveSandboxDeleteResponse,
@@ -225,11 +228,11 @@ export class PelagiaApiClient {
     return this.get<HealthResponse>('/health', undefined, 0, { auth: 'none' });
   }
 
-  async systemStatus(projectIdOrKey?: string | null): Promise<SystemStatus> {
+  async systemStatus(projectIdOrKey?: string | null, options: { deep_kvstore?: boolean } = {}): Promise<SystemStatus> {
     if (projectIdOrKey) {
-      return this.get<SystemStatus>(`/system/status/${encodeURIComponent(projectIdOrKey)}`, undefined, 1500);
+      return this.get<SystemStatus>(`/system/status/${encodeURIComponent(projectIdOrKey)}`, compact(options), 1500);
     }
-    return this.get<SystemStatus>('/system/status', undefined, 1500, { auth: 'none' });
+    return this.get<SystemStatus>('/system/status', compact(options), 1500, { auth: 'none' });
   }
 
   async systemUse(): Promise<Record<string, unknown>> {
@@ -309,8 +312,8 @@ export class PelagiaApiClient {
     return this.get<RoiRefinementCapabilities>('/roi-refinement/options', undefined, 15000, { auth: 'none' });
   }
 
-  async kvStoreOverview(): Promise<KvStoreOverview> {
-    return this.get<KvStoreOverview>('/kvstore', undefined, 1500, { auth: 'none' });
+  async kvStoreOverview(options: KvStoreOverviewOptions = {}): Promise<KvStoreOverview> {
+    return this.get<KvStoreOverview>('/kvstore', compact(options), 1500, { auth: 'none' });
   }
 
   async listJobs(options: number | JobListOptions = 100): Promise<Job[]> {
@@ -321,6 +324,10 @@ export class PelagiaApiClient {
 
   async jobsSummary(options: JobsSummaryOptions = {}): Promise<JobsSummaryResponse> {
     return this.get<JobsSummaryResponse>('/jobs/summary', options, 1500);
+  }
+
+  async clearJobs(options: JobsClearOptions = {}): Promise<JobsClearResponse> {
+    return this.post<JobsClearResponse>('/jobs/clear', compact(options));
   }
 
   async listJobEvents(options: number | JobEventListOptions = {}): Promise<JobEvent[]> {

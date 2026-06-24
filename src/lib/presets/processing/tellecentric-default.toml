@@ -1,24 +1,28 @@
 null_settings = [ "minPerimeter", "refinementExpansionPixels", "refinementModelBatchSize", "zstdMinBytes" ]
 
 [preset]
-id = "areascan-default"
-name = "Areascan (default)"
-description = ""
+id = "tellecentric-default"
+name = "Tellecentric Imaging System (default)"
+description = "Standard presets for analyzing images from a Wassoc-like shadowgraph glider tellecentric imaging sensor."
 updated_at = "2026-06-23T21:48:14.751Z"
 
 [settings.preprocessing]
 backgroundCorrection = true
-backgroundFrameLimit = 50
-backgroundMinFieldValue = 25
+backgroundFrameLimit = 100
+backgroundMinFieldValue = 50
 backgroundMaxFieldValue = 255
 flatfieldCorrection = false
 applyMask = false
-cropEnabled = false
+cropEnabled = true
+cropX = 750
+cropY = 200
+cropW = 2800
+cropH = 2800
 invertIntensity = true
 
 [settings.threshold]
 thresholdMethod = "manual"
-manualThreshold = 100
+manualThreshold = 50
 
 [settings.mask_augmentation]
 maskAugmentationEnabled = false

@@ -22,10 +22,13 @@
   import { formatCount } from '$lib/utils/format';
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
-    liveProcessingPreset as createLiveProcessingPreset,
     PROCESSING_PRESET_APPLIED_EVENT,
     pruneProcessingSettings
   } from '$lib/processing/settings';
+  import {
+    currentLiveProcessingPreset,
+    setLiveProcessingPresetFromSettings
+  } from '$lib/stores/processingPresetSession';
   import {
     booleanPreference,
     nullableNumberPreference as nullablePreferenceNumber,
@@ -115,8 +118,6 @@
   let lastCatalogKey = '';
   let preferencesReady = false;
   let submittedJobIds: string[] = [];
-  const liveProcessingPresetKey = preferenceKey('processing-preset:live');
-
   let frameBatchSize = mode === 'roi_refinement' ? 2500 : 100;
   let lastBatchMode: QueueMode | null = null;
   let priority: number | null = null;
@@ -368,8 +369,10 @@
   }
   $: datasetQueuePreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(datasetQueuePreferenceKey(), datasetQueuePreferenceSnapshot);
-  $: liveProcessingPreset = createLiveProcessingPreset(captureProcessingSettings());
-  $: if (preferencesReady) writePreferences(liveProcessingPresetKey, liveProcessingPreset);
+  $: if (preferencesReady) {
+    datasetQueuePreferenceSnapshot;
+    setLiveProcessingPresetFromSettings(captureProcessingSettings());
+  }
   $: activeFilters = {
     assetIds: selectedAssetIds,
     collections: selectedCollections,
@@ -775,7 +778,7 @@
   }
 
   function applyStoredLiveProcessingPreset() {
-    const preset = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
+    const preset = currentLiveProcessingPreset();
     if (preset?.source === 'live' && preset.settings) {
       applyProcessingSettings(preset.settings);
     }

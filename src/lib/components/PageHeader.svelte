@@ -2,6 +2,7 @@
   import {
     dashboardViewDefinition,
     dashboardViewHref,
+    defaultDashboardView,
     type DashboardView
   } from '$lib/utils/dashboardNavigation';
 
@@ -15,7 +16,7 @@
 <header class="page-header">
   <div>
     <nav class="breadcrumbs" aria-label="Breadcrumb">
-      <a href={dashboardViewHref('status', currentUrl)}>Dashboard</a>
+      <a href={dashboardViewHref(defaultDashboardView, currentUrl)}>Dashboard</a>
       <span aria-hidden="true">/</span>
       <span aria-current="page">{definition.label}</span>
     </nav>

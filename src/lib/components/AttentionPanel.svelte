@@ -7,36 +7,56 @@
   export let workers: WorkerSession[] = [];
   export let poll = true;
   export let limit = 15;
+  export let clearing = false;
+  export let onClearReview: (() => Promise<void> | void) | null = null;
 
   let jobs: Job[] = [];
   let loading = true;
   let error: string | null = null;
+  let localClearing = false;
+  let cancelled = false;
 
   $: staleWorkers = workers.filter(isWorkerStale);
   $: hasAttention = jobs.length > 0 || staleWorkers.length > 0;
+  $: isClearing = clearing || localClearing;
+
+  async function load() {
+    const client = getClient();
+    if (!client) return;
+    loading = true;
+    error = null;
+    try {
+      const nextJobs = await client.listJobs({
+        status: ['failed', 'dead_lettered', 'paused'],
+        include_progress: true,
+        limit,
+        sort: 'updated_at',
+        direction: 'desc'
+      });
+      if (!cancelled) jobs = nextJobs;
+    } catch (err) {
+      if (!cancelled) error = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (!cancelled) loading = false;
+    }
+  }
+
+  async function clearReview() {
+    if (!onClearReview || isClearing || jobs.length <= 0) return;
+    localClearing = true;
+    error = null;
+    try {
+      await onClearReview();
+      await load();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      localClearing = false;
+    }
+  }
 
   onMount(() => {
-    let cancelled = false;
-    async function load() {
-      const client = getClient();
-      if (!client) return;
-      loading = true;
-      error = null;
-      try {
-        const nextJobs = await client.listJobs({
-          status: ['failed', 'dead_lettered', 'cancelled', 'paused'],
-          include_progress: true,
-          limit,
-          sort: 'updated_at',
-          direction: 'desc'
-        });
-        if (!cancelled) jobs = nextJobs;
-      } catch (err) {
-        if (!cancelled) error = err instanceof Error ? err.message : String(err);
-      } finally {
-        if (!cancelled) loading = false;
-      }
-    }
+    cancelled = false;
     void load();
     if (!poll) return;
     const timer = window.setInterval(load, 5000);
@@ -65,7 +85,14 @@
       <p class="eyebrow">Attention</p>
       <h2>Needs review</h2>
     </div>
-    {#if loading}<span class="soft">Refreshing</span>{/if}
+    <div class="panel-heading-actions">
+      {#if loading}<span class="soft">Refreshing</span>{/if}
+      {#if onClearReview}
+        <button class="ghost danger compact-action" type="button" on:click={clearReview} disabled={isClearing || jobs.length <= 0}>
+          {isClearing ? 'Clearing' : 'Clear'}
+        </button>
+      {/if}
+    </div>
   </div>
 
   {#if error}

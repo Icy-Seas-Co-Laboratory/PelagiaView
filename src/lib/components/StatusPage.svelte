@@ -17,6 +17,9 @@
   let globalSummary: JobsSummaryResponse | null = null;
   let loading = true;
   let refreshing = false;
+  let clearingQueue = false;
+  let clearingReview = false;
+  let clearingStages: Record<string, boolean> = {};
   let actionError: string | null = null;
   let lastRefreshedAt: Date | null = null;
   let refreshSequence = 0;
@@ -27,6 +30,8 @@
   let workerPreferencesReady = false;
   const workerPageSize = 5;
   const statusPreferenceKey = 'pelagia-view:status:v1';
+  const terminalReviewStatuses = ['failed', 'dead_lettered'];
+  const pausedReviewStatuses = ['paused'];
   const stageCards: Array<{
     title: string;
     detail: string;
@@ -75,9 +80,11 @@
   };
   $: if (workerPreferencesReady) persistWorkerPreferences(workerPreferenceSnapshot);
   $: globalTotal = globalSummary?.total;
+  $: queuedJobCount = numericValue(globalTotal?.queued) ?? 0;
+  $: runningJobCount = numericValue(globalTotal?.leased) ?? 0;
+  $: currentQueueCount = queuedJobCount + runningJobCount + pausedJobCount;
   $: failedJobCount =
     (numericValue(globalTotal?.failed) ?? 0) +
-    (numericValue(globalTotal?.cancelled) ?? 0) +
     (numericValue(globalTotal?.dead_lettered) ?? 0);
   $: pausedJobCount = numericValue(globalTotal?.paused) ?? 0;
   $: staleWorkerCount = workers.filter(isWorkerStale).length;
@@ -149,6 +156,89 @@
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  async function clearCurrentQueue() {
+    if (clearingQueue || currentQueueCount <= 0) return;
+    clearingQueue = true;
+    actionError = null;
+    try {
+      await requestJobClear({
+        mode: 'cancel',
+        reason: 'Cleared active jobs from the status page.'
+      });
+      await refreshStatus();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+    } finally {
+      clearingQueue = false;
+    }
+  }
+
+  async function clearStageQueue(stage: string) {
+    if (clearingStages[stage]) return;
+    setStageClearing(stage, true);
+    actionError = null;
+    try {
+      await requestJobClear({
+        stage,
+        mode: 'cancel',
+        reason: `Cleared active ${stage} jobs from the status page.`
+      });
+      await refreshStatus();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      setStageClearing(stage, false);
+    }
+  }
+
+  async function clearNeedsReview() {
+    if (clearingReview) return;
+    clearingReview = true;
+    actionError = null;
+    try {
+      await requestJobClear({
+        status: terminalReviewStatuses,
+        mode: 'delete',
+        reason: 'Cleared terminal review jobs from the status page.'
+      });
+      await requestJobClear({
+        status: pausedReviewStatuses,
+        mode: 'cancel',
+        reason: 'Cleared paused review jobs from the status page.'
+      });
+      await refreshStatus();
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      clearingReview = false;
+    }
+  }
+
+  async function requestJobClear(options: {
+    status?: string[];
+    stage?: string;
+    mode: 'cancel' | 'delete';
+    reason: string;
+  }) {
+    const client = getClient();
+    if (!client) throw new Error('Connect to a Pelagia server before clearing jobs.');
+    await client.clearJobs({
+      status: options.status,
+      stage: options.stage,
+      mode: options.mode,
+      reason: options.reason
+    });
+  }
+
+  function setStageClearing(stage: string, value: boolean) {
+    const next = { ...clearingStages };
+    if (value) next[stage] = true;
+    else delete next[stage];
+    clearingStages = next;
   }
 
   function kvstoreTotalFileBytes(): number | null {
@@ -330,6 +420,9 @@
       </div>
       <div class="status-refresh">
         <span class="soft">{refreshing ? 'Refreshing' : lastRefreshedLabel()}</span>
+        <button class="ghost danger" type="button" on:click={clearCurrentQueue} disabled={clearingQueue || currentQueueCount <= 0}>
+          {clearingQueue ? 'Clearing' : 'Clear queue'}
+        </button>
         <button class="ghost" type="button" on:click={() => refreshStatus({ showLoading: true })} disabled={refreshing}>
           Refresh
         </button>
@@ -395,13 +488,15 @@
         detail={stageCard.detail}
         stage={stageCard.stage}
         href={dashboardViewHref(stageCard.view, $page.url)}
+        clearing={Boolean(clearingStages[stageCard.stage])}
+        onClearQueue={clearStageQueue}
       />
     {/each}
   </div>
 
   <div class="status-main-grid">
     <ActiveJobsPanel />
-    <AttentionPanel {workers} />
+    <AttentionPanel {workers} clearing={clearingReview} onClearReview={clearNeedsReview} />
   </div>
 
   <section class="panel panel-compact panel-full">

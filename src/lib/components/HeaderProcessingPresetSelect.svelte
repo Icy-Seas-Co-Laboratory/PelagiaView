@@ -3,22 +3,25 @@
   import { listProcessingPresets } from '$lib/api/processingPresets';
   import type { ProcessingPreset } from '$lib/processing/settings';
   import {
-    liveProcessingPreset,
     PROCESSING_PRESET_APPLIED_EVENT,
     processingPresetByKey,
     processingPresetKey
   } from '$lib/processing/settings';
-  import { preferenceKey, readPreferences } from '$lib/utils/preferences';
-
-  const liveProcessingPresetKey = preferenceKey('processing-preset:live');
+  import {
+    applyProcessingPresetToSession,
+    processingPresetSession,
+    setSelectedProcessingPresetKey
+  } from '$lib/stores/processingPresetSession';
 
   let presets: ProcessingPreset[] = [];
-  let selectedKey = 'live:live';
   let loading = true;
   let error: string | null = null;
 
-  $: livePreset = readLivePreset();
+  $: livePreset = $processingPresetSession.livePreset;
   $: availablePresets = [livePreset, ...presets];
+  $: if (!loading && !error && !processingPresetByKey(availablePresets, $processingPresetSession.selectedKey)) {
+    setSelectedProcessingPresetKey('live:live');
+  }
 
   onMount(() => {
     void loadPresets();
@@ -36,31 +39,22 @@
     }
   }
 
-  function readLivePreset(): ProcessingPreset {
-    const stored = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
-    if (stored?.source === 'live' && stored.settings) {
-      return stored as ProcessingPreset;
-    }
-    return liveProcessingPreset({});
-  }
-
-  function applySelectedPreset() {
+  function applySelectedPreset(event: Event) {
+    const selectedKey = (event.currentTarget as HTMLSelectElement).value;
     const preset = processingPresetByKey(availablePresets, selectedKey);
-    if (!preset || preset.source === 'live') return;
-    const nextLivePreset = liveProcessingPreset(preset.settings);
-    localStorage.setItem(liveProcessingPresetKey, JSON.stringify(nextLivePreset));
+    if (!preset) return;
+    const appliedPreset = applyProcessingPresetToSession(preset);
     window.dispatchEvent(
       new CustomEvent<ProcessingPreset>(PROCESSING_PRESET_APPLIED_EVENT, {
-        detail: nextLivePreset
+        detail: appliedPreset
       })
     );
-    selectedKey = 'live:live';
   }
 </script>
 
 <label class="header-preset-select" title={error ?? 'Apply processing settings preset'}>
   <span>Preset</span>
-  <select bind:value={selectedKey} on:change={applySelectedPreset} disabled={loading || Boolean(error)}>
+  <select value={$processingPresetSession.selectedKey} on:change={applySelectedPreset} disabled={loading || Boolean(error)}>
     {#each availablePresets as preset}
       <option value={processingPresetKey(preset)}>
         {preset.name}{preset.source === 'builtin' ? ' · built in' : preset.source === 'user' ? ' · saved' : ' · live'}

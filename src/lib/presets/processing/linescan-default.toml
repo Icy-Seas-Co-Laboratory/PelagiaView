@@ -21,9 +21,9 @@ maskAugmentationEnabled = false
 [settings.candidate_detection]
 roiAssemblyMethod = "connected_components"
 roiAssemblyConnectivity = 8
-padding = 50
 minWidth = 20
 minHeight = 20
+padding = 50
 
 [settings.roi_storage]
 roiEncoding = "zstd"

@@ -83,11 +83,10 @@ export const preferenceDefinitions: PreferenceDefinition[] = [
     resetWithUiState: true
   },
   {
-    key: preferenceKey('processing-preset:live'),
-    label: 'Live processing preset',
-    description: 'The current session processing settings exposed as a live preset.',
-    category: 'workflow',
-    resetWithUiState: true
+    key: 'pelagia-view-processing-preset-session',
+    label: 'Processing preset session',
+    description: 'The selected processing preset and current session processing settings.',
+    category: 'workflow'
   },
   {
     key: preferenceKey('roi-browser'),

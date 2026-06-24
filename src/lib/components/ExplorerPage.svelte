@@ -40,12 +40,16 @@
   } from '$lib/utils/imageRenderSpec';
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
-    liveProcessingPreset as createLiveProcessingPreset,
     PROCESSING_PRESET_APPLIED_EVENT,
     processingPresetByKey,
-    processingPresetKey,
     pruneProcessingSettings
   } from '$lib/processing/settings';
+  import {
+    applyProcessingPresetToSession,
+    currentLiveProcessingPreset,
+    processingPresetSession,
+    setLiveProcessingPresetFromSettings
+  } from '$lib/stores/processingPresetSession';
   import {
     booleanPreference,
     nullableNumberPreference as nullablePreferenceNumber,
@@ -245,13 +249,12 @@
   let thresholdPreviewSerial = 0;
   let detectionPreviewSerial = 0;
   const explorerPreferenceKey = preferenceKey('explorer');
-  const liveProcessingPresetKey = preferenceKey('processing-preset:live');
   let processingPresets: ProcessingPreset[] = [];
   let selectedProcessingPresetKey = 'live:live';
   let presetMessage: string | null = null;
   let presetError: string | null = null;
   let presetsLoading = false;
-  let livePresetSettings: ProcessingSettings | null = null;
+  let lastProcessingPresetSessionKey = '';
 
   type ExplorerTab = 'preprocessing' | 'threshold' | 'detection' | 'refinement' | 'presets';
   const explorerTabs: Array<{ id: ExplorerTab; label: string }> = [
@@ -365,9 +368,16 @@
   }
   $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(explorerPreferenceKey, explorerPreferenceSnapshot);
-  $: liveProcessingPreset = createLiveProcessingPreset(livePresetSettings ?? captureProcessingSettings());
+  $: liveProcessingPreset = $processingPresetSession.livePreset;
   $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
-  $: if (preferencesReady) writePreferences(liveProcessingPresetKey, liveProcessingPreset);
+  $: if (preferencesReady) {
+    explorerPreferenceSnapshot;
+    setLiveProcessingPresetFromSettings(captureProcessingSettings());
+  }
+  $: if ($processingPresetSession.selectedKey !== lastProcessingPresetSessionKey) {
+    lastProcessingPresetSessionKey = $processingPresetSession.selectedKey;
+    selectedProcessingPresetKey = $processingPresetSession.selectedKey;
+  }
   $: framePayloadKind = payloadKindForDisplay(frameDisplayMode);
   $: imageInverted = framePayloadKind !== 'original' && $imageInversionEnabled;
   $: imageUrl =
@@ -830,7 +840,7 @@
       return;
     }
     applyProcessingSettings(preset.settings);
-    selectedProcessingPresetKey = 'live:live';
+    applyProcessingPresetToSession(preset);
     presetMessage = `Applied ${preset.name}.`;
   }
 
@@ -849,7 +859,7 @@
         settings: captureProcessingSettings()
       });
       await loadProcessingPresets();
-      selectedProcessingPresetKey = processingPresetKey(preset);
+      applyProcessingPresetToSession(preset);
       presetMessage = `Saved ${preset.name}.`;
     } catch (err) {
       presetError = err instanceof Error ? err.message : String(err);
@@ -857,9 +867,8 @@
   }
 
   function applyStoredLiveProcessingPreset() {
-    const preset = readPreferences<ProcessingPreset>(liveProcessingPresetKey);
+    const preset = currentLiveProcessingPreset();
     if (preset?.source === 'live' && preset.settings) {
-      livePresetSettings = pruneProcessingSettings(preset.settings);
       applyProcessingSettings(preset.settings);
     }
   }
@@ -869,18 +878,16 @@
     if (!preset?.settings) return;
     applyProcessingSettings(preset.settings);
     if (preset.source === 'live') {
-      livePresetSettings = pruneProcessingSettings(preset.settings);
-      selectedProcessingPresetKey = 'live:live';
+      setLiveProcessingPresetFromSettings(preset.settings, { selectedKey: 'live:live' });
     } else {
-      selectedProcessingPresetKey = processingPresetKey(preset);
+      applyProcessingPresetToSession(preset);
     }
     presetMessage = 'Applied header preset.';
     presetError = null;
   }
 
   function commitLivePresetSettings() {
-    livePresetSettings = captureProcessingSettings();
-    selectedProcessingPresetKey = 'live:live';
+    setLiveProcessingPresetFromSettings(captureProcessingSettings(), { selectedKey: 'live:live' });
   }
 
   function restorePreferences() {

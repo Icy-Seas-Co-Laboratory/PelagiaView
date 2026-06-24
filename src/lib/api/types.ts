@@ -110,6 +110,11 @@ export type KvStoreOverview = {
   health?: Record<string, unknown>;
 };
 
+export type KvStoreOverviewOptions = {
+  deep_status?: boolean;
+  include_health?: boolean;
+};
+
 export type Job = {
   id: string;
   stage?: string;
@@ -177,6 +182,27 @@ export type JobsSummaryResponse = {
   by_stage?: JobAggregateSummary[];
   by_status?: JobAggregateSummary[];
   recent_jobs?: Job[];
+};
+
+export type JobsClearOptions = {
+  run_id?: string | null;
+  asset_id?: string | null;
+  status?: string | string[] | null;
+  stage?: string | string[] | null;
+  ids?: string[] | null;
+  worker_id?: string | null;
+  reason?: string | null;
+  mode?: 'cancel' | 'delete';
+  dry_run?: boolean;
+};
+
+export type JobsClearResponse = {
+  matched_count?: number | string | null;
+  cancellable_count?: number | string | null;
+  cancelled_count?: number | string | null;
+  deleted_count?: number | string | null;
+  dry_run?: boolean;
+  jobs?: Job[];
 };
 
 export type JobListOptions = {

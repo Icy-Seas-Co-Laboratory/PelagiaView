@@ -16,10 +16,11 @@
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
     dashboardViewFromParam,
+    defaultDashboardView,
     type DashboardView
   } from '$lib/utils/dashboardNavigation';
 
-  let activeTab: DashboardView = 'status';
+  let activeTab: DashboardView = defaultDashboardView;
   let sidebarCollapsed = false;
   let preferencesOpen = false;
   let preferencesReady = false;

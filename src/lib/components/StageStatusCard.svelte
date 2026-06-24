@@ -10,10 +10,14 @@
   export let stage: string;
   export let href = '';
   export let poll = true;
+  export let clearing = false;
+  export let onClearQueue: ((stage: string) => Promise<void> | void) | null = null;
 
   let summary: JobsSummaryResponse | null = null;
   let loading = true;
   let error: string | null = null;
+  let localClearing = false;
+  let cancelled = false;
 
   $: total = summary?.total;
   $: progress = total?.progress;
@@ -23,29 +27,46 @@
   $: running = numericValue(total?.leased) ?? 0;
   $: failed = (numericValue(total?.failed) ?? 0) + (numericValue(total?.cancelled) ?? 0) + (numericValue(total?.dead_lettered) ?? 0);
   $: paused = numericValue(total?.paused) ?? 0;
+  $: queueCount = queued + running + paused;
   $: recent = summary?.recent_jobs?.[0] ?? null;
   $: tone = failed > 0 ? 'bad' : running > 0 || queued > 0 || paused > 0 ? 'warn' : 'good';
+  $: isClearing = clearing || localClearing;
+
+  async function load() {
+    const client = getClient();
+    if (!client) return;
+    loading = true;
+    error = null;
+    try {
+      const nextSummary = await client.jobsSummary({
+        stage,
+        include_recent: true,
+        recent_limit: 3
+      });
+      if (!cancelled) summary = nextSummary;
+    } catch (err) {
+      if (!cancelled) error = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (!cancelled) loading = false;
+    }
+  }
+
+  async function clearQueue() {
+    if (!onClearQueue || isClearing || queueCount <= 0) return;
+    localClearing = true;
+    error = null;
+    try {
+      await onClearQueue(stage);
+      await load();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      localClearing = false;
+    }
+  }
 
   onMount(() => {
-    let cancelled = false;
-    async function load() {
-      const client = getClient();
-      if (!client) return;
-      loading = true;
-      error = null;
-      try {
-        const nextSummary = await client.jobsSummary({
-          stage,
-          include_recent: true,
-          recent_limit: 3
-        });
-        if (!cancelled) summary = nextSummary;
-      } catch (err) {
-        if (!cancelled) error = err instanceof Error ? err.message : String(err);
-      } finally {
-        if (!cancelled) loading = false;
-      }
-    }
+    cancelled = false;
     void load();
     if (!poll) return;
     const timer = window.setInterval(load, 5000);
@@ -103,6 +124,13 @@
     {:else}
       <span class="soft">No recent jobs</span>
     {/if}
-    {#if href}<a href={href}>Open</a>{/if}
+    <div class="stage-card-actions">
+      {#if href}<a href={href}>Open</a>{/if}
+      {#if onClearQueue}
+        <button class="ghost danger compact-action" type="button" on:click={clearQueue} disabled={isClearing || queueCount <= 0}>
+          {isClearing ? 'Clearing' : 'Clear queue'}
+        </button>
+      {/if}
+    </div>
   </div>
 </section>
