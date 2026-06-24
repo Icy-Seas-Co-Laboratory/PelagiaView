@@ -61,6 +61,7 @@
   let detailFrameDisplayMode: FrameDisplayMode = 'preprocessed';
   let detailFrameFailedUrl = '';
   let lastDetailFrameUrl = '';
+  let fullResolutionTileKeys = new Set<string>();
   let tileScroller: HTMLElement;
   let loadMoreSentinel: HTMLElement;
   const roiBrowserPreferenceKey = 'pelagia-view:roi-browser:v1';
@@ -68,6 +69,8 @@
   const frameDetectionBatchSize = 100;
   const roiDisplayMaxWidth = 220;
   const roiDisplayMaxHeight = 190;
+  const roiProxyThresholdPx = 200;
+  const roiProxyMaxDimensionPx = 200;
   const modalRoiDisplayMaxWidth = 520;
   const modalRoiDisplayMaxHeight = 460;
   const frameContextImageWidth = 380;
@@ -139,6 +142,7 @@
     error = null;
     const offset = reset ? 0 : nextOffset;
     const serial = ++requestSerial;
+    if (reset) fullResolutionTileKeys = new Set();
     try {
       const response = await client.searchDetectionsPage(currentFilters(offset));
       const page = response.detections ?? [];
@@ -196,6 +200,7 @@
     roiEncoding = '';
     nextOffset = 0;
     hasMore = true;
+    fullResolutionTileKeys = new Set();
     void loadDetections(true);
   }
 
@@ -427,28 +432,35 @@
     detection: DetectionSummary,
     viewMode = roiViewMode,
     format = imageFormat,
-    maskEnabled = applyRoiMask
+    maskEnabled = applyRoiMask,
+    proxyMaxDimension: number | null = null
   ): string {
     const client = getClient();
     if (!client || !detection.id) return '';
-    const options = { applyMask: maskEnabled };
+    const resizeOptions = roiProxyResizeOptions(detection, proxyMaxDimension);
+    const options = { applyMask: maskEnabled, ...resizeOptions };
     if (viewMode !== 'refined') return client.detectionImageUrl(detection.id, format, options);
-    if (detection.refined_roi_url) return client.resolveApiUrl(detection.refined_roi_url);
+    if (detection.refined_roi_url && !resizeOptions.width && !resizeOptions.height) return client.resolveApiUrl(detection.refined_roi_url);
     if (detection.refined_detection_id) {
       return client.refinedDetectionRecordImageUrl(detection.refined_detection_id, format, options);
     }
     return client.refinedDetectionImageUrl(detection.id, format, options);
   }
 
-  function roiImageMaskUrl(detection: DetectionSummary, viewMode = roiViewMode): string {
+  function roiImageMaskUrl(
+    detection: DetectionSummary,
+    viewMode = roiViewMode,
+    proxyMaxDimension: number | null = null
+  ): string {
     const client = getClient();
     if (!client || !detection.id) return '';
-    if (viewMode !== 'refined') return client.detectionMaskUrl(detection.id, 'png');
-    if (detection.refined_mask_url) return client.resolveApiUrl(detection.refined_mask_url);
+    const resizeOptions = roiProxyResizeOptions(detection, proxyMaxDimension);
+    if (viewMode !== 'refined') return client.detectionMaskUrl(detection.id, 'png', resizeOptions);
+    if (detection.refined_mask_url && !resizeOptions.width && !resizeOptions.height) return client.resolveApiUrl(detection.refined_mask_url);
     if (detection.refined_detection_id) {
-      return client.refinedDetectionRecordMaskUrl(detection.refined_detection_id, 'png');
+      return client.refinedDetectionRecordMaskUrl(detection.refined_detection_id, 'png', resizeOptions);
     }
-    return client.refinedDetectionMaskUrl(detection.id, 'png');
+    return client.refinedDetectionMaskUrl(detection.id, 'png', resizeOptions);
   }
 
   function roiCanvasKey(
@@ -456,14 +468,16 @@
     viewMode = roiViewMode,
     format = imageFormat,
     maskEnabled = applyRoiMask,
-    inverted = invertImages
+    inverted = invertImages,
+    proxyMaxDimension: number | null = null
   ): string {
     return [
       detection.id ?? 'roi',
       viewMode,
       format,
       maskEnabled ? 'masked' : 'plain',
-      inverted ? 'inverted' : 'normal'
+      inverted ? 'inverted' : 'normal',
+      proxyMaxDimension ? `proxy-${proxyMaxDimension}` : 'full'
     ].join(':');
   }
 
@@ -492,21 +506,22 @@
     viewMode = roiViewMode,
     format = imageFormat,
     maskEnabled = applyRoiMask,
-    inverted = invertImages
+    inverted = invertImages,
+    proxyMaxDimension: number | null = null
   ): ImageRenderSpec {
     const sourceWidth = roiImageSourceWidth(detection);
     const sourceHeight = roiImageSourceHeight(detection);
     return {
-      key: roiCanvasKey(detection, viewMode, format, maskEnabled, inverted),
+      key: roiCanvasKey(detection, viewMode, format, maskEnabled, inverted, proxyMaxDimension),
       image: {
-        url: imageUrl(detection, viewMode, format, maskEnabled),
+        url: imageUrl(detection, viewMode, format, maskEnabled, proxyMaxDimension),
         alt: roiImageAlt(detection, viewMode),
         invert: inverted,
         sourceWidth,
         sourceHeight
       },
       baseMask: {
-        url: roiImageMaskUrl(detection, viewMode),
+        url: roiImageMaskUrl(detection, viewMode, proxyMaxDimension),
         enabled: maskEnabled,
         outsideColor: 'black',
         applyBeforeInvert: true
@@ -554,6 +569,45 @@
 
   function roiSourceHeight(detection: DetectionSummary): number | null {
     return bboxValue(detection, 'crop_bbox', 'h');
+  }
+
+  function roiTileProxyMaxDimension(detection: DetectionSummary): number | null {
+    const width = roiImageSourceWidth(detection);
+    const height = roiImageSourceHeight(detection);
+    if (!width || !height) return null;
+    return width > roiProxyThresholdPx || height > roiProxyThresholdPx ? roiProxyMaxDimensionPx : null;
+  }
+
+  function roiTileKey(detection: DetectionSummary): string {
+    return [
+      detection.id ?? 'roi',
+      roiViewMode,
+      imageFormat,
+      applyRoiMask ? 'masked' : 'plain',
+      invertImages ? 'inverted' : 'normal'
+    ].join(':');
+  }
+
+  function roiTileProxyForRender(detection: DetectionSummary): number | null {
+    return fullResolutionTileKeys.has(roiTileKey(detection)) ? null : roiTileProxyMaxDimension(detection);
+  }
+
+  function promoteRoiTileToFullResolution(detection: DetectionSummary, proxyMaxDimension: number | null) {
+    if (!proxyMaxDimension) return;
+    const key = roiTileKey(detection);
+    if (fullResolutionTileKeys.has(key)) return;
+    fullResolutionTileKeys = new Set([...fullResolutionTileKeys, key]);
+  }
+
+  function roiProxyResizeOptions(
+    detection: DetectionSummary,
+    proxyMaxDimension: number | null
+  ): { width?: number; height?: number } {
+    if (!proxyMaxDimension) return {};
+    const width = roiImageSourceWidth(detection);
+    const height = roiImageSourceHeight(detection);
+    if (!width || !height) return {};
+    return width >= height ? { width: proxyMaxDimension } : { height: proxyMaxDimension };
   }
 
   function roiFilename(version = 'roi'): string {
@@ -1118,12 +1172,14 @@
         <div class="roi-tile-grid">
           {#each detections as detection}
             {#if detection.id && detection.roi_payload_bytes}
+              {@const proxyMaxDimension = roiTileProxyForRender(detection)}
               <div class="roi-tile">
                 <div class="roi-image-frame">
-                  {#key roiCanvasKey(detection, roiViewMode, imageFormat, applyRoiMask, invertImages)}
+                  {#key roiCanvasKey(detection, roiViewMode, imageFormat, applyRoiMask, invertImages, proxyMaxDimension)}
                     <KonvaImageCanvas
-                      spec={roiRenderSpec(detection, roiDisplayMaxWidth, roiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages)}
+                      spec={roiRenderSpec(detection, roiDisplayMaxWidth, roiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages, proxyMaxDimension)}
                       mode="thumbnail"
+                      onImageLoad={() => promoteRoiTileToFullResolution(detection, proxyMaxDimension)}
                       onMoreAction={() => openRoiDetail(detection)}
                     />
                   {/key}

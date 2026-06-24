@@ -127,7 +127,8 @@
   let flatfieldMinFieldValue = 1;
   let flatfieldMaxFieldValue: number | null = 255;
   let backgroundCorrection = false;
-  let backgroundPercentile = 50;
+  let backgroundMinFieldValue = 1;
+  let backgroundMaxFieldValue: number | null = 255;
   let applyMask = false;
   let cropEnabled = false;
   let cropX: number | null = null;
@@ -256,7 +257,8 @@
     flatfieldMinFieldValue: number;
     flatfieldMaxFieldValue: number | null;
     backgroundCorrection: boolean;
-    backgroundPercentile: number;
+    backgroundMinFieldValue: number;
+    backgroundMaxFieldValue: number | null;
     applyMask: boolean;
     cropEnabled: boolean;
     cropX: number | null;
@@ -456,7 +458,8 @@
       flatfieldMinFieldValue,
       flatfieldMaxFieldValue,
       backgroundCorrection,
-      backgroundPercentile,
+      backgroundMinFieldValue,
+      backgroundMaxFieldValue,
       applyMask,
       cropEnabled,
       cropX,
@@ -558,7 +561,9 @@
     flatfieldMinFieldValue = numberPreference(preferences.flatfieldMinFieldValue, flatfieldMinFieldValue);
     flatfieldMaxFieldValue = nullablePreferenceNumber(preferences.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
     backgroundCorrection = booleanPreference(preferences.backgroundCorrection, backgroundCorrection);
-    backgroundPercentile = numberPreference(preferences.backgroundPercentile, backgroundPercentile);
+    backgroundMinFieldValue = numberPreference(preferences.backgroundMinFieldValue, backgroundMinFieldValue);
+    backgroundMaxFieldValue = nullablePreferenceNumber(preferences.backgroundMaxFieldValue, backgroundMaxFieldValue);
+    enforcePreprocessingCorrectionMode();
     applyMask = booleanPreference(preferences.applyMask, applyMask);
     cropEnabled = booleanPreference(preferences.cropEnabled, cropEnabled);
     cropX = nullablePreferenceNumber(preferences.cropX, cropX);
@@ -705,12 +710,14 @@
     if ('roiAssemblyMethod' in settings) roiAssemblyMethod = stringPreference(settings.roiAssemblyMethod, roiAssemblyMethod);
     if ('roiAssemblyConnectivity' in settings) roiAssemblyConnectivity = numberPreference(settings.roiAssemblyConnectivity, roiAssemblyConnectivity);
     if ('backgroundCorrection' in settings) backgroundCorrection = booleanPreference(settings.backgroundCorrection, backgroundCorrection);
-    if ('backgroundPercentile' in settings) backgroundPercentile = numberPreference(settings.backgroundPercentile, backgroundPercentile);
+    if ('backgroundMinFieldValue' in settings) backgroundMinFieldValue = numberPreference(settings.backgroundMinFieldValue, backgroundMinFieldValue);
+    if ('backgroundMaxFieldValue' in settings) backgroundMaxFieldValue = nullablePreferenceNumber(settings.backgroundMaxFieldValue, backgroundMaxFieldValue);
     if ('flatfieldCorrection' in settings) flatfieldCorrection = booleanPreference(settings.flatfieldCorrection, flatfieldCorrection);
     if ('flatfieldQ' in settings) flatfieldQ = numberPreference(settings.flatfieldQ, flatfieldQ);
     if ('flatfieldAxis' in settings) flatfieldAxis = numberPreference(settings.flatfieldAxis, flatfieldAxis);
     if ('flatfieldMinFieldValue' in settings) flatfieldMinFieldValue = numberPreference(settings.flatfieldMinFieldValue, flatfieldMinFieldValue);
     if ('flatfieldMaxFieldValue' in settings) flatfieldMaxFieldValue = nullablePreferenceNumber(settings.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    enforcePreprocessingCorrectionMode();
     if ('applyMask' in settings) applyMask = booleanPreference(settings.applyMask, applyMask);
     if ('cropEnabled' in settings) cropEnabled = booleanPreference(settings.cropEnabled, cropEnabled);
     if ('cropX' in settings) cropX = nullablePreferenceNumber(settings.cropX, cropX);
@@ -751,6 +758,20 @@
     if ('refinementEncoding' in settings) refinementEncoding = stringPreference(settings.refinementEncoding, refinementEncoding);
     if ('refinementStore' in settings) refinementStore = booleanPreference(settings.refinementStore, refinementStore);
     if ('refinementDryRun' in settings) refinementDryRun = booleanPreference(settings.refinementDryRun, refinementDryRun);
+  }
+
+  function setBackgroundCorrection(enabled: boolean) {
+    backgroundCorrection = enabled;
+    if (enabled) flatfieldCorrection = false;
+  }
+
+  function setFlatfieldCorrection(enabled: boolean) {
+    flatfieldCorrection = enabled;
+    if (enabled) backgroundCorrection = false;
+  }
+
+  function enforcePreprocessingCorrectionMode() {
+    if (backgroundCorrection && flatfieldCorrection) flatfieldCorrection = false;
   }
 
   function applyStoredLiveProcessingPreset() {
@@ -979,7 +1000,9 @@
     flatfieldMinFieldValue = numberDefault(flatfield, 'flatfield_min_field_value', flatfieldMinFieldValue);
     flatfieldMaxFieldValue = nullableNumberDefault(flatfield, 'flatfield_max_field_value', flatfieldMaxFieldValue);
     backgroundCorrection = booleanDefault(preprocessing, 'background_correction', backgroundCorrection);
-    backgroundPercentile = numberDefault(preprocessing, 'background_percentile', backgroundPercentile);
+    backgroundMinFieldValue = numberDefault(preprocessing, 'background_min_field_value', backgroundMinFieldValue);
+    backgroundMaxFieldValue = nullableNumberDefault(preprocessing, 'background_max_field_value', backgroundMaxFieldValue);
+    enforcePreprocessingCorrectionMode();
     applyMask = booleanDefault(preprocessing, 'apply_mask', applyMask);
     cropEnabled = booleanDefault(preprocessing, 'crop_enabled', cropEnabled);
     cropX = nullableNumberDefault(preprocessing, 'crop_x', cropX);
@@ -1357,13 +1380,14 @@
             run_id: batch.runId,
             frame_ids: batch.frameIds,
             priority,
-            flatfield_correction: flatfieldCorrection,
-            flatfield_q: flatfieldCorrection ? flatfieldQ : undefined,
-            flatfield_axis: flatfieldCorrection ? flatfieldAxis : undefined,
-            flatfield_min_field_value: flatfieldCorrection ? flatfieldMinFieldValue : undefined,
-            flatfield_max_field_value: flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
+            flatfield_correction: backgroundCorrection ? false : flatfieldCorrection,
+            flatfield_q: !backgroundCorrection && flatfieldCorrection ? flatfieldQ : undefined,
+            flatfield_axis: !backgroundCorrection && flatfieldCorrection ? flatfieldAxis : undefined,
+            flatfield_min_field_value: !backgroundCorrection && flatfieldCorrection ? flatfieldMinFieldValue : undefined,
+            flatfield_max_field_value: !backgroundCorrection && flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
             background_correction: backgroundCorrection,
-            background_percentile: backgroundCorrection ? backgroundPercentile : undefined,
+            background_min_field_value: backgroundCorrection ? backgroundMinFieldValue : undefined,
+            background_max_field_value: backgroundCorrection ? backgroundMaxFieldValue : undefined,
             apply_mask: applyMask,
             crop_enabled: cropEnabled,
             crop_x: cropEnabled ? cropX : undefined,
@@ -1807,11 +1831,19 @@
           </span>
         </div>
         <label class="check-row">
-          <input type="checkbox" bind:checked={backgroundCorrection} />
+          <input
+            type="checkbox"
+            checked={backgroundCorrection}
+            on:change={(event) => setBackgroundCorrection((event.currentTarget as HTMLInputElement).checked)}
+          />
           Background correction
         </label>
         <label class="check-row">
-          <input type="checkbox" bind:checked={flatfieldCorrection} />
+          <input
+            type="checkbox"
+            checked={flatfieldCorrection}
+            on:change={(event) => setFlatfieldCorrection((event.currentTarget as HTMLInputElement).checked)}
+          />
           Flatfield correction
         </label>
         {#if flatfieldCorrection}
@@ -1870,6 +1902,19 @@
                 <option value={0}>0</option>
                 <option value={1}>1</option>
               </select>
+            </label>
+          </div>
+        {:else if backgroundCorrection}
+          <div class="form-grid compact-grid">
+            <label>
+              Min background field value
+              <input type="range" min="0" max="255" step="1" bind:value={backgroundMinFieldValue} />
+              <span class="range-value">{backgroundMinFieldValue}</span>
+            </label>
+            <label>
+              Max background field value
+              <input type="range" min="1" max="4096" step="1" bind:value={backgroundMaxFieldValue} />
+              <span class="range-value">{backgroundMaxFieldValue ?? 'none'}</span>
             </label>
           </div>
         {/if}

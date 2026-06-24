@@ -60,6 +60,12 @@ type FrameImageOptions = {
   flatfield_min_field_value?: number | null;
   flatfield_max_field_value?: number | null;
   background_correction?: boolean | null;
+  background_min_field_value?: number | null;
+  background_max_field_value?: number | null;
+  background_asset_id?: string | null;
+  background_start_frame?: number | null;
+  background_end_frame?: number | null;
+  background_limit?: number | null;
   preview_max_dim?: number | null;
 };
 
@@ -87,6 +93,9 @@ type FrameContextOptions = {
 
 type DetectionImageOptions = {
   applyMask?: boolean;
+  width?: number | null;
+  height?: number | null;
+  scale?: string | number | null;
 };
 
 type QueryParamValue = string | number | boolean | Array<string | number | boolean> | null | undefined;
@@ -460,14 +469,26 @@ export class PelagiaApiClient {
   detectionImageUrl(detectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
     return this.url(
       `/detections/${encodeURIComponent(detectionId)}/framedata`,
-      compact({ format, apply_mask: options.applyMask || undefined })
+      compact({
+        format,
+        apply_mask: options.applyMask || undefined,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
     );
   }
 
   refinedDetectionImageUrl(detectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
     return this.url(
       `/detections/${encodeURIComponent(detectionId)}/refined-roi`,
-      compact({ format, apply_mask: options.applyMask || undefined })
+      compact({
+        format,
+        apply_mask: options.applyMask || undefined,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
     );
   }
 
@@ -487,20 +508,50 @@ export class PelagiaApiClient {
   refinedDetectionRecordImageUrl(refinedDetectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
     return this.url(
       `/refined-detections/${encodeURIComponent(refinedDetectionId)}/roi`,
-      compact({ format, apply_mask: options.applyMask || undefined })
+      compact({
+        format,
+        apply_mask: options.applyMask || undefined,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
     );
   }
 
-  detectionMaskUrl(detectionId: string, format = 'png'): string {
-    return this.url(`/detections/${encodeURIComponent(detectionId)}/mask`, { format });
+  detectionMaskUrl(detectionId: string, format = 'png', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/detections/${encodeURIComponent(detectionId)}/mask`,
+      compact({
+        format,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
+    );
   }
 
-  refinedDetectionMaskUrl(detectionId: string, format = 'png'): string {
-    return this.url(`/detections/${encodeURIComponent(detectionId)}/refined-mask`, { format });
+  refinedDetectionMaskUrl(detectionId: string, format = 'png', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/detections/${encodeURIComponent(detectionId)}/refined-mask`,
+      compact({
+        format,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
+    );
   }
 
-  refinedDetectionRecordMaskUrl(refinedDetectionId: string, format = 'png'): string {
-    return this.url(`/refined-detections/${encodeURIComponent(refinedDetectionId)}/mask`, { format });
+  refinedDetectionRecordMaskUrl(refinedDetectionId: string, format = 'png', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/refined-detections/${encodeURIComponent(refinedDetectionId)}/mask`,
+      compact({
+        format,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
+    );
   }
 
   async frameContext(frameId: string, options: FrameContextOptions = {}): Promise<FrameContextResponse> {

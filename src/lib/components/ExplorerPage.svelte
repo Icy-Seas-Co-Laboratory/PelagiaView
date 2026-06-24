@@ -138,7 +138,9 @@
   let frameDisplayMode: FrameDisplayMode = 'original';
   let preprocessedReloadKey = 0;
   let backgroundCorrection = false;
-  let backgroundPercentile = 50;
+  let backgroundFrameLimit = 25;
+  let backgroundMinFieldValue = 1;
+  let backgroundMaxFieldValue: number | null = 255;
   let minArea: number | null = null;
   let maxArea: number | null = null;
   let minPerimeter = 100;
@@ -183,9 +185,9 @@
   let refinementEncodingOptions = ['auto', 'zstd', 'png', 'raw'];
   let refining = false;
   let flatfieldCorrection = false;
-  let flatfieldQ = 0.95;
+  let flatfieldQ = 0.5;
   let flatfieldAxis = 0;
-  let flatfieldMinFieldValue = 1;
+  let flatfieldMinFieldValue = 10;
   let flatfieldMaxFieldValue: number | null = 255;
   let applyMask = false;
   let cropEnabled = false;
@@ -202,6 +204,7 @@
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
   const frameImageWidth = 1100;
+  const backgroundFrameLimitFloor = 25;
   const liveSandboxDeletionDelayMs = 900 * 1000;
   const pendingLiveSandboxDeletions = new Map<string, number>();
   let lastFrameImageKey = '';
@@ -304,7 +307,9 @@
     roiAssemblyMethod: string;
     roiAssemblyConnectivity: number;
     backgroundCorrection: boolean;
-    backgroundPercentile: number;
+    backgroundFrameLimit: number;
+    backgroundMinFieldValue: number;
+    backgroundMaxFieldValue: number | null;
     flatfieldCorrection: boolean;
     flatfieldQ: number;
     flatfieldAxis: number;
@@ -354,6 +359,10 @@
   };
 
   $: selectedFrame = findFrameByNumber(selectedFrameNum);
+  $: {
+    const clampedBackgroundFrameLimit = clampBackgroundFrameLimit(backgroundFrameLimit, frameCount);
+    if (backgroundFrameLimit !== clampedBackgroundFrameLimit) backgroundFrameLimit = clampedBackgroundFrameLimit;
+  }
   $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(explorerPreferenceKey, explorerPreferenceSnapshot);
   $: liveProcessingPreset = createLiveProcessingPreset(livePresetSettings ?? captureProcessingSettings());
@@ -395,7 +404,9 @@
   $: void updateMaskDifferenceUrls(showMaskDifferences, detections, refinedDetections);
   $: preprocessingPreviewKey = preprocessingOptionsKey(
     backgroundCorrection,
-    backgroundPercentile,
+    backgroundFrameLimit,
+    backgroundMinFieldValue,
+    backgroundMaxFieldValue,
     flatfieldCorrection,
     flatfieldQ,
     flatfieldAxis,
@@ -561,7 +572,9 @@
       roiAssemblyMethod,
       roiAssemblyConnectivity,
       backgroundCorrection,
-      backgroundPercentile,
+      backgroundFrameLimit,
+      backgroundMinFieldValue,
+      backgroundMaxFieldValue,
       flatfieldCorrection,
       flatfieldQ,
       flatfieldAxis,
@@ -653,7 +666,9 @@
       roiAssemblyMethod,
       roiAssemblyConnectivity,
       backgroundCorrection,
-      backgroundPercentile,
+      backgroundFrameLimit,
+      backgroundMinFieldValue,
+      backgroundMaxFieldValue,
       flatfieldCorrection,
       flatfieldQ,
       flatfieldAxis,
@@ -741,12 +756,15 @@
     if ('roiAssemblyMethod' in settings) roiAssemblyMethod = stringPreference(settings.roiAssemblyMethod, roiAssemblyMethod);
     if ('roiAssemblyConnectivity' in settings) roiAssemblyConnectivity = numberPreference(settings.roiAssemblyConnectivity, roiAssemblyConnectivity);
     if ('backgroundCorrection' in settings) backgroundCorrection = booleanPreference(settings.backgroundCorrection, backgroundCorrection);
-    if ('backgroundPercentile' in settings) backgroundPercentile = numberPreference(settings.backgroundPercentile, backgroundPercentile);
+    if ('backgroundFrameLimit' in settings) backgroundFrameLimit = clampBackgroundFrameLimit(numberPreference(settings.backgroundFrameLimit, backgroundFrameLimit), frameCount);
+    if ('backgroundMinFieldValue' in settings) backgroundMinFieldValue = numberPreference(settings.backgroundMinFieldValue, backgroundMinFieldValue);
+    if ('backgroundMaxFieldValue' in settings) backgroundMaxFieldValue = nullablePreferenceNumber(settings.backgroundMaxFieldValue, backgroundMaxFieldValue);
     if ('flatfieldCorrection' in settings) flatfieldCorrection = booleanPreference(settings.flatfieldCorrection, flatfieldCorrection);
     if ('flatfieldQ' in settings) flatfieldQ = numberPreference(settings.flatfieldQ, flatfieldQ);
     if ('flatfieldAxis' in settings) flatfieldAxis = numberPreference(settings.flatfieldAxis, flatfieldAxis);
     if ('flatfieldMinFieldValue' in settings) flatfieldMinFieldValue = numberPreference(settings.flatfieldMinFieldValue, flatfieldMinFieldValue);
     if ('flatfieldMaxFieldValue' in settings) flatfieldMaxFieldValue = nullablePreferenceNumber(settings.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    enforcePreprocessingCorrectionMode();
     if ('applyMask' in settings) applyMask = booleanPreference(settings.applyMask, applyMask);
     if ('cropEnabled' in settings) cropEnabled = booleanPreference(settings.cropEnabled, cropEnabled);
     if ('cropX' in settings) cropX = nullablePreferenceNumber(settings.cropX, cropX);
@@ -911,12 +929,15 @@
     roiAssemblyMethod = stringPreference(preferences.roiAssemblyMethod, roiAssemblyMethod);
     roiAssemblyConnectivity = numberPreference(preferences.roiAssemblyConnectivity, roiAssemblyConnectivity);
     backgroundCorrection = booleanPreference(preferences.backgroundCorrection, backgroundCorrection);
-    backgroundPercentile = numberPreference(preferences.backgroundPercentile, backgroundPercentile);
+    backgroundFrameLimit = clampBackgroundFrameLimit(numberPreference(preferences.backgroundFrameLimit, backgroundFrameLimit), frameCount);
+    backgroundMinFieldValue = numberPreference(preferences.backgroundMinFieldValue, backgroundMinFieldValue);
+    backgroundMaxFieldValue = nullablePreferenceNumber(preferences.backgroundMaxFieldValue, backgroundMaxFieldValue);
     flatfieldCorrection = booleanPreference(preferences.flatfieldCorrection, flatfieldCorrection);
     flatfieldQ = numberPreference(preferences.flatfieldQ, flatfieldQ);
     flatfieldAxis = numberPreference(preferences.flatfieldAxis, flatfieldAxis);
     flatfieldMinFieldValue = numberPreference(preferences.flatfieldMinFieldValue, flatfieldMinFieldValue);
     flatfieldMaxFieldValue = nullablePreferenceNumber(preferences.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
+    enforcePreprocessingCorrectionMode();
     applyMask = booleanPreference(preferences.applyMask, applyMask);
     cropEnabled = booleanPreference(preferences.cropEnabled, cropEnabled);
     cropX = nullablePreferenceNumber(preferences.cropX, cropX);
@@ -1025,7 +1046,10 @@
     flatfieldMinFieldValue = numberDefault(flatfield, 'flatfield_min_field_value', flatfieldMinFieldValue);
     flatfieldMaxFieldValue = nullableNumberDefault(flatfield, 'flatfield_max_field_value', flatfieldMaxFieldValue);
     backgroundCorrection = booleanDefault(preprocessing, 'background_correction', backgroundCorrection);
-    backgroundPercentile = numberDefault(preprocessing, 'background_percentile', backgroundPercentile);
+    backgroundFrameLimit = clampBackgroundFrameLimit(numberDefault(preprocessing, 'background_limit', backgroundFrameLimit), frameCount);
+    backgroundMinFieldValue = numberDefault(preprocessing, 'background_min_field_value', backgroundMinFieldValue);
+    backgroundMaxFieldValue = nullableNumberDefault(preprocessing, 'background_max_field_value', backgroundMaxFieldValue);
+    enforcePreprocessingCorrectionMode();
     applyMask = booleanDefault(preprocessing, 'apply_mask', applyMask);
     cropEnabled = booleanDefault(preprocessing, 'crop_enabled', cropEnabled);
     cropX = nullableNumberDefault(preprocessing, 'crop_x', cropX);
@@ -1319,14 +1343,20 @@
   }
 
   function preprocessingOptions() {
+    const backgroundWindow = backgroundCorrection ? backgroundFrameWindow() : null;
     return {
       background_correction: backgroundCorrection,
-      background_percentile: backgroundCorrection ? backgroundPercentile : undefined,
-      flatfield_correction: flatfieldCorrection,
-      flatfield_q: flatfieldCorrection ? flatfieldQ : undefined,
-      flatfield_axis: flatfieldCorrection ? flatfieldAxis : undefined,
-      flatfield_min_field_value: flatfieldCorrection ? flatfieldMinFieldValue : undefined,
-      flatfield_max_field_value: flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
+      background_asset_id: backgroundCorrection ? selectedAssetId || undefined : undefined,
+      background_start_frame: backgroundWindow?.startFrame,
+      background_end_frame: backgroundWindow?.endFrame,
+      background_limit: backgroundCorrection ? backgroundWindow?.limit : undefined,
+      background_min_field_value: backgroundCorrection ? backgroundMinFieldValue : undefined,
+      background_max_field_value: backgroundCorrection ? backgroundMaxFieldValue : undefined,
+      flatfield_correction: backgroundCorrection ? false : flatfieldCorrection,
+      flatfield_q: !backgroundCorrection && flatfieldCorrection ? flatfieldQ : undefined,
+      flatfield_axis: !backgroundCorrection && flatfieldCorrection ? flatfieldAxis : undefined,
+      flatfield_min_field_value: !backgroundCorrection && flatfieldCorrection ? flatfieldMinFieldValue : undefined,
+      flatfield_max_field_value: !backgroundCorrection && flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
       apply_mask: applyMask,
       crop_enabled: cropEnabled,
       crop_x: cropEnabled ? cropX : undefined,
@@ -1378,7 +1408,9 @@
 
   function preprocessingOptionsKey(
     backgroundEnabled: boolean,
-    backgroundValue: number,
+    backgroundLimitValue: number,
+    backgroundMinFieldValue: number,
+    backgroundMaxFieldValue: number | null,
     flatfieldEnabled: boolean,
     flatfieldValue: number,
     flatfieldAxisValue: number,
@@ -1391,14 +1423,20 @@
     cropHValue: number | null,
     invertEnabled: boolean
   ): string {
+    const backgroundWindow = backgroundEnabled ? backgroundFrameWindow(backgroundLimitValue) : null;
     return JSON.stringify({
       background_correction: backgroundEnabled,
-      background_percentile: backgroundEnabled ? backgroundValue : undefined,
-      flatfield_correction: flatfieldEnabled,
-      flatfield_q: flatfieldEnabled ? flatfieldValue : undefined,
-      flatfield_axis: flatfieldEnabled ? flatfieldAxisValue : undefined,
-      flatfield_min_field_value: flatfieldEnabled ? flatfieldMinFieldValue : undefined,
-      flatfield_max_field_value: flatfieldEnabled ? flatfieldMaxFieldValue : undefined,
+      background_asset_id: backgroundEnabled ? selectedAssetId || undefined : undefined,
+      background_start_frame: backgroundWindow?.startFrame,
+      background_end_frame: backgroundWindow?.endFrame,
+      background_limit: backgroundEnabled ? backgroundWindow?.limit : undefined,
+      background_min_field_value: backgroundEnabled ? backgroundMinFieldValue : undefined,
+      background_max_field_value: backgroundEnabled ? backgroundMaxFieldValue : undefined,
+      flatfield_correction: backgroundEnabled ? false : flatfieldEnabled,
+      flatfield_q: !backgroundEnabled && flatfieldEnabled ? flatfieldValue : undefined,
+      flatfield_axis: !backgroundEnabled && flatfieldEnabled ? flatfieldAxisValue : undefined,
+      flatfield_min_field_value: !backgroundEnabled && flatfieldEnabled ? flatfieldMinFieldValue : undefined,
+      flatfield_max_field_value: !backgroundEnabled && flatfieldEnabled ? flatfieldMaxFieldValue : undefined,
       crop_enabled: cropIsEnabled,
       crop_x: cropIsEnabled ? cropXValue : undefined,
       crop_y: cropIsEnabled ? cropYValue : undefined,
@@ -1406,6 +1444,64 @@
       crop_h: cropIsEnabled ? cropHValue : undefined,
       invert_intensity: invertEnabled
     });
+  }
+
+  function setBackgroundCorrection(enabled: boolean) {
+    backgroundCorrection = enabled;
+    if (enabled) flatfieldCorrection = false;
+    backgroundFrameLimit = clampBackgroundFrameLimit(backgroundFrameLimit, frameCount);
+  }
+
+  function setFlatfieldCorrection(enabled: boolean) {
+    flatfieldCorrection = enabled;
+    if (enabled) backgroundCorrection = false;
+  }
+
+  function enforcePreprocessingCorrectionMode() {
+    if (backgroundCorrection && flatfieldCorrection) flatfieldCorrection = false;
+    backgroundFrameLimit = clampBackgroundFrameLimit(backgroundFrameLimit, frameCount);
+  }
+
+  function backgroundFrameLimitMinimum(totalFrames = frameCount): number {
+    const total = Math.max(0, Math.round(totalFrames || 0));
+    return total > 0 ? Math.min(backgroundFrameLimitFloor, total) : 1;
+  }
+
+  function backgroundFrameLimitMaximum(totalFrames = frameCount): number {
+    return Math.max(backgroundFrameLimitMinimum(totalFrames), Math.round(totalFrames || 0));
+  }
+
+  function clampBackgroundFrameLimit(value: number, totalFrames = frameCount): number {
+    const min = backgroundFrameLimitMinimum(totalFrames);
+    const max = backgroundFrameLimitMaximum(totalFrames);
+    const parsed = Number(value);
+    const rounded = Number.isFinite(parsed) ? Math.round(parsed) : min;
+    return Math.min(Math.max(rounded, min), max);
+  }
+
+  function backgroundFrameWindow(limitValue = backgroundFrameLimit): { startFrame: number; endFrame: number; limit: number } {
+    const total = Math.max(1, Math.round(frameCount || 1));
+    const current = Math.min(Math.max(Math.round(selectedFrameNum || 1), 1), total);
+    const limit = clampBackgroundFrameLimit(limitValue, total);
+    const before = Math.floor((limit - 1) / 2);
+    const after = limit - before - 1;
+    let startFrame = current - before;
+    let endFrame = current + after;
+    if (startFrame < 1) {
+      endFrame = Math.min(total, endFrame + (1 - startFrame));
+      startFrame = 1;
+    }
+    if (endFrame > total) {
+      startFrame = Math.max(1, startFrame - (endFrame - total));
+      endFrame = total;
+    }
+    return { startFrame, endFrame, limit };
+  }
+
+  function backgroundFrameWindowLabel(): string {
+    if (!frameCount) return 'No frames';
+    const window = backgroundFrameWindow();
+    return `frames ${window.startFrame}-${window.endFrame}`;
   }
 
   function thresholdOptionsKey(
@@ -3258,12 +3354,33 @@
       </div>
 
       <label class="check-row">
-        <input type="checkbox" bind:checked={backgroundCorrection} />
+        <input
+          type="checkbox"
+          checked={backgroundCorrection}
+          on:change={(event) => setBackgroundCorrection((event.currentTarget as HTMLInputElement).checked)}
+        />
         Background correction
       </label>
+      {#if backgroundCorrection}
+        <label>
+          Background frames
+          <input
+            type="range"
+            min={backgroundFrameLimitMinimum()}
+            max={backgroundFrameLimitMaximum()}
+            step="1"
+            bind:value={backgroundFrameLimit}
+          />
+          <span class="range-value">{backgroundFrameLimit} ({backgroundFrameWindowLabel()})</span>
+        </label>
+      {/if}
 
       <label class="check-row">
-        <input type="checkbox" bind:checked={flatfieldCorrection} />
+        <input
+          type="checkbox"
+          checked={flatfieldCorrection}
+          on:change={(event) => setFlatfieldCorrection((event.currentTarget as HTMLInputElement).checked)}
+        />
         Flatfield correction
       </label>
       {#if flatfieldCorrection}
@@ -3297,7 +3414,7 @@
           </label>
           <label>
             Max field value
-            <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
+            <input type="range" min="0" max="255" step="1" bind:value={flatfieldMaxFieldValue} />
             <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
           </label>
           <label>
@@ -3306,6 +3423,19 @@
               <option value={0}>0</option>
               <option value={1}>1</option>
             </select>
+          </label>
+        </div>
+      {:else if backgroundCorrection}
+        <div class="form-grid compact-grid">
+          <label>
+            Min background field value
+            <input type="range" min="0" max="255" step="1" bind:value={backgroundMinFieldValue} />
+            <span class="range-value">{backgroundMinFieldValue}</span>
+          </label>
+          <label>
+            Max background field value
+            <input type="range" min="0" max="255" step="1" bind:value={backgroundMaxFieldValue} />
+            <span class="range-value">{backgroundMaxFieldValue ?? 'none'}</span>
           </label>
         </div>
       {/if}

@@ -533,7 +533,12 @@ export type SegmentationOptions = {
   frame_payload_kind?: 'original' | 'preprocessed' | null;
   apply_preprocessing?: boolean | null;
   background_correction?: boolean | null;
-  background_percentile?: number | null;
+  background_min_field_value?: number | null;
+  background_max_field_value?: number | null;
+  background_asset_id?: string | null;
+  background_start_frame?: number | null;
+  background_end_frame?: number | null;
+  background_limit?: number | null;
   flatfield_axis?: number | null;
   flatfield_min_field_value?: number | null;
   flatfield_max_field_value?: number | null;
@@ -692,7 +697,12 @@ export type FramePreprocessOptions = {
   crop_w?: number | null;
   crop_h?: number | null;
   background_correction?: boolean | null;
-  background_percentile?: number | null;
+  background_min_field_value?: number | null;
+  background_max_field_value?: number | null;
+  background_asset_id?: string | null;
+  background_start_frame?: number | null;
+  background_end_frame?: number | null;
+  background_limit?: number | null;
   invert_intensity?: boolean | null;
   store?: boolean;
   encoding?: 'png' | 'jpg' | 'raw' | 'zstd' | null;

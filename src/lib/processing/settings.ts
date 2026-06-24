@@ -42,7 +42,9 @@ export type ProcessingSettings = {
   roiAssemblyMethod?: string;
   roiAssemblyConnectivity?: number;
   backgroundCorrection?: boolean;
-  backgroundPercentile?: number;
+  backgroundFrameLimit?: number;
+  backgroundMinFieldValue?: number;
+  backgroundMaxFieldValue?: number | null;
   flatfieldCorrection?: boolean;
   flatfieldQ?: number;
   flatfieldAxis?: number;
@@ -152,7 +154,11 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   copy('applyPreprocessing');
 
   copy('backgroundCorrection');
-  if (settings.backgroundCorrection) copy('backgroundPercentile');
+  if (settings.backgroundCorrection) {
+    copy('backgroundFrameLimit');
+    copy('backgroundMinFieldValue');
+    copy('backgroundMaxFieldValue');
+  }
 
   copy('flatfieldCorrection');
   if (settings.flatfieldCorrection) {
