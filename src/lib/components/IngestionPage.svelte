@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import FileSelector from '$lib/components/FileSelector.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient } from '$lib/stores/session';
-  import type { DirectoryEntry, DirectoryListing, SystemConfigResponse } from '$lib/api/types';
+  import type { DirectoryListing, SystemConfigResponse } from '$lib/api/types';
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import { PROCESSING_PRESET_APPLIED_EVENT, pruneProcessingSettings } from '$lib/processing/settings';
   import {
@@ -10,7 +11,6 @@
     setLiveProcessingPresetFromSettings
   } from '$lib/stores/processingPresetSession';
   import { numberDefault, processingSection } from '$lib/utils/configDefaults';
-  import { formatBytes } from '$lib/utils/format';
   import {
     numberPreference,
     preferenceKey,
@@ -19,11 +19,9 @@
     writePreferences
   } from '$lib/utils/preferences';
 
-  let listing: DirectoryListing | null = null;
   let selected = new Set<string>();
-  let manualPaths = '';
   let currentPath = '.';
-  let loading = true;
+  let browserSource: DirectoryListing['source'] | null = null;
   let message: string | null = null;
   let error: string | null = null;
   let nTile = 2;
@@ -36,7 +34,6 @@
 
   type IngestionPreferences = {
     currentPath: string;
-    manualPaths: string;
     nTile: number;
     collections: string;
     metadataText: string;
@@ -44,7 +41,6 @@
 
   $: ingestionPreferenceSnapshot = {
     currentPath,
-    manualPaths,
     nTile,
     collections,
     metadataText
@@ -72,7 +68,6 @@
     restorePreferences();
     applyStoredLiveProcessingPreset();
     preferencesReady = true;
-    await loadDirectory();
   }
 
   function applyConfigDefaults(config: SystemConfigResponse | null) {
@@ -84,7 +79,6 @@
     const preferences = readPreferences<IngestionPreferences>(ingestionPreferenceKey);
     if (!preferences) return;
     currentPath = stringPreference(preferences.currentPath, currentPath);
-    manualPaths = stringPreference(preferences.manualPaths, manualPaths);
     nTile = numberPreference(preferences.nTile, nTile);
     collections = stringPreference(preferences.collections, collections);
     metadataText = stringPreference(preferences.metadataText, metadataText);
@@ -116,35 +110,25 @@
     applyProcessingSettings(preset.settings);
   }
 
-  async function loadDirectory(path = currentPath) {
+  async function loadBrowserDirectory(path = currentPath): Promise<DirectoryListing> {
     const client = getClient();
-    if (!client) return;
-    loading = true;
-    error = null;
-    try {
-      listing = await client.listRawDirectory(path);
-      currentPath = listing.path;
-      selected = new Set();
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    } finally {
-      loading = false;
-    }
+    if (!client) throw new Error('Connect to a Pelagia server before browsing files.');
+    const listing = await client.listRawDirectory(path);
+    browserSource = listing.source;
+    currentPath = listing.path;
+    return listing;
   }
 
-  function toggle(entry: DirectoryEntry) {
-    const next = new Set(selected);
-    if (next.has(entry.path)) next.delete(entry.path);
-    else next.add(entry.path);
-    selected = next;
+  function updateSelection(paths: string[]) {
+    selected = new Set(paths);
+  }
+
+  function updateCurrentPath(path: string) {
+    currentPath = path;
   }
 
   function selectedPaths(): string[] {
-    const explicit = manualPaths
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    return [...selected, ...explicit];
+    return [...selected];
   }
 
   async function queueIngestion() {
@@ -183,7 +167,7 @@
     }
     submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
     message = `Queued ${queued} ingestion job${queued === 1 ? '' : 's'}.`;
-    await loadDirectory(currentPath);
+    selected = new Set();
   }
 
   function queuedJobId(response: Record<string, unknown>): string | null {
@@ -207,54 +191,33 @@
   }
 </script>
 
-<div class="split-layout">
-  <section class="panel browser-panel">
+<div class="ingestion-layout">
+  <section class="panel ingestion-file-panel">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Server storage</p>
         <h2>Raw asset browser</h2>
       </div>
-      {#if loading}<span class="soft">Loading</span>{/if}
     </div>
 
-    <div class="pathbar">
-      <input bind:value={currentPath} placeholder="Server folder path" />
-      <button type="button" on:click={() => loadDirectory(currentPath)}>Open</button>
-    </div>
-
-    {#if listing?.source === 'registered-assets'}
+    {#if browserSource === 'registered-assets'}
       <p class="callout">The live file endpoint was not available, so this view is reconstructed from registered assets.</p>
     {/if}
 
-    <div class="file-list" role="list" aria-label="Server files">
-      {#if currentPath}
-        <button class="file-row" type="button" on:click={() => loadDirectory(currentPath.split('/').slice(0, -1).join('/'))}>
-          <span class="file-icon">..</span>
-          <span class="file-main">Parent folder</span>
-        </button>
-      {/if}
-      {#each listing?.entries ?? [] as entry}
-        <button
-          class="file-row"
-          class:selected={selected.has(entry.path)}
-          type="button"
-          on:dblclick={() => entry.kind === 'directory' && loadDirectory(entry.path)}
-          on:click={() => (entry.kind === 'directory' ? loadDirectory(entry.path) : toggle(entry))}
-        >
-          <span class="file-icon">{entry.kind === 'directory' ? 'DIR' : 'FILE'}</span>
-          <span class="file-main">
-            <strong>{entry.name}</strong>
-            <small>{entry.path}</small>
-          </span>
-          <span>{entry.kind === 'file' ? formatBytes(entry.size_bytes) : 'Folder'}</span>
-        </button>
-      {:else}
-        <p class="empty">No assets are visible here yet. Enter server-side paths manually to queue ingestion.</p>
-      {/each}
-    </div>
+    <FileSelector
+      mode="regular"
+      multiSelect={true}
+      selectableKinds={['file', 'directory']}
+      initialPath={currentPath}
+      selectedPaths={selectedPaths()}
+      loadDirectory={loadBrowserDirectory}
+      onSelectionChange={updateSelection}
+      onPathChange={updateCurrentPath}
+      label="Raw asset files"
+    />
   </section>
 
-  <section class="panel controls-panel">
+  <section class="panel ingestion-queue-panel">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">File ingestion</p>
@@ -262,38 +225,39 @@
       </div>
     </div>
 
-    <label>
-      Manual server paths
-      <textarea bind:value={manualPaths} rows="8" placeholder="/data/raw/video_001.avi&#10;/data/raw/video_002.avi"></textarea>
-    </label>
+    <div class="ingestion-queue-grid">
+      <div class="ingestion-queue-controls">
+        <div class="form-grid">
+          <label>
+            Tile count
+            <input type="number" min="1" bind:value={nTile} />
+          </label>
+          <label>
+            Collections
+            <input bind:value={collections} placeholder="cruise-2026,station-a" />
+          </label>
+        </div>
 
-    <div class="form-grid">
-      <label>
-        Tile count
-        <input type="number" min="1" bind:value={nTile} />
-      </label>
-      <label>
-        Collections
-        <input bind:value={collections} placeholder="cruise-2026,station-a" />
-      </label>
+        <label>
+          Metadata JSON
+          <textarea bind:value={metadataText} rows="5" placeholder={metadataPlaceholder}></textarea>
+        </label>
+
+        <div class="button-row">
+          <button type="button" on:click={queueIngestion}>Queue selected paths</button>
+          <p class="soft">{selected.size} selected from browser, {selectedPaths().length} total path{selectedPaths().length === 1 ? '' : 's'} ready.</p>
+        </div>
+        {#if message}<p class="success">{message}</p>{/if}
+        {#if error}<p class="form-error">{error}</p>{/if}
+      </div>
+
+      <QueueStatusSummary
+        title="Ingestion queue"
+        eyebrow="Live status"
+        stage="ingestion"
+        jobIds={submittedJobIds}
+        mode="compact"
+      />
     </div>
-
-    <label>
-      Metadata JSON
-      <textarea bind:value={metadataText} rows="5" placeholder={metadataPlaceholder}></textarea>
-    </label>
-
-    <button type="button" on:click={queueIngestion}>Queue selected paths</button>
-    <p class="soft">{selected.size} selected from browser, {selectedPaths().length} total path{selectedPaths().length === 1 ? '' : 's'} ready.</p>
-    {#if message}<p class="success">{message}</p>{/if}
-    {#if error}<p class="form-error">{error}</p>{/if}
-
-    <QueueStatusSummary
-      title="Ingestion queue"
-      eyebrow="Live status"
-      stage="ingestion"
-      jobIds={submittedJobIds}
-      mode="compact"
-    />
   </section>
 </div>

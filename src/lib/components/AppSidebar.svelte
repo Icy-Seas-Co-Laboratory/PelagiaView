@@ -25,6 +25,14 @@
     { id: 'system', label: 'System' }
   ] as const;
 
+  type SidebarGroupId = (typeof groups)[number]['id'];
+
+  $: activeGroup = dashboardViews.find((view) => view.id === activeView)?.group ?? 'analysis';
+
+  function groupViews(groupId: SidebarGroupId) {
+    return dashboardViews.filter((view) => view.group === groupId);
+  }
+
   function projectLabel(project: ProjectSummary): string {
     const label = project.project_name ?? project.name ?? project.project_key ?? project.id;
     return project.project_key && label !== project.project_key ? `${label} (${project.project_key})` : label;
@@ -45,15 +53,20 @@
 
   <nav class="sidebar-nav">
     {#each groups as group}
-      <section class="sidebar-group" aria-label={group.label}>
-        <p>{group.label}</p>
-        {#each dashboardViews.filter((view) => view.group === group.id) as view}
-          <a href={dashboardViewHref(view.id, currentUrl)} class:active={activeView === view.id} title={`${view.label}: ${view.detail}`}>
-            <span>{view.label}</span>
-            <small>{view.detail}</small>
-          </a>
-        {/each}
-      </section>
+      {@const views = groupViews(group.id)}
+      <details class="sidebar-group" class:active-sidebar-group={group.id === activeGroup} open={group.id === activeGroup}>
+        <summary title={`${group.label} pages`}>
+          <span>{group.label}</span>
+        </summary>
+        <div class="sidebar-group-items">
+          {#each views as view}
+            <a href={dashboardViewHref(view.id, currentUrl)} class:active={activeView === view.id} title={`${view.label}: ${view.detail}`}>
+              <span>{view.label}</span>
+              <small>{view.detail}</small>
+            </a>
+          {/each}
+        </div>
+      </details>
     {/each}
   </nav>
 

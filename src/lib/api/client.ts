@@ -710,16 +710,16 @@ export class PelagiaApiClient {
 
   async listRawDirectory(path = '.'): Promise<DirectoryListing> {
     try {
+      const params = isRootDirectoryRequest(path) ? {} : { directory: path };
       const response = await this.get<{
-        directory?: string;
-        entries?: Array<DirectoryEntry & { is_dir?: boolean }>;
-      }>('/live/files', { directory: path }, 0, { auth: 'none' });
+        directory?: string | null;
+        entries?: Array<DirectoryEntry & { is_dir?: boolean; exists?: boolean }>;
+        roots?: Array<DirectoryEntry & { is_dir?: boolean; exists?: boolean }>;
+      }>('/live/files', params, 0, { auth: 'none' });
+      const directory = response.directory ?? '.';
       return {
-        path: response.directory ?? path,
-        entries: (response.entries ?? []).map((entry) => ({
-          ...entry,
-          kind: entry.is_dir ? 'directory' : 'file'
-        })),
+        path: directory,
+        entries: (response.entries ?? response.roots ?? []).map((entry) => normalizeDirectoryEntry(entry, directory)),
         source: 'live-files'
       };
     } catch (error) {
@@ -793,6 +793,33 @@ function compact<T extends Record<string, unknown>>(input: T): T {
   return Object.fromEntries(
     Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== '')
   ) as T;
+}
+
+function isRootDirectoryRequest(path: string) {
+  const trimmed = path.trim();
+  return !trimmed || trimmed === '.';
+}
+
+function normalizeDirectoryEntry(
+  entry: DirectoryEntry & { is_dir?: boolean; exists?: boolean },
+  directory: string
+): DirectoryEntry {
+  const explicitKind = entry.kind === 'directory' || entry.kind === 'file' ? entry.kind : null;
+  const kind = explicitKind ?? (entry.is_dir ? 'directory' : 'file');
+  const path = entry.path || pathFromDirectoryEntry(directory, entry);
+  return {
+    ...entry,
+    path,
+    kind
+  };
+}
+
+function pathFromDirectoryEntry(directory: string, entry: DirectoryEntry) {
+  if (entry.relative_path) {
+    if (!directory || directory === '.') return entry.relative_path;
+    return `${directory.replace(/\/+$/, '')}/${entry.relative_path.replace(/^\/+/, '')}`;
+  }
+  return entry.name;
 }
 
 async function responseDetail(response: Response): Promise<unknown> {

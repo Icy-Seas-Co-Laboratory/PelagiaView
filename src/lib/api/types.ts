@@ -509,6 +509,7 @@ export type DirectoryEntry = {
   kind: 'file' | 'directory';
   is_dir?: boolean;
   size_bytes?: number;
+  created_at?: string | number;
   modified_at?: string | number;
   asset_id?: string;
 };
