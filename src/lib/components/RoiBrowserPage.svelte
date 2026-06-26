@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
@@ -64,6 +64,8 @@
   let fullResolutionTileKeys = new Set<string>();
   let tileScroller: HTMLElement;
   let loadMoreSentinel: HTMLElement;
+  let pageScroller: HTMLElement | null = null;
+  let lastRequestedAppendOffset: number | null = null;
   const roiBrowserPreferenceKey = 'pelagia-view:roi-browser:v1';
   const pageSize = 120;
   const frameDetectionBatchSize = 100;
@@ -96,6 +98,7 @@
     detailFrameSourceDimensions
   );
   $: resetFrameContextImage(detailFrameUrl);
+  $: syncPageScrollListener(tileScroller);
   $: roiPreferenceSnapshot = {
     selectedAssetId,
     collection,
@@ -135,14 +138,24 @@
     }
   });
 
+  onDestroy(() => {
+    detachPageScrollListener();
+  });
+
   async function loadDetections(reset = false) {
     const client = getClient();
     if (!client || loading || (!reset && !hasMore)) return;
+    const offset = reset ? 0 : nextOffset;
+    if (!reset && offset === lastRequestedAppendOffset) return;
     loading = true;
     error = null;
-    const offset = reset ? 0 : nextOffset;
     const serial = ++requestSerial;
-    if (reset) fullResolutionTileKeys = new Set();
+    if (reset) {
+      fullResolutionTileKeys = new Set();
+      lastRequestedAppendOffset = null;
+    } else {
+      lastRequestedAppendOffset = offset;
+    }
     try {
       const response = await client.searchDetectionsPage(currentFilters(offset));
       const page = response.detections ?? [];
@@ -151,11 +164,10 @@
       nextOffset = response.page?.next_offset ?? offset + page.length;
       hasMore = response.page?.next_offset !== null && response.page?.next_offset !== undefined;
     } catch (err) {
+      if (!reset) lastRequestedAppendOffset = null;
       error = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
-      await tick();
-      maybeLoadMoreFromViewport();
     }
   }
 
@@ -295,23 +307,37 @@
 
   function maybeLoadMore(event: Event) {
     const scroller = event.currentTarget as HTMLElement;
+    if (!scroller || loading || !hasMore) return;
     const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    if (!loading && hasMore && remaining < 700) {
+    if (remaining < 700) {
       void loadDetections(false);
     }
   }
 
-  function maybeLoadMoreFromViewport() {
-    if (!loadMoreSentinel || loading || !hasMore || typeof window === 'undefined') return;
-    const rect = loadMoreSentinel.getBoundingClientRect();
-    if (rect.top < window.innerHeight + 700) {
+  function maybeLoadMoreFromPageScroll(event: Event) {
+    const scroller = event.currentTarget as HTMLElement;
+    if (!scroller || loading || !hasMore || !loadMoreSentinel) return;
+    const remaining = loadMoreSentinel.getBoundingClientRect().top - scroller.getBoundingClientRect().bottom;
+    if (remaining < 700) {
       void loadDetections(false);
     }
+  }
+
+  function syncPageScrollListener(scroller: HTMLElement | undefined) {
+    const nextScroller = scroller?.closest('.page-scroll-content') as HTMLElement | null;
+    if (nextScroller === pageScroller) return;
+    detachPageScrollListener();
+    pageScroller = nextScroller;
+    pageScroller?.addEventListener('scroll', maybeLoadMoreFromPageScroll, { passive: true });
+  }
+
+  function detachPageScrollListener() {
+    pageScroller?.removeEventListener('scroll', maybeLoadMoreFromPageScroll);
+    pageScroller = null;
   }
 
   function scrollToTop() {
     tileScroller?.scrollTo({ top: 0, behavior: 'smooth' });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function openRoiDetail(detection: DetectionSummary) {
@@ -996,8 +1022,6 @@
     }));
   }
 </script>
-
-<svelte:window on:scroll={maybeLoadMoreFromViewport} on:resize={maybeLoadMoreFromViewport} />
 
 <div class="roi-browser-layout">
   <aside class="panel roi-filter-panel">

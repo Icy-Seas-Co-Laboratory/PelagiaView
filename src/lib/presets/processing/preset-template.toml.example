@@ -6,6 +6,9 @@
 # name = "My preset"
 # description = "Short description shown in PelagiaView."
 
+[settings.ingestion]
+# ingestionTileCount = 2
+
 [settings.preprocessing]
 # preprocessingEncoding = "png"
 # backgroundCorrection = true
@@ -104,4 +107,3 @@
 # refinementEncoding = "auto"
 # refinementStore = true
 # refinementDryRun = false
-

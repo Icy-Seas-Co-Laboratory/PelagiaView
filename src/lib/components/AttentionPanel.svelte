@@ -15,6 +15,7 @@
   let error: string | null = null;
   let localClearing = false;
   let cancelled = false;
+  const staleWorkerThresholdMs = 5 * 60 * 1000;
 
   $: staleWorkers = workers.filter(isWorkerStale);
   $: hasAttention = jobs.length > 0 || staleWorkers.length > 0;
@@ -75,7 +76,7 @@
     if (!heartbeat) return false;
     const parsed = Date.parse(heartbeat);
     if (!Number.isFinite(parsed)) return false;
-    return Date.now() - parsed > 60_000;
+    return Date.now() - parsed > staleWorkerThresholdMs;
   }
 </script>
 

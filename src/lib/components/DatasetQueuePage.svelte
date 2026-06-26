@@ -118,7 +118,11 @@
   let lastCatalogKey = '';
   let preferencesReady = false;
   let submittedJobIds: string[] = [];
-  let frameBatchSize = mode === 'roi_refinement' ? 2500 : 100;
+  let frameBatchSize = mode === 'roi_refinement' ? 5000 : 250;
+  let boundedFrameBatchSizeValue = frameBatchSize;
+  let batchSizeMinimum = 20;
+  let batchSizeMaximum = 1000;
+  let batchSizeInterval = 20;
   let lastBatchMode: QueueMode | null = null;
   let priority: number | null = null;
 
@@ -367,6 +371,10 @@
     lastBatchMode = mode;
     frameBatchSize = defaultBatchSize();
   }
+  $: batchSizeMinimum = batchSizeMin();
+  $: batchSizeMaximum = batchSizeMax();
+  $: batchSizeInterval = batchSizeStep();
+  $: boundedFrameBatchSizeValue = boundedBatchSize(frameBatchSize);
   $: datasetQueuePreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(datasetQueuePreferenceKey(), datasetQueuePreferenceSnapshot);
   $: if (preferencesReady) {
@@ -556,7 +564,7 @@
     selectedPreprocessStates = stringSetPreference(preferences.selectedPreprocessStates, selectedPreprocessStates);
     selectedDetectionStates = stringSetPreference(preferences.selectedDetectionStates, selectedDetectionStates);
     selectedRefinementStates = stringSetPreference(preferences.selectedRefinementStates, selectedRefinementStates);
-    frameBatchSize = boundedBatchSize(numberPreference(preferences.frameBatchSize, frameBatchSize));
+    frameBatchSize = restoredFrameBatchSize(preferences.frameBatchSize);
     priority = nullablePreferenceNumber(preferences.priority, priority);
     flatfieldCorrection = booleanPreference(preferences.flatfieldCorrection, flatfieldCorrection);
     flatfieldQ = numberPreference(preferences.flatfieldQ, flatfieldQ);
@@ -666,7 +674,10 @@
       priority: _priority,
       ...settings
     } = buildPreferenceSnapshot();
-    return pruneProcessingSettings(settings);
+    return pruneProcessingSettings({
+      ...currentLiveProcessingPreset().settings,
+      ...settings
+    });
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
@@ -1216,12 +1227,6 @@
     return frame.detectionCount;
   }
 
-  function boundedFrameBatchSize(): number {
-    const minimum = batchSizeMin();
-    const maximum = batchSizeMax();
-    return Math.min(maximum, Math.max(minimum, Math.round(Number(frameBatchSize) || defaultBatchSize())));
-  }
-
   function batchSizeMin(): number {
     return mode === 'roi_refinement' ? 100 : 20;
   }
@@ -1235,7 +1240,16 @@
   }
 
   function defaultBatchSize(): number {
+    return mode === 'roi_refinement' ? 5000 : 250;
+  }
+
+  function legacyDefaultBatchSize(): number {
     return mode === 'roi_refinement' ? 2500 : 100;
+  }
+
+  function restoredFrameBatchSize(value: unknown): number {
+    const parsed = numberPreference(value, defaultBatchSize());
+    return boundedBatchSize(parsed === legacyDefaultBatchSize() ? defaultBatchSize() : parsed);
   }
 
   function boundedBatchSize(batchSize: number): number {
@@ -1336,7 +1350,7 @@
     }
 
     if (mode === 'roi_refinement') {
-      const batches = await detectionBatchesForFrames(client, filteredFrames, boundedFrameBatchSize()).catch((err) => {
+      const batches = await detectionBatchesForFrames(client, filteredFrames, boundedFrameBatchSizeValue).catch((err) => {
         error = err instanceof Error ? err.message : String(err);
         return [] as DetectionBatch[];
       });
@@ -1370,7 +1384,7 @@
       return;
     }
 
-    const batches = frameBatches(filteredFrames, boundedFrameBatchSize());
+    const batches = frameBatches(filteredFrames, boundedFrameBatchSizeValue);
     if (batches.length === 0) {
       queueing = false;
       return;
@@ -1875,12 +1889,12 @@
           Batch size
           <input
             type="range"
-            min={batchSizeMin()}
-            max={batchSizeMax()}
-            step={batchSizeStep()}
+            min={batchSizeMinimum}
+            max={batchSizeMaximum}
+            step={batchSizeInterval}
             bind:value={frameBatchSize}
           />
-          <span class="range-value">{boundedFrameBatchSize()} frames per job</span>
+          <span class="range-value">{boundedFrameBatchSizeValue} frames per job</span>
         </label>
         <label>
           Priority
@@ -2017,12 +2031,12 @@
             Batch size
             <input
               type="range"
-              min={batchSizeMin()}
-              max={batchSizeMax()}
-              step={batchSizeStep()}
+              min={batchSizeMinimum}
+              max={batchSizeMaximum}
+              step={batchSizeInterval}
               bind:value={frameBatchSize}
             />
-            <span class="range-value">{boundedFrameBatchSize()} frames per job</span>
+            <span class="range-value">{boundedFrameBatchSizeValue} frames per job</span>
           </label>
           <label>
             Priority
@@ -2380,12 +2394,12 @@
               Batch size
               <input
                 type="range"
-                min={batchSizeMin()}
-                max={batchSizeMax()}
-                step={batchSizeStep()}
+                min={batchSizeMinimum}
+                max={batchSizeMaximum}
+                step={batchSizeInterval}
                 bind:value={frameBatchSize}
               />
-              <span class="range-value">{boundedFrameBatchSize()} ROIs per job</span>
+              <span class="range-value">{boundedFrameBatchSizeValue} ROIs per job</span>
             </label>
             <label>
               Priority

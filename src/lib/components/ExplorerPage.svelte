@@ -636,6 +636,7 @@
 
   function captureProcessingSettings(): ProcessingSettings {
     return pruneProcessingSettings({
+      ...currentLiveProcessingPreset().settings,
       thresholdMethod,
       manualThreshold,
       thresholdingMaximumValue,

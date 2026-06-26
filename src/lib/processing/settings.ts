@@ -1,4 +1,5 @@
 export type ProcessingSettings = {
+  ingestionTileCount?: number;
   preprocessingEncoding?: string;
   framePayloadKind?: 'original' | 'preprocessed';
   applyPreprocessing?: boolean;
@@ -148,6 +149,8 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
     const value = settings[key];
     if (value !== undefined && value !== null && value !== '') pruned[key] = value as never;
   };
+
+  copy('ingestionTileCount');
 
   copy('preprocessingEncoding');
   copy('framePayloadKind');

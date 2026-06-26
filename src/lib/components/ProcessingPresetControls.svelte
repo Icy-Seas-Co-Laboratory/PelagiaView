@@ -24,6 +24,11 @@
 
   const settingGroups: Array<{ id: string; label: string; keys: string[] }> = [
     {
+      id: 'ingestion',
+      label: 'Ingestion',
+      keys: ['ingestionTileCount']
+    },
+    {
       id: 'preprocessing',
       label: 'Preprocessing',
       keys: [

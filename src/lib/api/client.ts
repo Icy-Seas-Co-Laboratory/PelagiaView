@@ -146,6 +146,7 @@ type CreateUserRequest = {
 
 type RequestOptions = {
   auth?: 'required' | 'none';
+  cache?: RequestCache;
 };
 
 let activeApiToken: string | null = null;
@@ -230,9 +231,14 @@ export class PelagiaApiClient {
 
   async systemStatus(projectIdOrKey?: string | null, options: { deep_kvstore?: boolean } = {}): Promise<SystemStatus> {
     if (projectIdOrKey) {
-      return this.get<SystemStatus>(`/system/status/${encodeURIComponent(projectIdOrKey)}`, compact(options), 1500);
+      return this.get<SystemStatus>(
+        `/system/status/${encodeURIComponent(projectIdOrKey)}`,
+        compact(options),
+        0,
+        { cache: 'no-store' }
+      );
     }
-    return this.get<SystemStatus>('/system/status', compact(options), 1500, { auth: 'none' });
+    return this.get<SystemStatus>('/system/status', compact(options), 0, { auth: 'none', cache: 'no-store' });
   }
 
   async systemUse(): Promise<Record<string, unknown>> {
@@ -313,7 +319,7 @@ export class PelagiaApiClient {
   }
 
   async kvStoreOverview(options: KvStoreOverviewOptions = {}): Promise<KvStoreOverview> {
-    return this.get<KvStoreOverview>('/kvstore', compact(options), 1500, { auth: 'none' });
+    return this.get<KvStoreOverview>('/kvstore', compact(options), 0, { auth: 'none', cache: 'no-store' });
   }
 
   async listJobs(options: number | JobListOptions = 100): Promise<Job[]> {
@@ -728,6 +734,7 @@ export class PelagiaApiClient {
   private async request<T>(input: string, init?: RequestInit, options: RequestOptions = {}): Promise<T> {
     let response: Response;
     const requestInit = options.auth === 'none' ? { ...(init ?? {}) } : authenticatedRequestInit(init, this.token);
+    if (options.cache) requestInit.cache = options.cache;
     const started = performance.now();
     try {
       response = await fetch(input, requestInit);

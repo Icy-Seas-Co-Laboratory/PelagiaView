@@ -3,6 +3,9 @@ id = "linescan-default"
 name = "Linescan default"
 description = "Manual thresholding with flatfield correction for linescan frame review."
 
+[settings.ingestion]
+ingestionTileCount = 2
+
 [settings.preprocessing]
 flatfieldCorrection = true
 flatfieldQ = 0.5
@@ -28,4 +31,3 @@ padding = 50
 [settings.roi_storage]
 roiEncoding = "zstd"
 alwaysStoreMask = true
-

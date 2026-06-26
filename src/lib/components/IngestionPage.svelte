@@ -3,6 +3,12 @@
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient } from '$lib/stores/session';
   import type { DirectoryEntry, DirectoryListing, SystemConfigResponse } from '$lib/api/types';
+  import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
+  import { PROCESSING_PRESET_APPLIED_EVENT, pruneProcessingSettings } from '$lib/processing/settings';
+  import {
+    currentLiveProcessingPreset,
+    setLiveProcessingPresetFromSettings
+  } from '$lib/stores/processingPresetSession';
   import { numberDefault, processingSection } from '$lib/utils/configDefaults';
   import { formatBytes } from '$lib/utils/format';
   import {
@@ -44,17 +50,30 @@
     metadataText
   };
   $: if (preferencesReady) writePreferences(ingestionPreferenceKey, ingestionPreferenceSnapshot);
+  $: if (preferencesReady) {
+    ingestionPreferenceSnapshot;
+    setLiveProcessingPresetFromSettings(captureProcessingSettings());
+  }
 
-  onMount(async () => {
+  onMount(() => {
+    window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+    void initializeIngestion();
+    return () => {
+      window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+    };
+  });
+
+  async function initializeIngestion() {
     const client = getClient();
     if (client) {
       const config = await client.systemConfig().catch(() => null);
       applyConfigDefaults(config);
     }
     restorePreferences();
+    applyStoredLiveProcessingPreset();
     preferencesReady = true;
     await loadDirectory();
-  });
+  }
 
   function applyConfigDefaults(config: SystemConfigResponse | null) {
     const videoIngest = processingSection(config, 'video_ingest');
@@ -69,6 +88,32 @@
     nTile = numberPreference(preferences.nTile, nTile);
     collections = stringPreference(preferences.collections, collections);
     metadataText = stringPreference(preferences.metadataText, metadataText);
+  }
+
+  function captureProcessingSettings(): ProcessingSettings {
+    return pruneProcessingSettings({
+      ...currentLiveProcessingPreset().settings,
+      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1)))
+    });
+  }
+
+  function applyProcessingSettings(settings: ProcessingSettings) {
+    if ('ingestionTileCount' in settings) {
+      nTile = Math.max(1, Math.round(numberPreference(settings.ingestionTileCount, nTile)));
+    }
+  }
+
+  function applyStoredLiveProcessingPreset() {
+    const preset = currentLiveProcessingPreset();
+    if (preset?.source === 'live' && preset.settings) {
+      applyProcessingSettings(preset.settings);
+    }
+  }
+
+  function handleHeaderProcessingPresetApplied(event: Event) {
+    const preset = (event as CustomEvent<ProcessingPreset>).detail;
+    if (!preset?.settings) return;
+    applyProcessingSettings(preset.settings);
   }
 
   async function loadDirectory(path = currentPath) {

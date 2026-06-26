@@ -3,6 +3,9 @@ id = "fast-preview"
 name = "Fast preview"
 description = "Minimal threshold and mask work for quick interactive passes while tuning frames."
 
+[settings.ingestion]
+ingestionTileCount = 2
+
 [settings.threshold]
 thresholdMethod = "bounded_otsu"
 thresholdingMaximumValue = 100
@@ -26,4 +29,3 @@ alwaysStoreMask = false
 refinementOverlapFraction = 0.2
 refinementAllowFrameExpansion = true
 refinementMaxIterations = 2
-

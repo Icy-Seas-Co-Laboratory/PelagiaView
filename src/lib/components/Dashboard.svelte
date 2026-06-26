@@ -8,6 +8,7 @@
   import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
   import HeaderProcessingPresetSelect from './HeaderProcessingPresetSelect.svelte';
   import IngestionPage from './IngestionPage.svelte';
+  import FrameBrowserPage from './FrameBrowserPage.svelte';
   import PageHeader from './PageHeader.svelte';
   import PreferencesModal from './PreferencesModal.svelte';
   import RoiBrowserPage from './RoiBrowserPage.svelte';
@@ -98,6 +99,8 @@
           <ExplorerPage />
         {:else if activeTab === 'rois'}
           <RoiBrowserPage />
+        {:else if activeTab === 'frames'}
+          <FrameBrowserPage />
         {:else if activeTab === 'admin'}
           <AdministrationPage />
         {:else}

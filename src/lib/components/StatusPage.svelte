@@ -30,6 +30,7 @@
   let workerPreferencesReady = false;
   const workerPageSize = 5;
   const statusPreferenceKey = 'pelagia-view:status:v1';
+  const staleWorkerThresholdMs = 5 * 60 * 1000;
   const terminalReviewStatuses = ['failed', 'dead_lettered'];
   const pausedReviewStatuses = ['paused'];
   const stageCards: Array<{
@@ -350,7 +351,7 @@
     if (!heartbeat) return false;
     const parsed = Date.parse(heartbeat);
     if (!Number.isFinite(parsed)) return false;
-    return Date.now() - parsed > 60_000;
+    return Date.now() - parsed > staleWorkerThresholdMs;
   }
 
   function currentJobLabel(worker: WorkerSession): string {

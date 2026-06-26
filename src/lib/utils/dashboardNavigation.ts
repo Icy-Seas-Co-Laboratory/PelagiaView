@@ -5,6 +5,7 @@ export type DashboardView =
   | 'segmentation'
   | 'roi_refinement'
   | 'explorer'
+  | 'frames'
   | 'rois'
   | 'logs'
   | 'admin';
@@ -21,6 +22,7 @@ export const defaultDashboardView: DashboardView = 'rois';
 
 export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'rois', label: 'ROI Browser', detail: 'detections gallery', group: 'analysis' },
+  { id: 'frames', label: 'Frame Browser', detail: 'raw and processed frames', group: 'analysis' },
   { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
   { id: 'status', label: 'Status', detail: 'queue and workers', group: 'system' },
   { id: 'admin', label: 'Administration', detail: 'projects and users', group: 'system' },
