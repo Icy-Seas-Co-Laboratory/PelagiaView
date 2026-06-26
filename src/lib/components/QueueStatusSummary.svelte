@@ -20,6 +20,9 @@
   let summary: JobsSummaryResponse | null = null;
   let loading = false;
   let error: string | null = null;
+  let loadSequence = 0;
+  let lastFilterKey = '';
+  let mounted = false;
 
   const canonicalStages: Record<JobStageKey, string> = {
     ingestion: 'extract_frames',
@@ -34,37 +37,47 @@
   $: visibleJobs = filterJobs(sourceJobs, { stages: stageAliases, jobIds });
   $: counts = summary ? aggregateCounts(summary.total) : countJobs(visibleJobs);
   $: recentJobs = [...visibleJobs].sort(compareJobUpdated).slice(0, mode === 'compact' ? 5 : visibleJobs.length);
+  $: filterKey = JSON.stringify({ stage, stages, jobIds });
+  $: if (filterKey !== lastFilterKey) {
+    lastFilterKey = filterKey;
+    summary = null;
+    polledJobs = [];
+    if (mounted && poll && !jobs) void loadStatus();
+  }
+
+  async function loadStatus() {
+    const client = getClient();
+    if (!client || jobs || !poll) return;
+    const sequence = ++loadSequence;
+    loading = true;
+    error = null;
+    try {
+      if (summaryStage && jobIds.length === 0) {
+        const nextSummary = await client.jobsSummary({
+          stage: summaryStage,
+          include_recent: true,
+          recent_limit: limit
+        });
+        if (sequence === loadSequence) summary = nextSummary;
+      } else {
+        const nextJobs = await client.listJobs(limit);
+        if (sequence === loadSequence) polledJobs = nextJobs;
+      }
+    } catch (err) {
+      if (sequence === loadSequence) error = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (sequence === loadSequence) loading = false;
+    }
+  }
 
   onMount(() => {
+    mounted = true;
     if (jobs || !poll) return;
-    let cancelled = false;
-    async function load() {
-      const client = getClient();
-      if (!client) return;
-      loading = true;
-      error = null;
-      try {
-        if (summaryStage && jobIds.length === 0) {
-          const nextSummary = await client.jobsSummary({
-            stage: summaryStage,
-            include_recent: true,
-            recent_limit: limit
-          });
-          if (!cancelled) summary = nextSummary;
-        } else {
-          const nextJobs = await client.listJobs(limit);
-          if (!cancelled) polledJobs = nextJobs;
-        }
-      } catch (err) {
-        if (!cancelled) error = err instanceof Error ? err.message : String(err);
-      } finally {
-        if (!cancelled) loading = false;
-      }
-    }
-    void load();
-    const timer = window.setInterval(load, 5000);
+    void loadStatus();
+    const timer = window.setInterval(loadStatus, 5000);
     return () => {
-      cancelled = true;
+      mounted = false;
+      loadSequence += 1;
       window.clearInterval(timer);
     };
   });

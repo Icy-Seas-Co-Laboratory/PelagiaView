@@ -324,12 +324,12 @@ export class PelagiaApiClient {
 
   async listJobs(options: number | JobListOptions = 100): Promise<Job[]> {
     const params = typeof options === 'number' ? { limit: options } : options;
-    const response = await this.get<{ jobs: Job[] }>('/jobs', params, 1500);
+    const response = await this.get<{ jobs: Job[] }>('/jobs', params, 0, { cache: 'no-store' });
     return response.jobs ?? [];
   }
 
   async jobsSummary(options: JobsSummaryOptions = {}): Promise<JobsSummaryResponse> {
-    return this.get<JobsSummaryResponse>('/jobs/summary', options, 1500);
+    return this.get<JobsSummaryResponse>('/jobs/summary', options, 0, { cache: 'no-store' });
   }
 
   async clearJobs(options: JobsClearOptions = {}): Promise<JobsClearResponse> {
