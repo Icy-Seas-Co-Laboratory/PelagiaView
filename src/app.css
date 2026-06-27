@@ -1139,6 +1139,11 @@ button.compact-action {
   font-size: 0.84rem;
 }
 
+.metric small {
+  color: #60746c;
+  font-size: 0.78rem;
+}
+
 .metric strong {
   font-size: 1.25rem;
 }

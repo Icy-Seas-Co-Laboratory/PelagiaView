@@ -4,9 +4,24 @@ export type HealthResponse = {
   kvstore_configured?: boolean;
 };
 
+export type KvStoreStatus = Record<string, unknown> & {
+  initialized?: boolean;
+  total_file_bytes?: number | string;
+  total_physical_file_bytes?: number | string;
+  total_storage_file_bytes?: number | string;
+  total_sqlite_file_bytes?: number | string;
+  total_blob_file_bytes?: number | string;
+  total_index_file_bytes?: number | string;
+  total_stored_payload_bytes?: number | string;
+  largest_blob_file_size?: number | string;
+  largest_blob_file_bytes?: number | string;
+  largest_blob_bytes?: number | string;
+  deep?: boolean;
+};
+
 export type SystemStatus = {
   postgres?: Record<string, unknown>;
-  kvstore?: Record<string, unknown>;
+  kvstore?: KvStoreStatus;
   queue?: Record<string, number>;
   workers?: Record<string, number>;
 };
@@ -102,11 +117,7 @@ export type KvStoreOverview = {
   configured_hash_algorithm?: string;
   configured_prefix_length?: number;
   total_sqlite_file_bytes?: number;
-  status?: Record<string, unknown> & {
-    total_sqlite_file_bytes?: number | string;
-    total_stored_payload_bytes?: number | string;
-    deep?: boolean;
-  };
+  status?: KvStoreStatus;
   health?: Record<string, unknown>;
 };
 

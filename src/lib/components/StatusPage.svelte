@@ -7,7 +7,7 @@
   import StageStatusCard from '$lib/components/StageStatusCard.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type { Job, JobsSummaryResponse, KvStoreOverview, SystemStatus, WorkerSession } from '$lib/api/types';
-  import { formatCount, formatDate, numericValue, statusTone } from '$lib/utils/format';
+  import { formatBytes, formatCount, formatDate, numericValue, statusTone } from '$lib/utils/format';
   import { dashboardViewHref, type DashboardView } from '$lib/utils/dashboardNavigation';
 
   let status: SystemStatus | null = $session.systemStatus;
@@ -243,10 +243,36 @@
   }
 
   function kvstoreTotalFileBytes(): number | null {
+    const totalBlobFileBytes = firstFiniteNumber(
+      status?.kvstore?.total_blob_file_bytes,
+      kvstore?.status?.total_blob_file_bytes
+    );
+    const totalIndexFileBytes = firstFiniteNumber(
+      status?.kvstore?.total_index_file_bytes,
+      kvstore?.status?.total_index_file_bytes
+    );
     return firstFiniteNumber(
+      status?.kvstore?.total_file_bytes,
+      status?.kvstore?.total_physical_file_bytes,
+      status?.kvstore?.total_storage_file_bytes,
       status?.kvstore?.total_sqlite_file_bytes,
+      kvstore?.status?.total_file_bytes,
+      kvstore?.status?.total_physical_file_bytes,
+      kvstore?.status?.total_storage_file_bytes,
       kvstore?.status?.total_sqlite_file_bytes,
-      kvstore?.total_sqlite_file_bytes
+      kvstore?.total_sqlite_file_bytes,
+      totalBlobFileBytes === null ? null : totalBlobFileBytes + (totalIndexFileBytes ?? 0)
+    );
+  }
+
+  function kvstoreLargestBlobFileBytes(): number | null {
+    return firstFiniteNumber(
+      status?.kvstore?.largest_blob_file_size,
+      status?.kvstore?.largest_blob_file_bytes,
+      status?.kvstore?.largest_blob_bytes,
+      kvstore?.status?.largest_blob_file_size,
+      kvstore?.status?.largest_blob_file_bytes,
+      kvstore?.status?.largest_blob_bytes
     );
   }
 
@@ -261,9 +287,8 @@
     return null;
   }
 
-  function formatGigabytes(value: number | null): string {
-    if (value === null) return 'Unknown';
-    return `${(value / 1024 ** 3).toFixed(2)} GB`;
+  function formatByteMetric(value: number | null): string {
+    return value === null ? 'Unknown' : formatBytes(value);
   }
 
   function lastRefreshedLabel(): string {
@@ -465,7 +490,8 @@
       </div>
       <div class="metric">
         <span>KVStore size</span>
-        <strong>{formatGigabytes(kvstoreTotalFileBytes())}</strong>
+        <strong>{formatByteMetric(kvstoreTotalFileBytes())}</strong>
+        <small>Largest blob {formatByteMetric(kvstoreLargestBlobFileBytes())}</small>
       </div>
     </div>
 
