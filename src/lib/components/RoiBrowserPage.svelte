@@ -1649,10 +1649,12 @@
                   type="button"
                   on:click={() => (selectedDetection = detection)}
                 >
-                  <KonvaImageCanvas
-                    spec={roiRenderSpec(detection, 132, 112, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
-                    mode="thumbnail"
-                  />
+                  <div class="frame-roi-thumbnail-image">
+                    <KonvaImageCanvas
+                      spec={roiRenderSpec(detection, 132, 112, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
+                      mode="thumbnail"
+                    />
+                  </div>
                   <span>ROI {detection.roi_index ?? detection.id}</span>
                 </button>
               {/if}

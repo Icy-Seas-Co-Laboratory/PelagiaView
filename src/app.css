@@ -3464,6 +3464,7 @@ button.job-action-muted:hover:not(:disabled) {
 
 .frame-roi-thumbnail {
   display: grid;
+  grid-template-rows: 112px auto;
   gap: 0.25rem;
   min-width: 0;
   border: 1px solid #dce7e3;
@@ -3472,6 +3473,28 @@ button.job-action-muted:hover:not(:disabled) {
   color: #263a33;
   background: #fbfdfc;
   box-shadow: none;
+}
+
+.frame-roi-thumbnail-image {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 112px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #111916;
+}
+
+.frame-roi-thumbnail-image .konva-image-canvas {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+}
+
+.frame-roi-thumbnail-image .konva-image-stage {
+  display: grid;
+  place-items: center;
 }
 
 .frame-roi-thumbnail:hover {
