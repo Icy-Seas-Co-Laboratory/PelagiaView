@@ -1706,10 +1706,7 @@
       return liveSandboxFrameId;
     }
     if (liveSandboxFrameId) await cleanupLiveSandboxFrame({ invalidateRequests: false });
-    const result = await client.livePreprocessFrame(frame.id, {
-      ...livePreprocessingOptions(),
-      encoding: 'png'
-    });
+    const result = await client.livePreprocessFrame(frame.id, livePreprocessingOptions());
     adoptLiveSandboxFrame(result, frame.id);
     preprocessedReloadKey = Date.now();
     failedImageUrl = '';

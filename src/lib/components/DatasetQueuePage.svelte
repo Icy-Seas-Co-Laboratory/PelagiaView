@@ -3,10 +3,11 @@
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type {
-    AssetProcessingState,
     DetectionSummary,
-    FrameProcessingState,
-    FrameSummary,
+    ProcessingStatusFilters,
+    ProcessingStatusFrame,
+    ProcessingStatusSummary,
+    ProcessingStatusSummaryResponse,
     RawAsset,
     RoiRefinementCapabilities,
     SegmentationCapabilities,
@@ -47,7 +48,6 @@
 
   type Dataset = {
     asset: RawAsset;
-    frames: FrameSummary[];
     frameIds: string[];
     frameCount: number;
     preprocessedCount: number;
@@ -102,9 +102,25 @@
     refinementStates: Set<string>;
   };
 
+  type ProcessingSummaryNumberKey =
+    | 'total_frame_count'
+    | 'preprocessing_succeeded_count'
+    | 'candidate_detection_succeeded_count'
+    | 'roi_refinement_succeeded_count'
+    | 'frames_with_candidates_count'
+    | 'frames_with_refined_rois_count'
+    | 'candidate_detection_count'
+    | 'refined_detection_count'
+    | 'unrefined_candidate_count';
+
   let datasets: Dataset[] = [];
   let frameRows: FrameCatalogRow[] = [];
   let collectionOptions: string[] = [];
+  let collectionAssetCounts = new Map<string, number>();
+  let activeStatusSummary: ProcessingStatusSummary | null = null;
+  let statusSnapshotVersion: string | null = null;
+  let statusRefreshTimer: number | null = null;
+  let statusRefreshSequence = 0;
   let selectedAssetIds = new Set<string>();
   let selectedCollections = new Set<string>();
   let selectedPreprocessStates = new Set<string>();
@@ -141,7 +157,7 @@
   let cropW: number | null = null;
   let cropH: number | null = null;
   let invertIntensity = false;
-  let preprocessingEncoding = 'png';
+  let preprocessingEncoding = 'zstd';
 
   let framePayloadKind: 'original' | 'preprocessed' = 'preprocessed';
   let applyPreprocessing = false;
@@ -388,38 +404,38 @@
     detectionStates: selectedDetectionStates,
     refinementStates: selectedRefinementStates
   };
-  $: matchingFrames = frameRows.filter((frame) => matchesFrame(frame, activeFilters));
-  $: filteredFrames = matchingFrames;
-  $: filteredDatasets = datasets.filter((dataset) => filteredFrames.some((frame) => frame.assetId === dataset.asset.id));
-  $: preprocessStateOptions = stateOptions(frameRows.map((frame) => frame.preprocessingState));
-  $: detectionStateOptions = stateOptions(frameRows.map((frame) => frame.detectionState));
+  $: selectedCollectionArray = [...selectedCollections];
+  $: selectedAssetArray = [...selectedAssetIds];
+  $: filteredDatasets = datasets.filter((dataset) => datasetMatchesFilters(dataset));
+  $: preprocessStateOptions = statusOptions();
+  $: detectionStateOptions = statusOptions();
   $: refinementStateOptions = [
     { id: 'refined', label: 'Refined' },
     { id: 'unrefined', label: 'Unrefined' }
   ];
-  $: assetFrameCounts = frameCountMap('asset', datasets.map((dataset) => dataset.asset.id), activeFilters);
-  $: collectionFrameCounts = frameCountMap('collection', collectionOptions, activeFilters);
-  $: preprocessFrameCounts = frameCountMap('preprocess', preprocessStateOptions.map((option) => option.id), activeFilters);
-  $: detectionFrameCounts = frameCountMap('detection', detectionStateOptions.map((option) => option.id), activeFilters);
-  $: refinementRoiCounts = refinementRoiCountMap(refinementStateOptions.map((option) => option.id), activeFilters);
-  $: assetAnyFrameCount = sumFrameCounts(assetFrameCounts);
-  $: collectionAnyFrameCount = sumFrameCounts(collectionFrameCounts);
-  $: preprocessAnyFrameCount = sumFrameCounts(preprocessFrameCounts);
-  $: detectionAnyFrameCount = sumFrameCounts(detectionFrameCounts);
+  $: assetFrameCounts = new Map(datasets.map((dataset) => [dataset.asset.id, dataset.frameCount]));
+  $: collectionFrameCounts = collectionAssetCounts;
+  $: preprocessFrameCounts = statusCountMap('preprocessing');
+  $: detectionFrameCounts = statusCountMap('candidate_detection');
+  $: refinementRoiCounts = refinementCountMap();
+  $: assetAnyFrameCount = statusFrameCount(activeStatusSummary);
+  $: collectionAnyFrameCount = statusFrameCount(activeStatusSummary);
+  $: preprocessAnyFrameCount = statusFrameCount(activeStatusSummary);
+  $: detectionAnyFrameCount = statusFrameCount(activeStatusSummary);
   $: refinementAnyRoiCount = prospectiveDetectionCount;
-  $: prospectiveFrameCount = filteredFrames.length;
-  $: prospectivePreprocessedCount = filteredFrames.filter((frame) => frame.hasPreprocessedPayload).length;
-  $: prospectiveDetectionCount = filteredFrames.reduce((total, frame) => total + frame.detectionCount, 0);
-  $: prospectiveRefinedCandidateCount = filteredFrames.reduce((total, frame) => total + frame.refinedCandidateDetectionCount, 0);
-  $: prospectiveUnrefinedDetectionCount = filteredFrames.reduce((total, frame) => total + frame.unrefinedDetectionCount, 0);
-  $: prospectiveRefinedDetectionCount = filteredFrames.reduce((total, frame) => total + frame.refinedDetectionCount, 0);
-  $: prospectiveRefinementCandidateCount = refinementCandidateCountForFrames(filteredFrames);
+  $: prospectiveFrameCount = statusFrameCount(activeStatusSummary);
+  $: prospectivePreprocessedCount = numericStatusValue(activeStatusSummary?.preprocessing_succeeded_count);
+  $: prospectiveDetectionCount = numericStatusValue(activeStatusSummary?.candidate_detection_count);
+  $: prospectiveRefinedCandidateCount = numericStatusValue(activeStatusSummary?.frames_with_refined_rois_count);
+  $: prospectiveUnrefinedDetectionCount = numericStatusValue(activeStatusSummary?.unrefined_candidate_count);
+  $: prospectiveRefinedDetectionCount = numericStatusValue(activeStatusSummary?.refined_detection_count);
+  $: prospectiveRefinementCandidateCount = prospectiveUnrefinedDetectionCount + prospectiveRefinedDetectionCount;
   $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
-  $: missingPreprocessedFrameCount = filteredFrames.filter((frame) => !frame.hasPreprocessedPayload).length;
+  $: missingPreprocessedFrameCount = 0;
   $: prospectiveBatchCount =
     mode === 'roi_refinement'
-      ? estimatedDetectionBatchCount(filteredFrames, frameBatchSize)
-      : frameBatches(filteredFrames, frameBatchSize).length;
+      ? Math.ceil(prospectiveQueueItemCount / boundedFrameBatchSizeValue)
+      : Math.ceil(prospectiveFrameCount / boundedFrameBatchSizeValue);
   $: queueItemLabel = mode === 'roi_refinement' ? 'ROI' : 'frame';
   $: queueItemLabelPlural = mode === 'roi_refinement' ? 'ROIs' : 'frames';
   $: queueStage = mode;
@@ -435,18 +451,35 @@
     missingPreprocessedFrameCount > 0;
   $: queueBlocked = preprocessedSourceWarning;
 
-  $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${mode}`;
+  $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${$session.project?.id ?? $session.project?.project_key ?? 'no-project'}:${mode}`;
   $: if ($session.connected && catalogKey !== lastCatalogKey) {
     lastCatalogKey = catalogKey;
     void loadCatalog();
+  }
+  $: statusFilterKey = JSON.stringify({
+    mode,
+    assets: selectedAssetArray,
+    collections: selectedCollectionArray,
+    preprocessing: [...selectedPreprocessStates],
+    candidateDetection: [...selectedDetectionStates],
+    roiRefinement: [...selectedRefinementStates]
+  });
+  $: if (preferencesReady && $session.connected) {
+    statusFilterKey;
+    scheduleStatusRefresh();
   }
 
   onMount(() => {
     window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
     applyStoredLiveProcessingPreset();
     if ($session.connected) void loadCatalog();
+    const statusPollTimer = window.setInterval(() => {
+      if ($session.connected && preferencesReady) void refreshStatusSummary();
+    }, 5000);
     return () => {
       window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
+      window.clearInterval(statusPollTimer);
+      if (statusRefreshTimer !== null) window.clearTimeout(statusRefreshTimer);
     };
   });
 
@@ -810,10 +843,10 @@
     }
     loading = true;
     error = null;
-    catalogStatus = 'Loading dataset catalog.';
+    catalogStatus = 'Loading queue status.';
     try {
-      const [processingState, collections, config] = await Promise.all([
-        loadFrameProcessingRows(client).catch(() => null),
+      const [assets, collections, config] = await Promise.all([
+        client.listAssets(undefined, 10000).catch(() => []),
         client.listCollections(500).catch(() => []),
         client.systemConfig().catch(() => null)
       ]);
@@ -825,15 +858,17 @@
       applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
       restorePreferences();
       applyStoredLiveProcessingPreset();
-      frameRows = processingState ?? (await loadCatalogFallback());
-      datasets = datasetsFromFrames(frameRows);
-      catalogStatus = processingState
-        ? `Loaded ${formatCount(frameRows.length)} frames from processing state.`
-        : `Loaded ${formatCount(frameRows.length)} frames from fallback catalog.`;
+      datasets = datasetsFromAssets(assets);
+      frameRows = [];
       collectionOptions = uniqueStrings([
         ...collections.map((collection) => collection.collection),
-        ...frameRows.flatMap((frame) => frame.collections)
+        ...datasets.flatMap((dataset) => dataset.collections)
       ]);
+      collectionAssetCounts = new Map(
+        collections.map((collection) => [collection.collection, Number(collection.asset_count ?? 0)])
+      );
+      await refreshStatusSummary();
+      catalogStatus = `Loaded queue status for ${formatCount(datasets.length)} asset${datasets.length === 1 ? '' : 's'}.`;
       preferencesReady = true;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -843,133 +878,48 @@
     }
   }
 
-  async function loadFrameProcessingRows(client: NonNullable<ReturnType<typeof getClient>>): Promise<FrameCatalogRow[]> {
-    const rows: FrameCatalogRow[] = [];
-    let offset = 0;
-    const limit = 10000;
-    while (true) {
-      const page = await client.frameProcessingState({ limit, offset });
-      rows.push(...frameRowsFromProcessingState(page));
-      const nextOffset = page.page?.next_offset;
-      if (nextOffset === null || nextOffset === undefined) break;
-      offset = Number(nextOffset);
-      if (!Number.isFinite(offset) || offset <= rows.length - limit) break;
-    }
-    return rows;
-  }
-
-  async function loadCatalogFallback(): Promise<FrameCatalogRow[]> {
-    const client = getClient();
-    if (!client) return [];
-    const assets = await client.listAssets(undefined, 500);
-    const detectionStats = await client.assetDetectionStats(undefined, 500).catch(() => ({}) as AssetProcessingState);
-    const detectionByAsset = new Map(
-      (detectionStats.assets ?? []).map((asset) => [asset.asset_id, Number(asset.detection_count ?? 0)])
-    );
-    const nested = await Promise.all(
-      assets.map(async (asset): Promise<FrameCatalogRow[]> => {
-        const fullAsset = await client.getAsset(asset.id).catch(() => asset);
-        const frameCount = Number(fullAsset.frame_count ?? asset.frame_count ?? 0);
-        const frames =
-          frameCount > 0 ? await client.listFrames(asset.id, Math.max(frameCount, 1)).catch(() => []) : [];
-        const assetWithDetails = { ...asset, ...fullAsset };
-        return frames.map((frame) => {
-          const hasPreprocessedPayload = Boolean(frame.has_preprocessed_payload);
-          const detectionCount = detectionByAsset.get(asset.id) ?? 0;
-          const refinedCandidateDetectionCount = 0;
-          return {
-            frameId: frame.id,
-            runId: frame.run_id ?? assetWithDetails.run_id,
-            assetId: asset.id,
-            frameIndex: frame.frame_num ?? frame.frame_index,
-            assetFilename: assetWithDetails.filename,
-            kind: assetWithDetails.kind,
-            collections: assetCollections(assetWithDetails),
-            hasPreprocessedPayload,
-            detectionCount,
-            refinedCandidateDetectionCount,
-            unrefinedDetectionCount: detectionCount,
-            refinedDetectionCount: 0,
-            preprocessingState: hasPreprocessedPayload ? 'fully-preprocessed' : 'needs-preprocessed',
-            detectionState: detectionCount > 0 ? 'fully-detected' : 'needs-detections',
-            refinementState: detectionCount > 0 ? 'needs-refinement' : 'no-detections'
-          };
-        });
-      })
-    );
-    return nested.flat();
-  }
-
-  function frameRowsFromProcessingState(processingState: FrameProcessingState): FrameCatalogRow[] {
-    return (processingState.frames ?? []).map((entry) => ({
-      frameId: entry.frame_id,
-      runId: entry.run_id,
-      assetId: entry.asset_id ?? '',
-      frameIndex: entry.frame_index ?? entry.frame_num,
-      assetFilename: entry.asset_filename,
-      kind: entry.kind,
-      collections: entry.collections ?? [],
-      hasPreprocessedPayload: Boolean(entry.has_preprocessed_payload),
-      detectionCount: Number(entry.detection_count ?? 0),
-      refinedCandidateDetectionCount: Number(entry.refined_candidate_detection_count ?? 0),
-      unrefinedDetectionCount: Number(
-        entry.unrefined_detection_count ?? Math.max(0, Number(entry.detection_count ?? 0) - Number(entry.refined_candidate_detection_count ?? 0))
-      ),
-      refinedDetectionCount: Number(entry.refined_detection_count ?? entry.refined_candidate_detection_count ?? 0),
-      preprocessingState: entry.preprocessing_state ?? inferredFramePreprocessingState(entry),
-      detectionState: entry.detection_state ?? inferredFrameDetectionState(entry),
-      refinementState: entry.refinement_state ?? inferredFrameRefinementState(entry)
-    })).filter((frame) => Boolean(frame.frameId && frame.assetId));
-  }
-
-  function datasetsFromFrames(frames: FrameCatalogRow[]): Dataset[] {
-    const byAsset = new Map<string, FrameCatalogRow[]>();
-    for (const frame of frames) {
-      byAsset.set(frame.assetId, [...(byAsset.get(frame.assetId) ?? []), frame]);
-    }
-    return [...byAsset.entries()].map(([assetId, assetFrames]) => {
-      const first = assetFrames[0];
-      const asset = {
-        id: assetId,
-        run_id: first?.runId,
-        filename: first?.assetFilename,
-        kind: first?.kind,
-        collections: first?.collections ?? []
-      } satisfies RawAsset;
+  function datasetsFromAssets(assets: RawAsset[]): Dataset[] {
+    return assets.map((asset) => {
+      const frameCount = Number(asset.frame_count ?? 0);
       return {
         asset,
-        frames: [],
-        frameIds: assetFrames.map((frame) => frame.frameId),
-        frameCount: assetFrames.length,
-        preprocessedCount: assetFrames.filter((frame) => frame.hasPreprocessedPayload).length,
-        detectionCount: assetFrames.reduce((total, frame) => total + frame.detectionCount, 0),
-        refinedCandidateDetectionCount: assetFrames.reduce((total, frame) => total + frame.refinedCandidateDetectionCount, 0),
-        unrefinedDetectionCount: assetFrames.reduce((total, frame) => total + frame.unrefinedDetectionCount, 0),
-        refinedDetectionCount: assetFrames.reduce((total, frame) => total + frame.refinedDetectionCount, 0),
+        frameIds: [],
+        frameCount,
+        preprocessedCount: 0,
+        detectionCount: 0,
+        refinedCandidateDetectionCount: 0,
+        unrefinedDetectionCount: 0,
+        refinedDetectionCount: 0,
         collections: assetCollections(asset),
-        preprocessingState: uniqueStrings(assetFrames.map((frame) => frame.preprocessingState)).join(', '),
-        detectionState: uniqueStrings(assetFrames.map((frame) => frame.detectionState)).join(', '),
-        refinementState: uniqueStrings(assetFrames.map((frame) => frame.refinementState)).join(', ')
+        preprocessingState: undefined,
+        detectionState: undefined,
+        refinementState: undefined
       };
     });
   }
 
-  function inferredFramePreprocessingState(entry: NonNullable<FrameProcessingState['frames']>[number]): string {
-    return entry.has_preprocessed_payload ? 'fully-preprocessed' : 'needs-preprocessed';
-  }
-
-  function inferredFrameDetectionState(entry: NonNullable<FrameProcessingState['frames']>[number]): string {
-    const detectionCount = Number(entry.detection_count ?? 0);
-    return detectionCount > 0 ? 'fully-detected' : 'needs-detections';
-  }
-
-  function inferredFrameRefinementState(entry: NonNullable<FrameProcessingState['frames']>[number]): string {
-    const detectionCount = Number(entry.detection_count ?? 0);
-    const refinedCount = Number(entry.refined_candidate_detection_count ?? 0);
-    if (detectionCount <= 0) return 'no-detections';
-    if (refinedCount <= 0) return 'needs-refinement';
-    if (refinedCount >= detectionCount) return 'fully-refined';
-    return 'partially-refined';
+  function frameRowFromStatus(row: ProcessingStatusFrame): FrameCatalogRow | null {
+    if (!row.frame_id || !row.asset_id) return null;
+    const candidateCount = numericStatusValue(row.candidate_detection_count);
+    const refinedCount = numericStatusValue(row.refined_detection_count);
+    const unrefinedCount = numericStatusValue(row.unrefined_candidate_count);
+    return {
+      frameId: row.frame_id,
+      runId: row.run_id,
+      assetId: row.asset_id,
+      frameIndex: row.frame_index ?? undefined,
+      assetFilename: row.asset_filename ?? undefined,
+      kind: row.asset_kind ?? undefined,
+      collections: row.collections ?? [],
+      hasPreprocessedPayload: row.preprocessing_status === 'succeeded',
+      detectionCount: candidateCount,
+      refinedCandidateDetectionCount: refinedCount,
+      unrefinedDetectionCount: unrefinedCount,
+      refinedDetectionCount: refinedCount,
+      preprocessingState: row.preprocessing_status ?? 'unknown',
+      detectionState: row.candidate_detection_status ?? 'unknown',
+      refinementState: row.roi_refinement_status ?? 'unknown'
+    };
   }
 
   function applyConfigDefaults(
@@ -1136,6 +1086,151 @@
     );
   }
 
+  function datasetMatchesFilters(dataset: Dataset): boolean {
+    if (selectedAssetIds.size && !selectedAssetIds.has(dataset.asset.id)) return false;
+    if (selectedCollections.size && !dataset.collections.some((collection) => selectedCollections.has(collection))) return false;
+    return true;
+  }
+
+  function statusOptions(): Array<{ id: string; label: string }> {
+    return ['unknown', 'queued', 'leased', 'working', 'succeeded', 'failed', 'cancelled', 'dead_lettered'].map((status) => ({
+      id: status,
+      label: stateLabel(status)
+    }));
+  }
+
+  function statusFrameCount(summary: ProcessingStatusSummary | null): number {
+    return numericStatusValue(summary?.total_frame_count);
+  }
+
+  function statusCountMap(stage: 'preprocessing' | 'candidate_detection' | 'roi_refinement'): Map<string, number> {
+    const counts = activeStatusSummary?.by_status?.[stage] ?? {};
+    return new Map(Object.entries(counts).map(([status, count]) => [status, numericStatusValue(count)]));
+  }
+
+  function refinementCountMap(): Map<string, number> {
+    return new Map([
+      ['refined', numericStatusValue(activeStatusSummary?.refined_detection_count)],
+      ['unrefined', numericStatusValue(activeStatusSummary?.unrefined_candidate_count)]
+    ]);
+  }
+
+  function numericStatusValue(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+  }
+
+  function selectedAssetsForQueue(): Dataset[] {
+    const selected = filteredDatasets.length ? filteredDatasets : datasets.filter(datasetMatchesFilters);
+    return selected.filter((dataset) => dataset.asset.id);
+  }
+
+  function baseStatusFilters(): ProcessingStatusFilters {
+    const filters: ProcessingStatusFilters = {};
+    if (mode === 'preprocessing' && selectedPreprocessStates.size) {
+      filters.preprocessing_status = [...selectedPreprocessStates];
+    }
+    if (mode === 'segmentation') {
+      filters.preprocessing_status = 'succeeded';
+      if (selectedDetectionStates.size) filters.candidate_detection_status = [...selectedDetectionStates];
+    }
+    if (mode === 'roi_refinement') {
+      filters.candidate_detection_status = 'succeeded';
+      if (selectedRefinementStates.size === 1) {
+        if (selectedRefinementStates.has('refined')) filters.has_refined_rois = true;
+        if (selectedRefinementStates.has('unrefined')) filters.has_refined_rois = false;
+      }
+    }
+    return filters;
+  }
+
+  function summaryScopes(): ProcessingStatusFilters[] {
+    const base = baseStatusFilters();
+    const assets = selectedAssetIds.size ? [...selectedAssetIds] : [null];
+    const collections = selectedCollections.size ? [...selectedCollections] : [null];
+    const scopes: ProcessingStatusFilters[] = [];
+    for (const assetId of assets) {
+      for (const collection of collections) {
+        scopes.push({
+          ...base,
+          asset_id: assetId,
+          collection
+        });
+      }
+    }
+    return scopes;
+  }
+
+  function scheduleStatusRefresh() {
+    if (statusRefreshTimer !== null) window.clearTimeout(statusRefreshTimer);
+    statusRefreshTimer = window.setTimeout(() => {
+      statusRefreshTimer = null;
+      void refreshStatusSummary();
+    }, 150);
+  }
+
+  async function refreshStatusSummary() {
+    const client = getClient();
+    if (!client) return;
+    const sequence = ++statusRefreshSequence;
+    try {
+      const summaries = await Promise.all(summaryScopes().map((filters) => client.processingStatusSummary(filters)));
+      if (sequence !== statusRefreshSequence) return;
+      const merged = mergeStatusSummaries(summaries);
+      activeStatusSummary = merged.summary;
+      statusSnapshotVersion = merged.snapshotVersion;
+    } catch (err) {
+      if (sequence === statusRefreshSequence) {
+        error = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  function mergeStatusSummaries(responses: ProcessingStatusSummaryResponse[]): {
+    summary: ProcessingStatusSummary;
+    snapshotVersion: string | null;
+  } {
+    const merged: ProcessingStatusSummary = { by_status: {} };
+    let snapshotVersion: string | null = null;
+    for (const response of responses) {
+      const summary = response.summary ?? {};
+      snapshotVersion = String(response.snapshot?.status_version ?? snapshotVersion ?? '');
+      addSummaryNumber(merged, 'total_frame_count', summary.total_frame_count);
+      addSummaryNumber(merged, 'preprocessing_succeeded_count', summary.preprocessing_succeeded_count);
+      addSummaryNumber(merged, 'candidate_detection_succeeded_count', summary.candidate_detection_succeeded_count);
+      addSummaryNumber(merged, 'roi_refinement_succeeded_count', summary.roi_refinement_succeeded_count);
+      addSummaryNumber(merged, 'frames_with_candidates_count', summary.frames_with_candidates_count);
+      addSummaryNumber(merged, 'frames_with_refined_rois_count', summary.frames_with_refined_rois_count);
+      addSummaryNumber(merged, 'candidate_detection_count', summary.candidate_detection_count);
+      addSummaryNumber(merged, 'refined_detection_count', summary.refined_detection_count);
+      addSummaryNumber(merged, 'unrefined_candidate_count', summary.unrefined_candidate_count);
+      mergeByStatus(merged, summary);
+      if (summary.updated_at && (!merged.updated_at || summary.updated_at > merged.updated_at)) merged.updated_at = summary.updated_at;
+    }
+    return { summary: merged, snapshotVersion: snapshotVersion || null };
+  }
+
+  function addSummaryNumber(summary: ProcessingStatusSummary, key: ProcessingSummaryNumberKey, value: unknown) {
+    const current = numericStatusValue(summary[key]);
+    summary[key] = current + numericStatusValue(value);
+  }
+
+  function mergeByStatus(target: ProcessingStatusSummary, source: ProcessingStatusSummary) {
+    const targetByStatus = target.by_status ?? {};
+    for (const [stage, counts] of Object.entries(source.by_status ?? {})) {
+      const stageCounts = targetByStatus[stage] ?? {};
+      for (const [status, count] of Object.entries(counts)) {
+        stageCounts[status] = numericStatusValue(stageCounts[status]) + numericStatusValue(count);
+      }
+      targetByStatus[stage] = stageCounts;
+    }
+    target.by_status = targetByStatus;
+  }
+
   function matchesFrame(frame: FrameCatalogRow, filters: FrameFilters): boolean {
     const assetIds = filters.assetIds;
     const collections = filters.collections;
@@ -1171,6 +1266,7 @@
 
   function stateLabel(state: string): string {
     return state
+      .replace(/_/g, '-')
       .split('-')
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join(' ');
@@ -1350,7 +1446,11 @@
     }
 
     if (mode === 'roi_refinement') {
-      const batches = await detectionBatchesForFrames(client, filteredFrames, boundedFrameBatchSizeValue).catch((err) => {
+      const candidateFrames = await statusRowsForSelectedAssets(client).catch((err) => {
+        error = err instanceof Error ? err.message : String(err);
+        return [] as FrameCatalogRow[];
+      });
+      const batches = await detectionBatchesForFrames(client, candidateFrames, boundedFrameBatchSizeValue).catch((err) => {
         error = err instanceof Error ? err.message : String(err);
         return [] as DetectionBatch[];
       });
@@ -1384,7 +1484,10 @@
       return;
     }
 
-    const batches = frameBatches(filteredFrames, boundedFrameBatchSizeValue);
+    const batches = await statusFrameBatchesForSelectedAssets(client, boundedFrameBatchSizeValue).catch((err) => {
+      error = err instanceof Error ? err.message : String(err);
+      return [] as FrameBatch[];
+    });
     if (batches.length === 0) {
       queueing = false;
       return;
@@ -1441,6 +1544,83 @@
     submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
     message = `Queued ${queued} ${mode === 'preprocessing' ? 'preprocessing' : 'segmentation'} batch job${queued === 1 ? '' : 's'} covering ${formatCount(prospectiveFrameCount)} frame${prospectiveFrameCount === 1 ? '' : 's'}.`;
     queueing = false;
+  }
+
+  async function statusFrameBatchesForSelectedAssets(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    batchSize: number
+  ): Promise<FrameBatch[]> {
+    const batches: FrameBatch[] = [];
+    const resolvedBatchSize = boundedBatchSize(batchSize);
+    for (const dataset of selectedAssetsForQueue()) {
+      const frameIds = await statusFrameIdsForAsset(client, dataset.asset.id);
+      for (let index = 0; index < frameIds.length; index += resolvedBatchSize) {
+        const batchFrameIds = frameIds.slice(index, index + resolvedBatchSize);
+        if (!batchFrameIds.length) continue;
+        batches.push({
+          assetId: dataset.asset.id,
+          runId: dataset.asset.run_id,
+          frameIds: batchFrameIds
+        });
+      }
+    }
+    return batches;
+  }
+
+  async function statusFrameIdsForAsset(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    assetId: string
+  ): Promise<string[]> {
+    const ids = new Set<string>();
+    const collections = selectedCollections.size ? [...selectedCollections] : [null];
+    for (const collection of collections) {
+      let cursor: string | null = null;
+      while (true) {
+        const page = await client.processingStatusFrameIds({
+          ...baseStatusFilters(),
+          asset_id: assetId,
+          collection,
+          limit: 50000,
+          cursor
+        });
+        for (const frameId of page.frame_ids ?? []) ids.add(frameId);
+        cursor = page.next_cursor ?? null;
+        if (!cursor) break;
+      }
+    }
+    return [...ids].sort((a, b) => a.localeCompare(b));
+  }
+
+  async function statusRowsForSelectedAssets(
+    client: NonNullable<ReturnType<typeof getClient>>
+  ): Promise<FrameCatalogRow[]> {
+    const rows: FrameCatalogRow[] = [];
+    const seenFrameIds = new Set<string>();
+    for (const dataset of selectedAssetsForQueue()) {
+      const collections = selectedCollections.size ? [...selectedCollections] : [null];
+      for (const collection of collections) {
+        let cursor: string | null = null;
+        while (true) {
+          const page = await client.processingStatusFrames({
+            ...baseStatusFilters(),
+            asset_id: dataset.asset.id,
+            collection,
+            limit: 10000,
+            cursor
+          });
+          for (const row of page.frames ?? []) {
+            if (seenFrameIds.has(row.frame_id)) continue;
+            const frame = frameRowFromStatus(row);
+            if (!frame) continue;
+            seenFrameIds.add(frame.frameId);
+            rows.push(frame);
+          }
+          cursor = page.next_cursor ?? null;
+          if (!cursor) break;
+        }
+      }
+    }
+    return rows;
   }
 
   async function detectionBatchesForFrames(

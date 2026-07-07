@@ -59,8 +59,12 @@
   let frameImageNaturalWidth = 0;
   let frameImageNaturalHeight = 0;
   let detailFrameDisplayMode: FrameDisplayMode = 'preprocessed';
+  let frameDetailOpen = false;
+  let frameModalDisplayMode: FrameDisplayMode = 'original';
   let detailFrameFailedUrl = '';
+  let frameModalFailedUrl = '';
   let lastDetailFrameUrl = '';
+  let lastFrameModalUrl = '';
   let fullResolutionTileKeys = new Set<string>();
   let tileScroller: HTMLElement;
   let loadMoreSentinel: HTMLElement;
@@ -76,18 +80,29 @@
   const modalRoiDisplayMaxWidth = 520;
   const modalRoiDisplayMaxHeight = 460;
   const frameContextImageWidth = 380;
+  const frameModalImageWidth = 1100;
+  const frameModalImageMaxHeight = 720;
   const fullFrameBboxScale = 0.5;
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
   $: visibleCount = detections.filter((detection) => detection.id).length;
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
+  $: frameModalPayloadKind = payloadKindForDisplay(frameModalDisplayMode);
   $: invertImages = $imageInversionEnabled;
   $: detailFrameImageInverted = detailFramePayloadKind !== 'original' && $imageInversionEnabled;
+  $: frameModalImageInverted = frameModalPayloadKind !== 'original' && $imageInversionEnabled;
   $: detailFrameUrl = selectedDetection ? frameContextUrl(selectedDetection, detailFrameDisplayMode) : '';
+  $: frameModalUrl = selectedDetection && frameDetailOpen ? frameModalContextUrl(selectedDetection, frameModalDisplayMode) : '';
   $: detailFrameSourceDimensions = parentFrameDimensions() ?? fallbackSourceDimensions(frameImageNaturalWidth, frameImageNaturalHeight);
+  $: frameModalSourceDimensions = parentFrameDimensionsForPayload(
+    frameModalPayloadKind,
+    frameImageNaturalWidth,
+    frameImageNaturalHeight
+  );
   $: detailFrameUnavailable = Boolean(
     detailFramePayloadKind === 'preprocessed' && selectedFrameContext && !selectedFrameContext.image_urls?.preprocessed
   ) || Boolean(detailFrameUrl && detailFrameFailedUrl === detailFrameUrl);
+  $: frameModalUnavailable = Boolean(frameModalUrl && frameModalFailedUrl === frameModalUrl);
   $: detailFrameCanvasOverlays = frameContextCanvasOverlays(
     frameDetections,
     selectedDetection,
@@ -97,7 +112,17 @@
     frameImageNaturalHeight,
     detailFrameSourceDimensions
   );
+  $: frameModalCanvasOverlays = frameContextCanvasOverlays(
+    frameDetections,
+    selectedDetection,
+    frameModalPayloadKind,
+    selectedParentFrame,
+    frameImageNaturalWidth,
+    frameImageNaturalHeight,
+    frameModalSourceDimensions
+  );
   $: resetFrameContextImage(detailFrameUrl);
+  $: resetFrameModalImage(frameModalUrl);
   $: syncPageScrollListener(tileScroller);
   $: roiPreferenceSnapshot = {
     selectedAssetId,
@@ -425,6 +450,7 @@
 
   function closeRoiDetail() {
     frameDetectionLoadSerial += 1;
+    closeFrameDetailModal();
     selectedDetection = null;
     selectedParentAsset = null;
     selectedParentFrame = null;
@@ -436,6 +462,22 @@
     detailFrameFailedUrl = '';
     frameImageNaturalWidth = 0;
     frameImageNaturalHeight = 0;
+  }
+
+  function openFrameDetailModal() {
+    if (!selectedDetection?.frame_id) return;
+    frameDetailOpen = true;
+    frameModalDisplayMode = 'original';
+    frameModalFailedUrl = '';
+    lastFrameModalUrl = '';
+    frameImageNaturalWidth = 0;
+    frameImageNaturalHeight = 0;
+  }
+
+  function closeFrameDetailModal() {
+    frameDetailOpen = false;
+    frameModalFailedUrl = '';
+    lastFrameModalUrl = '';
   }
 
   function withoutDuplicateDetections(page: DetectionSummary[]): DetectionSummary[] {
@@ -746,12 +788,32 @@
     return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
   }
 
+  function frameModalContextUrl(detection: DetectionSummary, mode: FrameDisplayMode): string {
+    const client = getClient();
+    if (!client || !detection.frame_id) return '';
+    const kind = payloadKindForDisplay(mode);
+    const base = {
+      frame_id: detection.frame_id,
+      format: 'jpg',
+      width: frameModalImageWidth
+    };
+    return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
+  }
+
   function resetFrameContextImage(url: string) {
     if (url === lastDetailFrameUrl) return;
     lastDetailFrameUrl = url;
     frameImageNaturalWidth = 0;
     frameImageNaturalHeight = 0;
     detailFrameFailedUrl = '';
+  }
+
+  function resetFrameModalImage(url: string) {
+    if (url === lastFrameModalUrl) return;
+    lastFrameModalUrl = url;
+    frameImageNaturalWidth = 0;
+    frameImageNaturalHeight = 0;
+    frameModalFailedUrl = '';
   }
 
   function setFrameImageNaturalSize(dimensions: { width: number; height: number }) {
@@ -772,12 +834,26 @@
     frameImageNaturalHeight = 0;
   }
 
+  function markFrameModalUnavailable() {
+    frameModalFailedUrl = frameModalUrl;
+    frameImageNaturalWidth = 0;
+    frameImageNaturalHeight = 0;
+  }
+
   function isSelectedDetection(detection: DetectionSummary): boolean {
     return Boolean(selectedDetection?.id && detection.id === selectedDetection.id);
   }
 
   function parentFrameDimensions(): { width: number; height: number } | null {
-    if (detailFramePayloadKind === 'preprocessed') {
+    return parentFrameDimensionsForPayload(detailFramePayloadKind, frameImageNaturalWidth, frameImageNaturalHeight);
+  }
+
+  function parentFrameDimensionsForPayload(
+    payloadKind: string,
+    displayWidth: number,
+    displayHeight: number
+  ): { width: number; height: number } | null {
+    if (payloadKind === 'preprocessed') {
       const preprocessedDimensions = dimensionsFromShape(
         selectedParentFrame?.preprocessed_payload_shape ??
           selectedParentFrame?.preprocessed_metadata?.shape ??
@@ -794,10 +870,10 @@
         (Array.isArray(selectedParentFrame?.metadata?.shape) ? selectedParentFrame.metadata.shape : null)
     );
     if (shapeDimensions) return shapeDimensions;
-    if (frameImageNaturalWidth && frameImageNaturalHeight) {
+    if (displayWidth && displayHeight) {
       return {
-        width: frameImageNaturalWidth,
-        height: frameImageNaturalHeight
+        width: displayWidth,
+        height: displayHeight
       };
     }
     return null;
@@ -820,10 +896,6 @@
         selectedDetection?.frame_id ??
         'unknown'
     );
-  }
-
-  function parentFrameNumberForHref(): number | string | null {
-    return selectedParentFrame?.frame_num ?? selectedParentFrame?.frame_index ?? selectedDetection?.frame_index ?? null;
   }
 
   function frameDimensionsLabel(): string {
@@ -854,20 +926,25 @@
     return String(value);
   }
 
+  function metadataBlock(value: unknown): string {
+    if (!value || typeof value !== 'object') return '{}';
+    return JSON.stringify(value, null, 2);
+  }
+
   function frameContextCanvasOverlays(
     detectionsForFrame: DetectionSummary[],
     selected: DetectionSummary | null,
-    _payloadKind: string,
+    payloadKind: string,
     _frame: FrameSummary | null,
-    displayWidth: number,
-    displayHeight: number,
+    _displayWidth: number,
+    _displayHeight: number,
     sourceDimensions: { width: number; height: number } | null
   ): ImageOverlayRect[] {
-    if (!displayWidth || !displayHeight || !sourceDimensions) return [];
+    if (!sourceDimensions) return [];
     const others: ImageOverlayRect[] = [];
     const selectedOverlays: ImageOverlayRect[] = [];
     for (const detection of detectionsForFrame) {
-      const rect = frameContextOverlayRect(detection, displayWidth, displayHeight, sourceDimensions);
+      const rect = frameContextOverlayRect(detection, sourceDimensions, payloadKind);
       if (!rect) continue;
       if (selected?.id && detection.id === selected.id) {
         selectedOverlays.push({
@@ -891,9 +968,8 @@
 
   function frameContextOverlayRect(
     detection: DetectionSummary,
-    displayWidth: number,
-    displayHeight: number,
-    sourceDimensions: { width: number; height: number } | null
+    sourceDimensions: { width: number; height: number } | null,
+    payloadKind: string
   ): Omit<ImageOverlayRect, 'stroke'> | null {
     const bboxX = bboxValue(detection, 'bbox', 'x');
     const bboxY = bboxValue(detection, 'bbox', 'y');
@@ -901,15 +977,13 @@
     const bboxH = bboxValue(detection, 'bbox', 'h');
     if (bboxX === null || bboxY === null || bboxW === null || bboxH === null) return null;
     if (!sourceDimensions) return null;
-    const origin = frameContextOrigin();
-    const scaleX = displayWidth / Math.max(sourceDimensions.width, 1);
-    const scaleY = displayHeight / Math.max(sourceDimensions.height, 1);
+    const origin = frameContextOrigin(payloadKind);
     return {
-      x: (bboxX - origin.x) * scaleX,
-      y: (bboxY - origin.y) * scaleY,
-      w: bboxW * scaleX,
-      h: bboxH * scaleY,
-      coordinateSpace: 'image'
+      x: bboxX - origin.x,
+      y: bboxY - origin.y,
+      w: bboxW,
+      h: bboxH,
+      coordinateSpace: 'source'
     };
   }
 
@@ -921,8 +995,8 @@
     };
   }
 
-  function frameContextOrigin(): { x: number; y: number } {
-    if (detailFramePayloadKind === 'preprocessed') {
+  function frameContextOrigin(payloadKind: string = detailFramePayloadKind): { x: number; y: number } {
+    if (payloadKind === 'preprocessed') {
       const cropTuple =
         tupleFromBBoxLike(selectedParentFrame?.preprocessed_metadata?.crop_bbox) ??
         tupleFromBBoxLike(selectedParentFrame?.metadata?.crop_bbox);
@@ -970,6 +1044,16 @@
     return `${assetName}_frame_${frameNumberLabel()}_${suffix}.png`;
   }
 
+  function frameModalFilename(annotated = false): string {
+    const assetName =
+      selectedParentAsset?.filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_id ??
+      'asset';
+    const suffix = annotated ? `${frameModalPayloadKind}_boxed` : frameModalPayloadKind;
+    return `${assetName}_frame_${frameNumberLabel()}_${suffix}.png`;
+  }
+
   function frameContextRenderSpec(): ImageRenderSpec {
     return {
       image: {
@@ -1000,6 +1084,41 @@
       display: {
         maxWidth: frameContextImageWidth,
         maxHeight: 360,
+        background: '#050807'
+      }
+    };
+  }
+
+  function frameModalRenderSpec(): ImageRenderSpec {
+    return {
+      image: {
+        url: frameModalUrl,
+        alt: 'High resolution frame with ROI bounding boxes',
+        invert: frameModalImageInverted,
+        sourceWidth: frameModalSourceDimensions?.width ?? null,
+        sourceHeight: frameModalSourceDimensions?.height ?? null
+      },
+      layers: rectLayersForFrameContext(frameModalCanvasOverlays),
+      scaleBar: {
+        enabled: true,
+        placement: 'inside'
+      },
+      toolbar: {
+        exportControls: 'menu',
+        filename: frameModalFilename(),
+        annotatedFilename: frameModalFilename(true),
+        originalUrl: frameModalUrl,
+        originalFilename: frameModalFilename(),
+        info: {
+          assetFilename: selectedParentAsset?.filename ?? selectedDetection?.asset_filename ?? selectedDetection?.asset_id ?? null,
+          frameNumber: frameNumberLabel(),
+          timestamp: valueLabel(metadataValue('capture_datetime', 'captured_at', 'timestamp')),
+          collections: selectedParentAsset?.collections ?? null
+        }
+      },
+      display: {
+        maxWidth: frameModalImageWidth,
+        maxHeight: frameModalImageMaxHeight,
         background: '#050807'
       }
     };
@@ -1327,21 +1446,9 @@
               <dt>Frame ID</dt>
               <dd>
                 {#if selectedDetection.frame_id}
-                  <a
-                    class="detail-uuid-link"
-                    href={roiBrowserHref(
-                      {
-                        asset_id: selectedDetection.asset_id,
-                        frame_num: parentFrameNumberForHref(),
-                        frame_id: parentFrameNumberForHref() === null ? selectedDetection.frame_id : null
-                      },
-                      $page.url
-                    )}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
+                  <button class="detail-uuid-link detail-link-button" type="button" on:click={openFrameDetailModal}>
                     {selectedDetection.frame_id}
-                  </a>
+                  </button>
                 {:else}
                   unknown
                 {/if}
@@ -1414,6 +1521,139 @@
           <p class="empty">This ROI does not include a frame id.</p>
         {/if}
       </details>
+    </div>
+  </div>
+{/if}
+
+{#if frameDetailOpen && selectedDetection}
+  <div class="modal-backdrop frame-context-backdrop">
+    <div class="roi-detail-modal frame-context-modal" role="dialog" aria-modal="true" aria-label="Frame details">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Frame detail</p>
+          <h2>Frame {frameNumberLabel()}</h2>
+        </div>
+        <button class="ghost" type="button" on:click={closeFrameDetailModal}>Close</button>
+      </div>
+
+      {#if detailError}<p class="form-error">{detailError}</p>{/if}
+
+      <div class="frame-context-layout">
+        <section class="frame-context-viewer">
+          <div class="roi-frame-controls">
+            <FrameDisplayToggle bind:value={frameModalDisplayMode} />
+            <span class="soft">Use the download menu for the original frame or frame + bounding boxes.</span>
+          </div>
+          <div class="frame-context-stage">
+            {#if frameModalUnavailable || !frameModalUrl}
+              <div class="preview-placeholder frame-unavailable">
+                {#if frameModalPayloadKind === 'preprocessed'}
+                  <strong>No preprocessed image is available for this frame.</strong>
+                  <span>Switch to Original or run preprocessing for this frame.</span>
+                {:else}
+                  <strong>The selected frame image could not be loaded.</strong>
+                  <span>Check that the frame data endpoint is available.</span>
+                {/if}
+              </div>
+            {:else}
+              {#key `${frameModalUrl}:${frameDetections.length}:${frameModalDisplayMode}`}
+                <KonvaImageCanvas
+                  spec={frameModalRenderSpec()}
+                  mode="viewer"
+                  onImageLoad={setFrameImageNaturalSize}
+                  onImageError={markFrameModalUnavailable}
+                />
+              {/key}
+            {/if}
+          </div>
+        </section>
+
+        <aside class="frame-context-details">
+          <h3>Frame</h3>
+          <dl>
+            <div>
+              <dt>Frame ID</dt>
+              <dd>{selectedDetection.frame_id ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt>Frame number</dt>
+              <dd>{frameNumberLabel()}</dd>
+            </div>
+            <div>
+              <dt>Asset file</dt>
+              <dd>{selectedParentAsset?.filename ?? selectedDetection.asset_filename ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt>Asset ID</dt>
+              <dd>{selectedDetection.asset_id ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt>Captured</dt>
+              <dd>{formatDateTime(selectedParentFrame?.captured_at ?? metadataValue('captured_at', 'capture_datetime', 'capture_time', 'datetime', 'timestamp'))}</dd>
+            </div>
+            <div>
+              <dt>Stored</dt>
+              <dd>{formatDateTime(selectedParentFrame?.created_at)}</dd>
+            </div>
+            <div>
+              <dt>Dimensions</dt>
+              <dd>{frameDimensionsLabel()}</dd>
+            </div>
+            <div>
+              <dt>Dtype</dt>
+              <dd>{selectedParentFrame?.dtype ?? 'unknown'}</dd>
+            </div>
+            <div>
+              <dt>Preprocessed</dt>
+              <dd>{preprocessedAvailabilityLabel()}</dd>
+            </div>
+            <div>
+              <dt>ROIs</dt>
+              <dd>{frameDetections.length}{frameDetectionsLoading ? ' loading...' : frameDetectionsComplete ? ' loaded' : ' loaded so far'}</dd>
+            </div>
+          </dl>
+          <details class="frame-context-metadata">
+            <summary>Frame metadata</summary>
+            <pre>{metadataBlock(selectedParentFrame?.metadata)}</pre>
+          </details>
+          <details class="frame-context-metadata">
+            <summary>Preprocessed metadata</summary>
+            <pre>{metadataBlock(selectedParentFrame?.preprocessed_metadata)}</pre>
+          </details>
+        </aside>
+      </div>
+
+      <section class="frame-roi-section">
+        <div class="section-heading">
+          <p class="eyebrow">ROIs from frame</p>
+          <strong>{frameDetections.length} ROI{frameDetections.length === 1 ? '' : 's'}</strong>
+        </div>
+        {#if frameDetections.length}
+          <div class="frame-roi-thumbnail-grid">
+            {#each frameDetections as detection}
+              {#if detection.id && detection.roi_payload_bytes}
+                <button
+                  class:selected={isSelectedDetection(detection)}
+                  class="frame-roi-thumbnail"
+                  type="button"
+                  on:click={() => (selectedDetection = detection)}
+                >
+                  <KonvaImageCanvas
+                    spec={roiRenderSpec(detection, 132, 112, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
+                    mode="thumbnail"
+                  />
+                  <span>ROI {detection.roi_index ?? detection.id}</span>
+                </button>
+              {/if}
+            {/each}
+          </div>
+          {#if frameDetectionsLoading}<p class="soft loading-row">Loading more ROIs from this frame.</p>{/if}
+        {:else if frameDetectionsLoading}
+          <p class="empty">Loading ROIs from this frame.</p>
+        {:else}
+          <p class="empty">No stored ROIs were found for this frame.</p>
+        {/if}
+      </section>
     </div>
   </div>
 {/if}

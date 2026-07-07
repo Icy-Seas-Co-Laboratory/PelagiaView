@@ -281,6 +281,80 @@ export type RawAsset = {
   metadata?: Record<string, unknown>;
 };
 
+export type AnalyzedIngestionAsset = {
+  asset_id?: string | null;
+  filename?: string | null;
+  path: string;
+  kind: 'video' | 'image_sequence' | string;
+  size_bytes?: number | null;
+  checksum?: string | null;
+  checksum_status?: string | null;
+  collections?: string[];
+  media_count?: number | null;
+  metadata?: Record<string, unknown>;
+  warnings?: string[];
+};
+
+export type AnalyzeIngestionRequest = {
+  source_path: string;
+  kind?: 'auto' | 'video' | 'image_sequence' | string;
+  recursive?: boolean;
+  compute_checksum?: boolean;
+  collections?: string | string[] | null;
+  n_tile?: number | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type AnalyzeIngestionResponse = {
+  source_path?: string;
+  kind?: string;
+  recursive?: boolean;
+  asset_count?: number;
+  assets?: AnalyzedIngestionAsset[];
+  defaults?: Record<string, unknown>;
+  suggested_ingestion_request?: QueueAssetsRequest;
+};
+
+export type QueueIngestionAssetRequest = Omit<AnalyzedIngestionAsset, 'collections'> & {
+  collections?: string | string[] | null;
+  n_tile?: number | null;
+  recursive?: boolean | null;
+  adaptive_background_subtraction?: boolean | null;
+  adaptive_background_period?: number | null;
+  apply_mask?: boolean | null;
+  mask_path?: string | null;
+  enqueue_segment?: boolean | null;
+  roi_padding?: number | null;
+  roi_encoding?: string | null;
+};
+
+export type QueueAssetsRequest = {
+  assets: QueueIngestionAssetRequest[];
+  run_id?: string | null;
+  run_key?: string | null;
+  instrument?: string;
+  source_path?: string | null;
+  source_type?: string | null;
+  metadata?: Record<string, unknown>;
+  n_tile?: number | null;
+  adaptive_background_subtraction?: boolean | null;
+  adaptive_background_period?: number | null;
+  apply_mask?: boolean | null;
+  mask_path?: string | null;
+  enqueue_segment?: boolean;
+  roi_padding?: number | null;
+  roi_encoding?: string | null;
+};
+
+export type QueueAssetsResponse = {
+  run_id?: string;
+  run_key?: string;
+  asset_count?: number;
+  assets?: RawAsset[];
+  registration?: Record<string, unknown>;
+  jobs?: Job[];
+};
+
 export type FrameSummary = {
   id: string;
   asset_id?: string;
@@ -378,6 +452,98 @@ export type FrameProcessingState = {
     refinement_state?: string;
   }>;
   page?: PageMetadata;
+};
+
+export type ProcessingStageStatus =
+  | 'unknown'
+  | 'queued'
+  | 'leased'
+  | 'working'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'dead_lettered'
+  | string;
+
+export type ProcessingStatusSnapshot = {
+  id?: string | null;
+  project_id?: string | null;
+  session_id?: string | null;
+  status_version?: number | string;
+  generated_at?: string | null;
+  updated_at?: string | null;
+  summary?: Record<string, unknown>;
+};
+
+export type ProcessingStatusSummary = {
+  total_frame_count?: number | string;
+  preprocessing_succeeded_count?: number | string;
+  candidate_detection_succeeded_count?: number | string;
+  roi_refinement_succeeded_count?: number | string;
+  frames_with_candidates_count?: number | string;
+  frames_with_refined_rois_count?: number | string;
+  candidate_detection_count?: number | string;
+  refined_detection_count?: number | string;
+  unrefined_candidate_count?: number | string;
+  updated_at?: string | null;
+  by_status?: Record<string, Record<string, number | string>>;
+};
+
+export type ProcessingStatusSummaryResponse = {
+  summary?: ProcessingStatusSummary;
+  snapshot?: ProcessingStatusSnapshot;
+};
+
+export type ProcessingStatusFrame = {
+  project_id?: string | null;
+  frame_id: string;
+  asset_id?: string | null;
+  run_id?: string | null;
+  frame_index?: number | null;
+  collections?: string[];
+  preprocessing_status?: ProcessingStageStatus;
+  preprocessing_job_id?: string | null;
+  preprocessing_completed_at?: string | null;
+  candidate_detection_status?: ProcessingStageStatus;
+  candidate_detection_job_id?: string | null;
+  candidate_detection_completed_at?: string | null;
+  candidate_detection_count?: number | string;
+  roi_refinement_status?: ProcessingStageStatus;
+  roi_refinement_job_id?: string | null;
+  roi_refinement_completed_at?: string | null;
+  refined_detection_count?: number | string;
+  unrefined_candidate_count?: number | string;
+  updated_at?: string | null;
+  asset_filename?: string | null;
+  asset_kind?: string | null;
+};
+
+export type ProcessingStatusFramesResponse = {
+  frames?: ProcessingStatusFrame[];
+  next_cursor?: string | null;
+  page?: PageMetadata;
+};
+
+export type ProcessingStatusFrameIdsResponse = {
+  frame_ids?: string[];
+  next_cursor?: string | null;
+  page?: PageMetadata;
+};
+
+export type ProcessingStatusFilters = {
+  run_id?: string | null;
+  asset_id?: string | null;
+  collection?: string | null;
+  preprocessing_status?: string | string[] | null;
+  candidate_detection_status?: string | string[] | null;
+  roi_refinement_status?: string | string[] | null;
+  has_candidates?: boolean | null;
+  has_refined_rois?: boolean | null;
+  start_frame?: number | null;
+  end_frame?: number | null;
+  limit?: number | null;
+  cursor?: string | null;
+  offset?: number | null;
 };
 
 export type PageMetadata = {

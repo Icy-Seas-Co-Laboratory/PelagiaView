@@ -1378,6 +1378,193 @@ button.job-action-muted:hover:not(:disabled) {
   min-width: 0;
 }
 
+.ingestion-review-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.analysis-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #dce7e3;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.analysis-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.analysis-table th,
+.analysis-table td {
+  border-bottom: 1px solid #e3ece8;
+  padding: 0.32rem 0.38rem;
+  vertical-align: top;
+}
+
+.analysis-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: #40584f;
+  background: #f5f8f6;
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.analysis-table input,
+.analysis-table select,
+.analysis-table textarea {
+  width: 100%;
+  min-width: 0;
+  font-size: 0.78rem;
+}
+
+.analysis-row.disabled,
+.analysis-detail-row.disabled {
+  opacity: 0.58;
+}
+
+.analysis-use-cell,
+.analysis-action-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.analysis-use-cell input {
+  width: auto;
+}
+
+.analysis-asset-cell {
+  min-width: 16rem;
+}
+
+.analysis-asset-cell small {
+  display: block;
+  max-width: 22rem;
+  overflow: hidden;
+  margin-top: 0.16rem;
+  color: #60746c;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-number-cell {
+  width: 5.5rem;
+}
+
+.analysis-timestamp-cell {
+  min-width: 13rem;
+}
+
+.analysis-timestamp-cell input[aria-invalid='true'] {
+  border-color: #c85f55;
+  background: #fff7f6;
+  color: #7e2b25;
+}
+
+.analysis-facts-cell,
+.analysis-progress-cell,
+.analysis-status-cell {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 9rem;
+  color: #60746c;
+}
+
+.analysis-progress-cell {
+  min-width: 11rem;
+  align-content: start;
+}
+
+.analysis-progress-cell .stage-progress-track {
+  width: 100%;
+}
+
+.analysis-progress-cell small {
+  color: #60746c;
+  line-height: 1.2;
+}
+
+.analysis-status-cell {
+  min-width: 7rem;
+}
+
+.analysis-status-cell .status-pill {
+  width: max-content;
+}
+
+.analysis-detail-row td {
+  padding: 0;
+  background: #fbfdfc;
+}
+
+.analysis-row-details {
+  padding: 0.16rem 0.45rem 0.38rem;
+}
+
+.analysis-row-details summary {
+  width: max-content;
+  cursor: pointer;
+  color: #476057;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.analysis-row-details summary:hover {
+  color: #16241f;
+}
+
+.analysis-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+  padding-top: 0.3rem;
+}
+
+.analysis-detail-grid div,
+.analysis-detail-grid label {
+  min-width: 0;
+}
+
+.analysis-detail-grid span {
+  display: block;
+  margin-bottom: 0.12rem;
+  color: #60746c;
+  font-size: 0.7rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.analysis-detail-grid strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #233b33;
+  font-size: 0.78rem;
+}
+
+.analysis-detail-wide {
+  grid-column: 1 / -1;
+}
+
+.ingestion-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  border-top: 1px solid #dce7e3;
+  padding-top: 0.5rem;
+}
+
+.ingestion-review-actions .soft {
+  margin-right: auto;
+}
+
 .roi-browser-layout {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
@@ -3142,6 +3329,168 @@ button.job-action-muted:hover:not(:disabled) {
   text-underline-offset: 0.16em;
 }
 
+.detail-link-button {
+  display: inline;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+}
+
+.detail-link-button:hover {
+  color: #174d3f;
+  background: transparent;
+}
+
+.frame-context-backdrop {
+  z-index: 55;
+}
+
+.frame-context-modal {
+  width: min(1500px, 100%);
+  max-height: min(94vh, 1080px);
+}
+
+.frame-context-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.frame-context-viewer {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.frame-context-stage {
+  display: grid;
+  place-items: center;
+  min-height: 420px;
+  max-height: 76vh;
+  overflow: auto;
+  border: 1px solid #d9e4e0;
+  border-radius: 6px;
+  background: #111916;
+}
+
+.frame-context-details {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+  min-width: 0;
+  border: 1px solid #dfe8e4;
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: #ffffff;
+}
+
+.frame-context-details h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.frame-context-details dl {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.frame-context-details dl > div {
+  display: grid;
+  grid-template-columns: 7.2rem minmax(0, 1fr);
+  gap: 0.45rem;
+  border-bottom: 1px solid #edf3f0;
+  padding-bottom: 0.38rem;
+}
+
+.frame-context-details dt {
+  color: #60746c;
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.frame-context-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.frame-context-metadata {
+  border-top: 1px solid #edf3f0;
+  padding-top: 0.35rem;
+}
+
+.frame-context-metadata summary {
+  cursor: pointer;
+  color: #263a33;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.frame-context-metadata pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0.35rem 0 0;
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: #f3f7f5;
+  color: #243b33;
+  font-size: 0.72rem;
+}
+
+.frame-roi-section {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid #dfe8e4;
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: #ffffff;
+}
+
+.frame-roi-thumbnail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 0.35rem;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.frame-roi-thumbnail {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  border: 1px solid #dce7e3;
+  border-radius: 6px;
+  padding: 0.3rem;
+  color: #263a33;
+  background: #fbfdfc;
+  box-shadow: none;
+}
+
+.frame-roi-thumbnail:hover {
+  background: #f3f7f5;
+}
+
+.frame-roi-thumbnail.selected {
+  border-color: #1f6b57;
+  background: #edf8f4;
+}
+
+.frame-roi-thumbnail span {
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .roi-frame-detail {
   border: 1px solid #e0e8e5;
   border-radius: 6px;
@@ -3761,6 +4110,7 @@ button.job-action-muted:hover:not(:disabled) {
   .ingestion-queue-grid,
   .roi-detail-grid,
   .roi-browser-layout,
+  .frame-context-layout,
   .frame-detail-layout,
   .metric-grid {
     grid-template-columns: 1fr;
@@ -3769,6 +4119,10 @@ button.job-action-muted:hover:not(:disabled) {
   .ingestion-file-panel {
     height: 34rem;
     min-height: 28rem;
+  }
+
+  .analysis-table {
+    min-width: 980px;
   }
 
   .active-job-row {
@@ -3835,6 +4189,10 @@ button.job-action-muted:hover:not(:disabled) {
 
   .refinement-roi-column-heading {
     position: static;
+  }
+
+  .analysis-detail-grid {
+    grid-template-columns: 1fr;
   }
 
   .page-header {

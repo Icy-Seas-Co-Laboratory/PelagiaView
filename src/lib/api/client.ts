@@ -4,6 +4,8 @@ import type {
   AuthLoginResponse,
   AuthMeResponse,
   AuthUserSummary,
+  AnalyzeIngestionRequest,
+  AnalyzeIngestionResponse,
   CollectionSummary,
   DetectionListResponse,
   DetectionFilters,
@@ -35,6 +37,12 @@ import type {
   LogEntry,
   ProjectSummary,
   ProjectMembershipSummary,
+  ProcessingStatusFilters,
+  ProcessingStatusFrameIdsResponse,
+  ProcessingStatusFramesResponse,
+  ProcessingStatusSummaryResponse,
+  QueueAssetsRequest,
+  QueueAssetsResponse,
   RawAsset,
   RoiRefinementCapabilities,
   RoiRefinementOptions,
@@ -414,6 +422,18 @@ export class PelagiaApiClient {
     return this.get<FrameProcessingState>('/frames/processing-state', options, 3000);
   }
 
+  async processingStatusSummary(filters: ProcessingStatusFilters = {}): Promise<ProcessingStatusSummaryResponse> {
+    return this.get<ProcessingStatusSummaryResponse>('/processing/status/summary', compact(filters), 3000);
+  }
+
+  async processingStatusFrames(filters: ProcessingStatusFilters = {}): Promise<ProcessingStatusFramesResponse> {
+    return this.get<ProcessingStatusFramesResponse>('/processing/status/frames', compact(filters), 3000);
+  }
+
+  async processingStatusFrameIds(filters: ProcessingStatusFilters = {}): Promise<ProcessingStatusFrameIdsResponse> {
+    return this.get<ProcessingStatusFrameIdsResponse>('/processing/status/frames/ids', compact(filters), 3000);
+  }
+
   async getAsset(assetId: string): Promise<RawAsset> {
     const response = await this.get<{ asset: RawAsset }>(`/assets/${encodeURIComponent(assetId)}`, undefined, 2500);
     return response.asset;
@@ -590,6 +610,14 @@ export class PelagiaApiClient {
     });
   }
 
+  async analyzeIngestionSource(body: AnalyzeIngestionRequest): Promise<AnalyzeIngestionResponse> {
+    return this.post<AnalyzeIngestionResponse>('/ingestion/analyze', compact(body));
+  }
+
+  async queueAnalyzedAssets(body: QueueAssetsRequest): Promise<QueueAssetsResponse> {
+    return this.post<QueueAssetsResponse>('/ingestion/assets', compact(body));
+  }
+
   async segmentFrame(frameId: string, options: SegmentationOptions): Promise<{
     frame_id: string;
     run_id?: string;
@@ -650,7 +678,7 @@ export class PelagiaApiClient {
     if (!this.token) {
       throw new ApiError(401, 'Pelagia session token is required.');
     }
-    const { encoding = 'png', ...preprocessOptions } = options;
+    const { encoding, ...preprocessOptions } = options;
     const params = {
       frame_id: frameId,
       encoding,
