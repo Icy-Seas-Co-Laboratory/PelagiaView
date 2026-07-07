@@ -800,6 +800,17 @@
     return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
   }
 
+  function frameModalFullResolutionUrl(detection: DetectionSummary | null, mode: FrameDisplayMode): string {
+    const client = getClient();
+    if (!client || !detection?.frame_id) return frameModalUrl;
+    const kind = payloadKindForDisplay(mode);
+    const base = {
+      frame_id: detection.frame_id,
+      format: 'png'
+    };
+    return kind === 'preprocessed' ? client.preprocessedFrameUrl(base) : client.originalFrameUrl(base);
+  }
+
   function resetFrameContextImage(url: string) {
     if (url === lastDetailFrameUrl) return;
     lastDetailFrameUrl = url;
@@ -1107,7 +1118,7 @@
         exportControls: 'menu',
         filename: frameModalFilename(),
         annotatedFilename: frameModalFilename(true),
-        originalUrl: frameModalUrl,
+        originalUrl: frameModalFullResolutionUrl(selectedDetection, frameModalDisplayMode),
         originalFilename: frameModalFilename(),
         info: {
           assetFilename: selectedParentAsset?.filename ?? selectedDetection?.asset_filename ?? selectedDetection?.asset_id ?? null,

@@ -323,7 +323,7 @@
     );
   }
 
-  async function tintedMaskCanvas(mask: ImageMaskOverlayLayer, width: number, height: number, signal: AbortSignal) {
+  async function tintedMaskCanvas(mask: ImageMaskOverlayLayer, width: number, height: number, signal?: AbortSignal) {
     const loaded = await loadElementImage(mask.imageUrl, signal);
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -598,8 +598,7 @@
 
   async function exportDataUrl(variant: 'original' | 'mask' | 'masked' | 'annotated') {
     if (variant === 'annotated') {
-      if (!stage) throw new Error('No rendered image is available.');
-      return stage.toDataURL({ mimeType: 'image/png', pixelRatio: 1 });
+      return annotatedExportDataUrl();
     }
     if (variant === 'mask') return maskExportDataUrl();
     const imageUrl = spec.toolbar?.originalUrl ?? spec.image.url;
@@ -611,6 +610,68 @@
       outsideColor: spec.baseMask?.outsideColor ?? 'black'
     });
     return composed.canvas.toDataURL('image/png');
+  }
+
+  async function annotatedExportDataUrl() {
+    const imageUrl = spec.toolbar?.originalUrl ?? spec.image.url;
+    const composed = await composeImage({
+      imageUrl,
+      maskUrl: spec.baseMask?.url,
+      applyMask: Boolean(spec.baseMask?.enabled),
+      invert: Boolean(spec.image.invert),
+      outsideColor: spec.baseMask?.outsideColor ?? 'black'
+    });
+    const context = composed.canvas.getContext('2d');
+    if (!context) throw new Error('Could not create image export canvas.');
+    const sourceWidth = positiveNumber(composed.sourceWidth) ?? positiveNumber(spec.image.sourceWidth) ?? composed.width;
+    const sourceHeight = positiveNumber(composed.sourceHeight) ?? positiveNumber(spec.image.sourceHeight) ?? composed.height;
+    const projection = {
+      sourceWidth,
+      sourceHeight,
+      imageWidth: composed.canvas.width,
+      imageHeight: composed.canvas.height,
+      canvasWidth: composed.canvas.width,
+      canvasHeight: composed.canvas.height
+    };
+    for (const layer of spec.layers ?? []) {
+      if (layer.kind === 'rect') drawRectExportLayer(context, layer, projection);
+      else if (layer.kind === 'mask-overlay') await drawMaskExportLayer(context, layer, projection);
+    }
+    return composed.canvas.toDataURL('image/png');
+  }
+
+  function drawRectExportLayer(
+    context: CanvasRenderingContext2D,
+    rect: ImageRectLayer,
+    projection: Parameters<typeof projectRect>[2]
+  ) {
+    const projected = projectRect(rect, rect.coordinateSpace ?? 'source', projection);
+    if (projected.w <= 0 || projected.h <= 0) return;
+    context.save();
+    if (rect.halo) {
+      context.strokeStyle = rect.halo;
+      context.lineWidth = (rect.lineWidth ?? 2) + 2;
+      context.strokeRect(projected.x, projected.y, projected.w, projected.h);
+    }
+    context.strokeStyle = rect.stroke;
+    context.lineWidth = rect.lineWidth ?? 2;
+    context.strokeRect(projected.x, projected.y, projected.w, projected.h);
+    context.restore();
+  }
+
+  async function drawMaskExportLayer(
+    context: CanvasRenderingContext2D,
+    mask: ImageMaskOverlayLayer,
+    projection: Parameters<typeof projectRect>[2]
+  ) {
+    const projected = projectRect(mask, mask.coordinateSpace ?? 'source', projection);
+    if (projected.w <= 0 || projected.h <= 0) return;
+    const maskCanvas = await tintedMaskCanvas(mask, Math.max(1, Math.round(projected.w)), Math.max(1, Math.round(projected.h)));
+    context.save();
+    context.globalAlpha = mask.opacity ?? 1;
+    context.globalCompositeOperation = mask.compositeOperation ?? compositeOperationForBlendMode(mask.blendMode);
+    context.drawImage(maskCanvas, projected.x, projected.y, projected.w, projected.h);
+    context.restore();
   }
 
   async function maskExportDataUrl() {
