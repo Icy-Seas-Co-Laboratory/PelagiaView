@@ -1,6 +1,7 @@
 export type ImageCoordinateSpace = 'source' | 'image' | 'percent';
 export type ImageViewerMode = 'thumbnail' | 'static' | 'viewer' | 'interactive';
 export type ImageExportControls = 'full' | 'menu' | 'copy-menu' | 'none';
+export type ImageDownloadVariant = 'original' | 'annotated' | 'mask' | 'masked' | 'masked-annotated';
 export type ImageOverlayBlendMode = 'normal' | 'add' | 'subtract' | 'multiply' | 'screen' | 'darken' | 'lighten';
 export type ImageOverlayColorMode = 'tint' | 'black' | 'white' | 'red';
 
@@ -95,6 +96,13 @@ export type ImageInfoSpec = {
   collections?: string[] | string | null;
 };
 
+export type ImageDownloadOption = {
+  label: string;
+  variant: ImageDownloadVariant;
+  filename?: string;
+  requiresMask?: boolean;
+};
+
 export type ImageToolbarSpec = {
   exportControls?: ImageExportControls;
   filename?: string;
@@ -104,6 +112,8 @@ export type ImageToolbarSpec = {
   maskUrl?: string;
   maskFilename?: string;
   maskedFilename?: string;
+  maskedAnnotatedFilename?: string;
+  downloadOptions?: ImageDownloadOption[];
   info?: ImageInfoSpec | null;
 };
 

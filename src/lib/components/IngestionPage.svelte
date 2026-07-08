@@ -35,12 +35,10 @@
   let message: string | null = null;
   let error: string | null = null;
   let nTile = 2;
+  let frameStorageMode = 'zstd';
   let kind = 'auto';
   let recursive = false;
-  let computeChecksum = false;
-  let enqueueSegment = false;
   let collections = '';
-  let metadataText = '';
   let preferencesReady = false;
   let analyzing = false;
   let queueing = false;
@@ -48,20 +46,19 @@
   let jobPollError: string | null = null;
   let analyzedAssets: EditableAnalyzedAsset[] = [];
   let submittedJobIds: string[] = [];
+  let submittedRunIds: string[] = [];
+  let submittedAssetIds: string[] = [];
   let ingestionJobsById: Record<string, Job> = {};
   let ingestionJobIdsByAssetKey: Record<string, string> = {};
-  const metadataPlaceholder = '{"cruise":"SKQ2026","station":"A01"}';
   const ingestionPreferenceKey = preferenceKey('ingestion');
 
   type IngestionPreferences = {
     currentPath: string;
     nTile: number;
+    frameStorageMode: string;
     kind: string;
     recursive: boolean;
-    computeChecksum: boolean;
-    enqueueSegment: boolean;
     collections: string;
-    metadataText: string;
   };
 
   type EditableAnalyzedAsset = AnalyzedIngestionAsset & {
@@ -73,24 +70,32 @@
     sourceTimestampText: string;
     nTile: number;
     recursive: boolean;
-    enqueueSegment: boolean;
+  };
+
+  type IngestionProgressSummary = {
+    totalJobs: number;
+    completedJobs: number;
+    activeJobs: number;
+    failedJobs: number;
+    percent: number;
+    label: string;
+    detail: string;
   };
 
   $: ingestionPreferenceSnapshot = {
     currentPath,
     nTile,
+    frameStorageMode,
     kind,
     recursive,
-    computeChecksum,
-    enqueueSegment,
-    collections,
-    metadataText
+    collections
   };
   $: if (preferencesReady) writePreferences(ingestionPreferenceKey, ingestionPreferenceSnapshot);
   $: if (preferencesReady) {
     ingestionPreferenceSnapshot;
     setLiveProcessingPresetFromSettings(captureProcessingSettings());
   }
+  $: overallIngestionProgress = ingestionProgressSummary(Object.values(ingestionJobsById));
 
   onMount(() => {
     window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
@@ -123,24 +128,26 @@
     if (!preferences) return;
     currentPath = stringPreference(preferences.currentPath, currentPath);
     nTile = numberPreference(preferences.nTile, nTile);
+    frameStorageMode = normalizeFrameStorageMode(stringPreference(preferences.frameStorageMode, frameStorageMode));
     kind = stringPreference(preferences.kind, kind);
     recursive = booleanPreference(preferences.recursive, recursive);
-    computeChecksum = booleanPreference(preferences.computeChecksum, computeChecksum);
-    enqueueSegment = booleanPreference(preferences.enqueueSegment, enqueueSegment);
     collections = stringPreference(preferences.collections, collections);
-    metadataText = stringPreference(preferences.metadataText, metadataText);
   }
 
   function captureProcessingSettings(): ProcessingSettings {
     return pruneProcessingSettings({
       ...currentLiveProcessingPreset().settings,
-      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1)))
+      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1))),
+      ingestionFrameStorageEncoding: frameStorageMode
     });
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
     if ('ingestionTileCount' in settings) {
       nTile = Math.max(1, Math.round(numberPreference(settings.ingestionTileCount, nTile)));
+    }
+    if ('ingestionFrameStorageEncoding' in settings) {
+      frameStorageMode = normalizeFrameStorageMode(stringPreference(settings.ingestionFrameStorageEncoding, frameStorageMode));
     }
   }
 
@@ -190,14 +197,6 @@
     message = null;
     error = null;
     analyzing = true;
-    let metadata: Record<string, unknown>;
-    try {
-      metadata = parseMetadata();
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      analyzing = false;
-      return;
-    }
     const nextAssets: EditableAnalyzedAsset[] = [];
     for (const path of paths) {
       try {
@@ -205,10 +204,9 @@
           source_path: path,
           kind,
           recursive,
-          compute_checksum: computeChecksum,
           n_tile: nTile,
-          collections: collections || undefined,
-          metadata
+          image_encoding: frameStorageMode,
+          collections: collections || undefined
         });
         nextAssets.push(...(response.assets ?? []).map((asset) => editableAsset(asset, response.suggested_ingestion_request)));
       } catch (err) {
@@ -230,14 +228,6 @@
     message = null;
     error = null;
     queueing = true;
-    let runMetadata: Record<string, unknown>;
-    try {
-      runMetadata = parseMetadata();
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      queueing = false;
-      return;
-    }
     const enabledAssets = analyzedAssets.filter((asset) => asset.enabled);
     const timestampError = validateAnalyzedAssetTimestamps(enabledAssets);
     if (timestampError) {
@@ -264,11 +254,16 @@
         source_path: commonSourcePath(assets),
         source_type: sourceType(assets),
         n_tile: nTile,
-        enqueue_segment: enqueueSegment,
-        metadata: runMetadata
+        image_encoding: frameStorageMode
       });
       const nextJobIds = (response.jobs ?? []).map((job) => job.id).filter((id): id is string => Boolean(id));
-      submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
+      submittedJobIds = uniqueStrings([...nextJobIds, ...submittedJobIds]).slice(0, 100);
+      submittedRunIds = uniqueStrings([response.run_id, ...submittedRunIds]).slice(0, 50);
+      submittedAssetIds = uniqueStrings([
+        ...(response.assets ?? []).map((asset) => asset.id),
+        ...assets.map((asset) => asset.asset_id),
+        ...submittedAssetIds
+      ]).slice(0, 500);
       mergeIngestionJobs(response.jobs ?? []);
       message = `Queued ${response.jobs?.length ?? assets.length} ingestion job${(response.jobs?.length ?? assets.length) === 1 ? '' : 's'} for ${assets.length} asset${assets.length === 1 ? '' : 's'}.`;
       const queuedKeys = new Set(assets.map((asset) => assetKey(asset)));
@@ -304,8 +299,7 @@
       metadataText: formatJson(asset.metadata ?? {}),
       sourceTimestampText: sourceTimestampValue(asset),
       nTile: Number(suggested?.n_tile ?? nTile),
-      recursive: Boolean(asset.metadata?.recursive ?? recursive),
-      enqueueSegment
+      recursive: Boolean(asset.metadata?.recursive ?? recursive)
     };
   }
 
@@ -334,8 +328,7 @@
       media_count: asset.media_count,
       metadata,
       n_tile: Math.max(1, Math.round(Number(asset.nTile) || nTile)),
-      recursive: asset.kind === 'image_sequence' ? asset.recursive : undefined,
-      enqueue_segment: enqueueSegment
+      recursive: asset.kind === 'image_sequence' ? asset.recursive : undefined
     };
   }
 
@@ -347,24 +340,74 @@
     analyzedAssets = analyzedAssets.filter((_, assetIndex) => assetIndex !== index);
   }
 
+  function selectAllAnalyzedAssets() {
+    analyzedAssets = analyzedAssets.map((asset) => (asset.queued ? asset : { ...asset, enabled: true }));
+  }
+
+  function selectNoAnalyzedAssets() {
+    analyzedAssets = analyzedAssets.map((asset) => ({ ...asset, enabled: false }));
+  }
+
+  function clearSelectedAnalyzedAssets() {
+    analyzedAssets = analyzedAssets.filter((asset) => !asset.enabled);
+  }
+
   function assetKey(asset: Pick<EditableAnalyzedAsset, 'path' | 'asset_id'> | Pick<QueueIngestionAssetRequest, 'path' | 'asset_id'>): string {
     return asset.path || asset.asset_id || '';
   }
 
   async function refreshIngestionJobs() {
     const client = getClient();
-    if (!client || submittedJobIds.length === 0 || jobPolling) return;
+    if (!client || (submittedJobIds.length === 0 && submittedRunIds.length === 0 && submittedAssetIds.length === 0) || jobPolling) return;
     jobPolling = true;
     jobPollError = null;
     try {
-      const jobs = await client.listJobs({
-        ids: submittedJobIds,
-        include_progress: true,
-        limit: Math.max(100, submittedJobIds.length),
-        sort: 'updated_at',
-        direction: 'desc'
-      });
+      const jobsById: Record<string, Job> = {};
+      const addJobs = (jobs: Job[]) => {
+        for (const job of jobs) jobsById[job.id] = job;
+      };
+      if (submittedJobIds.length) {
+        addJobs(
+          await client.listJobs({
+            ids: submittedJobIds,
+            include_progress: true,
+            include_payload: true,
+            limit: Math.max(100, submittedJobIds.length),
+            sort: 'updated_at',
+            direction: 'desc'
+          })
+        );
+      }
+      for (const runId of submittedRunIds) {
+        addJobs(
+          await client.listJobs({
+            run_id: runId,
+            stage: ['extract_frames', 'ingestion'],
+            include_progress: true,
+            include_payload: true,
+            limit: 500,
+            sort: 'updated_at',
+            direction: 'desc'
+          })
+        );
+      }
+      if (submittedJobIds.length === 0 && submittedRunIds.length === 0) {
+        for (const assetId of submittedAssetIds.slice(0, 50)) {
+          addJobs(
+            await client.listJobs({
+              asset_id: assetId,
+              include_progress: true,
+              include_payload: true,
+              limit: 50,
+              sort: 'updated_at',
+              direction: 'desc'
+            })
+          );
+        }
+      }
+      const jobs = Object.values(jobsById);
       mergeIngestionJobs(jobs);
+      rememberAssetJobLinks(analyzedAssets, jobs);
     } catch (err) {
       jobPollError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -378,8 +421,7 @@
     const nextIdsByAssetKey = { ...ingestionJobIdsByAssetKey };
     for (const job of jobs) {
       nextById[job.id] = job;
-      const key = jobAssetKey(job);
-      if (key) nextIdsByAssetKey[key] = job.id;
+      for (const key of jobAssetKeys(job)) nextIdsByAssetKey[key] = job.id;
     }
     ingestionJobsById = nextById;
     ingestionJobIdsByAssetKey = nextIdsByAssetKey;
@@ -390,9 +432,10 @@
     const nextIdsByAssetKey = { ...ingestionJobIdsByAssetKey };
     const jobsByAssetKey = jobsByAssetKeyFromList(jobs);
     for (const asset of assets) {
-      const key = assetKey(asset);
-      const jobId = jobsByAssetKey[key]?.id ?? asset.ingestionJobId;
-      if (key && jobId) nextIdsByAssetKey[key] = jobId;
+      const jobId = assetMatchKeys(asset).map((key) => jobsByAssetKey[key]?.id).find(Boolean) ?? asset.ingestionJobId;
+      if (jobId) {
+        for (const key of assetMatchKeys(asset)) nextIdsByAssetKey[key] = jobId;
+      }
     }
     ingestionJobIdsByAssetKey = nextIdsByAssetKey;
   }
@@ -400,28 +443,40 @@
   function jobsByAssetKeyFromList(jobs: Job[]): Record<string, Job> {
     const result: Record<string, Job> = {};
     for (const job of jobs) {
-      const key = jobAssetKey(job);
-      if (key) result[key] = job;
+      for (const key of jobAssetKeys(job)) result[key] = job;
     }
     return result;
   }
 
-  function jobAssetKey(job: Job): string {
-    const assetId = job.asset_id ?? (typeof job.payload?.asset_id === 'string' ? job.payload.asset_id : null);
-    return assetId ?? '';
+  function jobAssetKeys(job: Job): string[] {
+    const payload = job.payload ?? {};
+    const result = job.result ?? {};
+    const payloadAsset = objectValue(payload.asset);
+    const resultAsset = objectValue(result.asset);
+    const candidates = [
+      job.asset_id,
+      stringValue(payload.asset_id),
+      stringValue(payload.raw_asset_id),
+      stringValue(payload.proposed_asset_id),
+      stringValue(payload.source_path),
+      stringValue(payload.path),
+      stringValue(payloadAsset.id),
+      stringValue(payloadAsset.asset_id),
+      stringValue(payloadAsset.path),
+      stringValue(result.asset_id),
+      stringValue(result.raw_asset_id),
+      stringValue(result.source_path),
+      stringValue(result.path),
+      stringValue(resultAsset.id),
+      stringValue(resultAsset.asset_id),
+      stringValue(resultAsset.path)
+    ];
+    return uniqueStrings(candidates);
   }
 
   function assetIngestionJob(asset: EditableAnalyzedAsset): Job | null {
-    const linkedJobId = asset.ingestionJobId ?? ingestionJobIdsByAssetKey[assetKey(asset)];
+    const linkedJobId = asset.ingestionJobId ?? assetMatchKeys(asset).map((key) => ingestionJobIdsByAssetKey[key]).find(Boolean);
     return linkedJobId ? ingestionJobsById[linkedJobId] ?? null : null;
-  }
-
-  function jobProgressPercent(job: Job | null): number | null {
-    return numericValue(job?.progress?.percent);
-  }
-
-  function jobProgressWidth(job: Job | null): string {
-    return `${Math.max(0, Math.min(100, jobProgressPercent(job) ?? 0))}%`;
   }
 
   function jobProgressText(job: Job | null): string {
@@ -433,6 +488,55 @@
       return `${formatCount(completed)} / ${formatCount(total)} ${unit}`;
     }
     return job.progress?.message ?? job.status ?? 'Progress unavailable';
+  }
+
+  function ingestionProgressSummary(jobs: Job[]): IngestionProgressSummary | null {
+    if (!jobs.length) return null;
+    let completedUnits = 0;
+    let totalUnits = 0;
+    let completedJobs = 0;
+    let activeJobs = 0;
+    let failedJobs = 0;
+
+    for (const job of jobs) {
+      const status = String(job.status ?? '').toLowerCase();
+      const terminal = ['succeeded', 'failed', 'cancelled', 'dead_lettered'].includes(status);
+      const failed = ['failed', 'cancelled', 'dead_lettered'].includes(status);
+      if (status === 'succeeded') completedJobs += 1;
+      else if (failed) failedJobs += 1;
+      else activeJobs += 1;
+
+      const completed = numericValue(job.progress?.completed);
+      const total = numericValue(job.progress?.total);
+      if (completed !== null && total !== null && total > 0) {
+        completedUnits += Math.min(completed, total);
+        totalUnits += total;
+      } else {
+        completedUnits += terminal ? 1 : 0;
+        totalUnits += 1;
+      }
+    }
+
+    const percent = totalUnits > 0 ? Math.max(0, Math.min(100, (completedUnits / totalUnits) * 100)) : 0;
+    const unitDetail =
+      totalUnits > jobs.length
+        ? `${formatCount(completedUnits)} / ${formatCount(totalUnits)} work units`
+        : `${formatCount(completedJobs + failedJobs)} / ${formatCount(jobs.length)} jobs finished`;
+    const statusDetail = [
+      activeJobs ? `${formatCount(activeJobs)} active` : null,
+      completedJobs ? `${formatCount(completedJobs)} succeeded` : null,
+      failedJobs ? `${formatCount(failedJobs)} need attention` : null
+    ].filter(Boolean).join(' · ');
+
+    return {
+      totalJobs: jobs.length,
+      completedJobs,
+      activeJobs,
+      failedJobs,
+      percent,
+      label: `${formatPercent(percent)} complete`,
+      detail: statusDetail ? `${unitDetail} · ${statusDetail}` : unitDetail
+    };
   }
 
   function statusPillClass(status?: string | null): string {
@@ -529,8 +633,24 @@
     return analyzedAssets.filter((asset) => asset.enabled).length;
   }
 
-  function parseMetadata(): Record<string, unknown> {
-    return parseMetadataText(metadataText, 'Metadata');
+  function normalizeFrameStorageMode(value: string): string {
+    return ['zstd', 'jpg', 'png'].includes(value) ? value : 'zstd';
+  }
+
+  function assetMatchKeys(asset: Pick<EditableAnalyzedAsset, 'path' | 'asset_id'>): string[] {
+    return uniqueStrings([asset.path, asset.asset_id]);
+  }
+
+  function uniqueStrings(values: Array<string | null | undefined>): string[] {
+    return [...new Set(values.filter((value): value is string => Boolean(value)))];
+  }
+
+  function objectValue(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  }
+
+  function stringValue(value: unknown): string | null {
+    return typeof value === 'string' && value ? value : null;
   }
 </script>
 
@@ -584,6 +704,14 @@
             <input type="number" min="1" bind:value={nTile} />
           </label>
           <label>
+            Frame storage
+            <select bind:value={frameStorageMode}>
+              <option value="zstd">zstd</option>
+              <option value="jpg">jpg</option>
+              <option value="png">png</option>
+            </select>
+          </label>
+          <label>
             Collections
             <input bind:value={collections} placeholder="cruise-2026,station-a" />
           </label>
@@ -591,20 +719,7 @@
             <input type="checkbox" bind:checked={recursive} />
             Recursive folders
           </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={computeChecksum} />
-            Compute checksums
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={enqueueSegment} />
-            Queue detection after ingestion
-          </label>
         </div>
-
-        <label>
-          Metadata JSON
-          <textarea bind:value={metadataText} rows="5" placeholder={metadataPlaceholder}></textarea>
-        </label>
 
         <div class="button-row">
           <button type="button" on:click={analyzeSelection} disabled={analyzing || selectedPathList.length === 0}>
@@ -627,11 +742,39 @@
 
     {#if analyzedAssets.length}
       <div class="ingestion-review-list">
-        <div class="section-heading">
-          <p class="eyebrow">Analysis results</p>
-          <strong>{enabledAssetCount()} enabled for ingestion{jobPolling ? ' · refreshing jobs' : ''}</strong>
+        <div class="section-heading analysis-section-heading">
+          <div>
+            <p class="eyebrow">Analysis results</p>
+            <strong>{enabledAssetCount()} enabled for ingestion{jobPolling ? ' · refreshing jobs' : ''}</strong>
+          </div>
+          <div class="analysis-selection-actions" aria-label="Analysis selection actions">
+            <button class="ghost compact-action" type="button" on:click={selectAllAnalyzedAssets}>
+              Select all
+            </button>
+            <button class="ghost compact-action" type="button" on:click={selectNoAnalyzedAssets} disabled={enabledAssetCount() === 0}>
+              Select none
+            </button>
+            <button class="ghost compact-action" type="button" on:click={clearSelectedAnalyzedAssets} disabled={enabledAssetCount() === 0} title="Remove selected assets from the analysis list">
+              Clear selection
+            </button>
+          </div>
         </div>
         {#if jobPollError}<p class="form-error">{jobPollError}</p>{/if}
+        {#if overallIngestionProgress}
+          <div class="ingestion-overall-progress" class:warn={overallIngestionProgress.failedJobs > 0}>
+            <div class="ingestion-overall-progress-head">
+              <div>
+                <span>Overall ingestion</span>
+                <strong>{overallIngestionProgress.label}</strong>
+              </div>
+              <small>{jobPolling ? 'Refreshing' : `${formatCount(overallIngestionProgress.totalJobs)} job${overallIngestionProgress.totalJobs === 1 ? '' : 's'}`}</small>
+            </div>
+            <div class="stage-progress-track">
+              <span style={`width: ${Math.max(0, Math.min(100, overallIngestionProgress.percent))}%`}></span>
+            </div>
+            <p>{overallIngestionProgress.detail}</p>
+          </div>
+        {/if}
         <div class="analysis-table-wrap">
           <table class="analysis-table">
             <thead>
@@ -644,7 +787,6 @@
                 <th>Source datetime</th>
                 <th>Recursive</th>
                 <th>Facts</th>
-                <th>Progress</th>
                 <th>Status</th>
                 <th></th>
               </tr>
@@ -703,23 +845,13 @@
                     {/if}
                     {#if assetMetadataValue(asset, 'fps')}<span>{assetMetadataValue(asset, 'fps')} FPS</span>{/if}
                   </td>
-                  <td class="analysis-progress-cell">
-                    {#if ingestionJob}
-                      <div class="stage-progress-track">
-                        <span style={`width: ${jobProgressWidth(ingestionJob)}`}></span>
-                      </div>
-                      <small>{formatPercent(ingestionJob.progress?.percent)} · {jobProgressText(ingestionJob)}</small>
-                    {:else if asset.queued}
-                      <small>Queued; waiting for job status</small>
-                    {:else}
-                      <small>Not queued</small>
-                    {/if}
-                  </td>
                   <td class="analysis-status-cell">
                     {#if ingestionJob}
                       <span class={`status-pill ${statusPillClass(ingestionJob.status)}`}>{ingestionJob.status ?? 'queued'}</span>
+                      <small>{jobProgressText(ingestionJob)}</small>
                     {:else if asset.queued}
                       <span class="status-pill warn">Queued</span>
+                      <small>Waiting for job status</small>
                     {/if}
                     {#if asset.warnings?.length}<span class="status-pill warn">{asset.warnings.length} warning{asset.warnings.length === 1 ? '' : 's'}</span>{/if}
                     {#if asset.checksum_status}<small>Checksum {asset.checksum_status}</small>{/if}
@@ -729,7 +861,7 @@
                   </td>
                 </tr>
                 <tr class:disabled={!asset.enabled && !asset.queued} class="analysis-detail-row">
-                  <td colspan="11">
+                  <td colspan="10">
                     <details class="analysis-row-details">
                       <summary>Details</summary>
                       <div class="analysis-detail-grid">

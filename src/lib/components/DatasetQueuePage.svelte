@@ -1737,25 +1737,27 @@
   }
 
   function maskAugmentationOptions(): Record<string, unknown> {
+    const steps = normalizedMaskSteps();
+    const hasStep = (step: string) => maskAugmentationEnabled && steps.includes(step);
     return {
       mask_augmentation_enabled: maskAugmentationEnabled,
-      mask_augmentation_steps: maskAugmentationEnabled ? normalizedMaskSteps() : [],
-      dilate_kernel_w: dilateKernelW,
-      dilate_kernel_h: dilateKernelH,
-      dilate_iterations: dilateIterations,
-      erode_kernel_w: erodeKernelW,
-      erode_kernel_h: erodeKernelH,
-      erode_iterations: erodeIterations,
-      open_kernel_w: openKernelW,
-      open_kernel_h: openKernelH,
-      open_iterations: openIterations,
-      close_kernel_w: closeKernelW,
-      close_kernel_h: closeKernelH,
-      close_iterations: closeIterations,
-      fill_holes: fillHoles,
-      remove_small_components: removeSmallComponents,
-      min_component_area: minComponentArea,
-      clear_border: clearBorder
+      mask_augmentation_steps: maskAugmentationEnabled ? steps : [],
+      dilate_kernel_w: hasStep('dilate') ? dilateKernelW : undefined,
+      dilate_kernel_h: hasStep('dilate') ? dilateKernelH : undefined,
+      dilate_iterations: hasStep('dilate') ? dilateIterations : undefined,
+      erode_kernel_w: hasStep('erode') ? erodeKernelW : undefined,
+      erode_kernel_h: hasStep('erode') ? erodeKernelH : undefined,
+      erode_iterations: hasStep('erode') ? erodeIterations : undefined,
+      open_kernel_w: hasStep('open') ? openKernelW : undefined,
+      open_kernel_h: hasStep('open') ? openKernelH : undefined,
+      open_iterations: hasStep('open') ? openIterations : undefined,
+      close_kernel_w: hasStep('close') ? closeKernelW : undefined,
+      close_kernel_h: hasStep('close') ? closeKernelH : undefined,
+      close_iterations: hasStep('close') ? closeIterations : undefined,
+      fill_holes: maskAugmentationEnabled && fillHoles ? true : undefined,
+      remove_small_components: maskAugmentationEnabled && removeSmallComponents ? true : undefined,
+      min_component_area: maskAugmentationEnabled && removeSmallComponents ? minComponentArea : undefined,
+      clear_border: maskAugmentationEnabled && clearBorder ? true : undefined
     };
   }
 
@@ -1816,7 +1818,7 @@
 
   function normalizedMaskSteps(): string[] {
     const steps = [...maskAugmentationSteps].filter((step) => step && step !== 'none');
-    return steps.length ? steps : ['none'];
+    return steps;
   }
 
   function toggleMaskStep(step: string) {

@@ -7,6 +7,8 @@
   import { displayScale, projectRect, scaleBarLength } from '$lib/utils/imageProjection';
   import { formatBytes } from '$lib/utils/format';
   import type {
+    ImageDownloadOption,
+    ImageDownloadVariant,
     ImageLayer,
     ImageMaskOverlayLayer,
     ImageRectLayer,
@@ -386,8 +388,18 @@
     layer.add(
       new Konva.Line({
         points: [x, y, x + width, y],
+        stroke: '#050807',
+        strokeWidth: 5,
+        lineCap: 'square',
+        listening: false
+      })
+    );
+    layer.add(
+      new Konva.Line({
+        points: [x, y, x + width, y],
         stroke: '#ffffff',
         strokeWidth: 4,
+        lineCap: 'square',
         listening: false
       })
     );
@@ -400,7 +412,7 @@
         fontSize: 10,
         fontStyle: 'bold',
         shadowColor: '#050807',
-        shadowBlur: 2,
+        shadowBlur: 1,
         listening: false
       })
     );
@@ -431,7 +443,7 @@
         new Konva.Tag({
           fill: 'rgba(5, 8, 7, 0.82)',
           stroke: 'rgba(255, 255, 255, 0.24)',
-          cornerRadius: 4
+          cornerRadius: 1
         })
       );
       measurementLabel.add(
@@ -560,14 +572,14 @@
     zoomPreviewSourceUrl = '';
   }
 
-  async function runToolbarDownload(variant: 'original' | 'mask' | 'masked' | 'annotated') {
+  async function runToolbarDownload(variant: ImageDownloadVariant, filenameOverride?: string) {
     if (!stageReady) return;
     busy = true;
     status = null;
     const started = performance.now();
     try {
       const dataUrl = await exportDataUrl(variant);
-      const filename = exportFilename(variant);
+      const filename = exportFilename(variant, filenameOverride);
       downloadDataUrl(dataUrl, filename);
       status = 'Downloaded image.';
       recordClientEvent('image_export', {
@@ -596,48 +608,40 @@
     }
   }
 
-  async function exportDataUrl(variant: 'original' | 'mask' | 'masked' | 'annotated') {
-    if (variant === 'annotated') {
-      return annotatedExportDataUrl();
-    }
+  async function exportDataUrl(variant: ImageDownloadVariant) {
     if (variant === 'mask') return maskExportDataUrl();
+    const includeOverlay = variant === 'annotated' || variant === 'masked-annotated';
+    const applyMask = variant === 'masked' || variant === 'masked-annotated';
     const imageUrl = spec.toolbar?.originalUrl ?? spec.image.url;
     const composed = await composeImage({
       imageUrl,
-      maskUrl: spec.baseMask?.url,
-      applyMask: variant === 'masked' && Boolean(spec.baseMask?.url),
+      maskUrl: spec.toolbar?.maskUrl ?? spec.baseMask?.url,
+      applyMask,
       invert: Boolean(spec.image.invert),
       outsideColor: spec.baseMask?.outsideColor ?? 'black'
     });
+    if (includeOverlay) await drawExportOverlay(composed.canvas, composed.sourceWidth ?? composed.width, composed.sourceHeight ?? composed.height);
     return composed.canvas.toDataURL('image/png');
   }
 
-  async function annotatedExportDataUrl() {
-    const imageUrl = spec.toolbar?.originalUrl ?? spec.image.url;
-    const composed = await composeImage({
-      imageUrl,
-      maskUrl: spec.baseMask?.url,
-      applyMask: Boolean(spec.baseMask?.enabled),
-      invert: Boolean(spec.image.invert),
-      outsideColor: spec.baseMask?.outsideColor ?? 'black'
-    });
-    const context = composed.canvas.getContext('2d');
+  async function drawExportOverlay(canvas: HTMLCanvasElement, fallbackSourceWidth: number, fallbackSourceHeight: number) {
+    const context = canvas.getContext('2d');
     if (!context) throw new Error('Could not create image export canvas.');
-    const sourceWidth = positiveNumber(composed.sourceWidth) ?? positiveNumber(spec.image.sourceWidth) ?? composed.width;
-    const sourceHeight = positiveNumber(composed.sourceHeight) ?? positiveNumber(spec.image.sourceHeight) ?? composed.height;
+    const sourceWidth = positiveNumber(spec.image.sourceWidth) ?? positiveNumber(fallbackSourceWidth) ?? canvas.width;
+    const sourceHeight = positiveNumber(spec.image.sourceHeight) ?? positiveNumber(fallbackSourceHeight) ?? canvas.height;
     const projection = {
       sourceWidth,
       sourceHeight,
-      imageWidth: composed.canvas.width,
-      imageHeight: composed.canvas.height,
-      canvasWidth: composed.canvas.width,
-      canvasHeight: composed.canvas.height
+      imageWidth: canvas.width,
+      imageHeight: canvas.height,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height
     };
     for (const layer of spec.layers ?? []) {
       if (layer.kind === 'rect') drawRectExportLayer(context, layer, projection);
       else if (layer.kind === 'mask-overlay') await drawMaskExportLayer(context, layer, projection);
     }
-    return composed.canvas.toDataURL('image/png');
+    drawScaleBarExport(context, sourceWidth, canvas.width, canvas.height);
   }
 
   function drawRectExportLayer(
@@ -684,6 +688,47 @@
     return composed.canvas.toDataURL('image/png');
   }
 
+  function drawScaleBarExport(
+    context: CanvasRenderingContext2D,
+    sourceWidth: number,
+    imageWidth: number,
+    imageHeight: number
+  ) {
+    if (!spec.scaleBar?.enabled) return;
+    const length = scaleBarLength(
+      sourceWidth,
+      spec.scaleBar.lengths ?? defaultScaleBarLengths,
+      spec.scaleBar.maxPercent ?? 48
+    );
+    if (!length) return;
+    const width = (length / sourceWidth) * imageWidth;
+    const x = 8;
+    const y = Math.max(6, imageHeight - 20);
+    const fontSize = Math.max(10, Math.min(18, Math.round(imageWidth * 0.018)));
+    context.save();
+    context.lineCap = 'square';
+    context.strokeStyle = '#050807';
+    context.lineWidth = 5;
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x + width, y);
+    context.stroke();
+    context.strokeStyle = '#ffffff';
+    context.lineWidth = 4;
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x + width, y);
+    context.stroke();
+    context.font = `700 ${fontSize}px sans-serif`;
+    context.textBaseline = 'top';
+    context.lineWidth = Math.max(2, Math.round(fontSize * 0.22));
+    context.strokeStyle = '#050807';
+    context.strokeText(`${length} px`, x, y + 4);
+    context.fillStyle = '#ffffff';
+    context.fillText(`${length} px`, x, y + 4);
+    context.restore();
+  }
+
   function downloadDataUrl(dataUrl: string, filename: string) {
     const anchor = document.createElement('a');
     anchor.href = dataUrl;
@@ -693,10 +738,12 @@
     anchor.remove();
   }
 
-  function exportFilename(variant: 'original' | 'mask' | 'masked' | 'annotated') {
+  function exportFilename(variant: ImageDownloadVariant, filenameOverride?: string) {
+    if (filenameOverride) return filenameOverride;
     if (variant === 'annotated') return spec.toolbar?.annotatedFilename ?? suffixFilename('overlays');
     if (variant === 'mask') return spec.toolbar?.maskFilename ?? suffixFilename('mask');
     if (variant === 'masked') return spec.toolbar?.maskedFilename ?? suffixFilename('masked');
+    if (variant === 'masked-annotated') return spec.toolbar?.maskedAnnotatedFilename ?? suffixFilename('masked-overlays');
     return spec.toolbar?.originalFilename ?? spec.toolbar?.filename ?? 'pelagia-image.png';
   }
 
@@ -729,6 +776,29 @@
     return Boolean(spec.toolbar?.info);
   }
 
+  function defaultDownloadOptions(): ImageDownloadOption[] {
+    const options: ImageDownloadOption[] = [
+      { label: 'Download original image', variant: 'original' }
+    ];
+    if ((spec.layers?.length ?? 0) > 0 || spec.scaleBar?.enabled) {
+      options.push({ label: 'Download image + overlays', variant: 'annotated' });
+    }
+    options.push(
+      { label: 'Download mask only', variant: 'mask', requiresMask: true },
+      { label: 'Download masked image', variant: 'masked', requiresMask: true }
+    );
+    return options;
+  }
+
+  function downloadOptionDisabled(option: ImageDownloadOption) {
+    const requiresMask =
+      option.requiresMask ||
+      option.variant === 'mask' ||
+      option.variant === 'masked' ||
+      option.variant === 'masked-annotated';
+    return requiresMask && !maskAvailable;
+  }
+
   function positiveNumber(value: number | null | undefined): number | null {
     return Number.isFinite(value) && value && value > 0 ? value : null;
   }
@@ -750,6 +820,7 @@
   $: exportControls = spec.toolbar?.exportControls ?? 'full';
   $: toolbarEnabled = exportControls !== 'none';
   $: maskAvailable = Boolean(spec.toolbar?.maskUrl ?? spec.baseMask?.url);
+  $: downloadOptions = spec.toolbar?.downloadOptions ?? defaultDownloadOptions();
   $: toolbarInfo = spec.toolbar?.info ?? null;
 </script>
 
@@ -838,12 +909,15 @@
 
       {#if activePanel === 'download'}
         <div class="konva-tool-popover konva-download-menu" role="menu" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
-          <button type="button" disabled={busy || !stageReady} on:click={() => runToolbarDownload('original')}>Download original image</button>
-          {#if (spec.layers?.length ?? 0) > 0}
-            <button type="button" disabled={busy || !stageReady} on:click={() => runToolbarDownload('annotated')}>Download image + overlays</button>
-          {/if}
-          <button type="button" disabled={busy || !stageReady || !maskAvailable} on:click={() => runToolbarDownload('mask')}>Download mask only</button>
-          <button type="button" disabled={busy || !stageReady || !maskAvailable} on:click={() => runToolbarDownload('masked')}>Download masked image</button>
+          {#each downloadOptions as option}
+            <button
+              type="button"
+              disabled={busy || !stageReady || downloadOptionDisabled(option)}
+              on:click={() => runToolbarDownload(option.variant, option.filename)}
+            >
+              {option.label}
+            </button>
+          {/each}
         </div>
       {/if}
 

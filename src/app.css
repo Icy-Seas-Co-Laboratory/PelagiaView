@@ -947,6 +947,46 @@ h2 {
   background: #1f6b57;
 }
 
+.queue-progress-summary {
+  display: grid;
+  gap: 0.32rem;
+  border: 1px solid #dce7e3;
+  border-radius: 6px;
+  padding: 0.48rem 0.55rem;
+  background: #fbfdfc;
+}
+
+.queue-progress-summary.warn {
+  border-color: #f0c8a8;
+  background: #fff9f3;
+}
+
+.queue-progress-heading {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.queue-progress-heading span {
+  color: #60746c;
+  font-size: 0.66rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.queue-progress-heading strong {
+  color: #17201b;
+  font-size: 0.9rem;
+}
+
+.queue-progress-summary p {
+  margin: 0;
+  color: #60746c;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
 .stage-card-foot {
   display: flex;
   gap: 0.65rem;
@@ -1383,6 +1423,69 @@ button.job-action-muted:hover:not(:disabled) {
   gap: 0.4rem;
 }
 
+.analysis-section-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.analysis-selection-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  justify-content: flex-end;
+}
+
+.ingestion-overall-progress {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid #dce7e3;
+  border-radius: 6px;
+  padding: 0.55rem 0.65rem;
+  background: #fbfdfc;
+}
+
+.ingestion-overall-progress.warn {
+  border-color: #f0c8a8;
+  background: #fff9f3;
+}
+
+.ingestion-overall-progress-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.ingestion-overall-progress-head div {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.ingestion-overall-progress-head span {
+  color: #60746c;
+  font-size: 0.66rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.ingestion-overall-progress-head strong {
+  color: #17201b;
+  font-size: 0.98rem;
+}
+
+.ingestion-overall-progress small,
+.ingestion-overall-progress p {
+  margin: 0;
+  color: #60746c;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
 .analysis-table-wrap {
   overflow-x: auto;
   border: 1px solid #dce7e3;
@@ -1469,26 +1572,11 @@ button.job-action-muted:hover:not(:disabled) {
 }
 
 .analysis-facts-cell,
-.analysis-progress-cell,
 .analysis-status-cell {
   display: grid;
   gap: 0.16rem;
   min-width: 9rem;
   color: #60746c;
-}
-
-.analysis-progress-cell {
-  min-width: 11rem;
-  align-content: start;
-}
-
-.analysis-progress-cell .stage-progress-track {
-  width: 100%;
-}
-
-.analysis-progress-cell small {
-  color: #60746c;
-  line-height: 1.2;
 }
 
 .analysis-status-cell {
@@ -3464,7 +3552,7 @@ button.job-action-muted:hover:not(:disabled) {
 
 .frame-roi-thumbnail {
   display: grid;
-  grid-template-rows: 112px auto;
+  align-content: start;
   gap: 0.25rem;
   min-width: 0;
   border: 1px solid #dce7e3;
@@ -3478,8 +3566,10 @@ button.job-action-muted:hover:not(:disabled) {
 .frame-roi-thumbnail-image {
   display: grid;
   place-items: center;
-  width: 100%;
-  height: 112px;
+  width: var(--roi-thumb-width, 132px);
+  max-width: 100%;
+  height: var(--roi-thumb-height, 112px);
+  justify-self: center;
   overflow: hidden;
   border-radius: 4px;
   background: #111916;
@@ -3487,14 +3577,16 @@ button.job-action-muted:hover:not(:disabled) {
 
 .frame-roi-thumbnail-image .konva-image-canvas {
   display: grid;
-  width: 100%;
-  height: 100%;
+  width: var(--roi-thumb-width, 132px);
+  max-width: 100%;
+  min-height: var(--roi-thumb-height, 112px);
   place-items: center;
 }
 
 .frame-roi-thumbnail-image .konva-image-stage {
   display: grid;
   place-items: center;
+  min-height: var(--roi-thumb-height, 112px) !important;
 }
 
 .frame-roi-thumbnail:hover {

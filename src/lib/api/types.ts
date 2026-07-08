@@ -302,6 +302,7 @@ export type AnalyzeIngestionRequest = {
   compute_checksum?: boolean;
   collections?: string | string[] | null;
   n_tile?: number | null;
+  image_encoding?: 'zstd' | 'jpg' | 'png' | string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -337,6 +338,7 @@ export type QueueAssetsRequest = {
   source_type?: string | null;
   metadata?: Record<string, unknown>;
   n_tile?: number | null;
+  image_encoding?: 'zstd' | 'jpg' | 'png' | string | null;
   adaptive_background_subtraction?: boolean | null;
   adaptive_background_period?: number | null;
   apply_mask?: boolean | null;

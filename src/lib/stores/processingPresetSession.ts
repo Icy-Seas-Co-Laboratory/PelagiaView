@@ -6,8 +6,10 @@ import {
   processingPresetKey,
   pruneProcessingSettings
 } from '$lib/processing/settings';
+import { session, type SessionState } from '$lib/stores/session';
 
-const STORAGE_KEY = 'pelagia-view-processing-preset-session';
+const STORAGE_KEY_PREFIX = 'pelagia-view-processing-preset-session';
+const LEGACY_STORAGE_KEY = 'pelagia-view-processing-preset-session';
 const LEGACY_LIVE_PRESET_KEY = 'pelagia-view:processing-preset:live';
 const livePresetKey = 'live:live';
 
@@ -18,7 +20,11 @@ type ProcessingPresetSessionState = {
 
 type StoredProcessingPresetSession = Partial<ProcessingPresetSessionState>;
 
-const initialState = browser ? readStoredProcessingPresetSession() : null;
+let activeStorageScope = browser ? processingPresetStorageScope(get(session)) : 'server:no-project';
+let activeStorageKey = processingPresetStorageKey(activeStorageScope);
+let loadingScopedState = false;
+
+const initialState = browser ? readStoredProcessingPresetSession(activeStorageKey, { allowLegacyFallback: true }) : null;
 
 export const processingPresetSession = writable<ProcessingPresetSessionState>({
   selectedKey: initialState?.selectedKey ?? livePresetKey,
@@ -27,7 +33,18 @@ export const processingPresetSession = writable<ProcessingPresetSessionState>({
 
 if (browser) {
   processingPresetSession.subscribe((state) => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (loadingScopedState) return;
+    localStorage.setItem(activeStorageKey, JSON.stringify(state));
+  });
+
+  session.subscribe((state) => {
+    const nextScope = processingPresetStorageScope(state);
+    if (nextScope === activeStorageScope) return;
+    activeStorageScope = nextScope;
+    activeStorageKey = processingPresetStorageKey(nextScope);
+    loadingScopedState = true;
+    processingPresetSession.set(defaultProcessingPresetSession(readStoredProcessingPresetSession(activeStorageKey)));
+    loadingScopedState = false;
   });
 }
 
@@ -58,13 +75,49 @@ export function currentLiveProcessingPreset(): ProcessingPreset {
   return get(processingPresetSession).livePreset;
 }
 
-function readStoredProcessingPresetSession(): ProcessingPresetSessionState | null {
+function defaultProcessingPresetSession(stored?: ProcessingPresetSessionState | null): ProcessingPresetSessionState {
+  return {
+    selectedKey: stored?.selectedKey ?? livePresetKey,
+    livePreset: normalizeLivePreset(stored?.livePreset)
+  };
+}
+
+function processingPresetStorageScope(state: SessionState): string {
+  const projectKey = state.project?.id ?? state.project?.project_key ?? 'no-project';
+  return `${state.baseUrl || 'unknown-server'}:${projectKey}`;
+}
+
+function processingPresetStorageKey(scope: string): string {
+  return `${STORAGE_KEY_PREFIX}:${encodeURIComponent(scope)}`;
+}
+
+function readStoredProcessingPresetSession(
+  storageKey: string,
+  options: { allowLegacyFallback?: boolean } = {}
+): ProcessingPresetSessionState | null {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(storageKey);
     if (!stored) {
+      if (!options.allowLegacyFallback) return null;
+      const legacySession = readLegacyProcessingPresetSession();
+      if (legacySession) return legacySession;
       const legacyPreset = readLegacyLivePreset();
       return legacyPreset ? { selectedKey: livePresetKey, livePreset: legacyPreset } : null;
     }
+    const parsed = JSON.parse(stored) as StoredProcessingPresetSession;
+    return {
+      selectedKey: typeof parsed.selectedKey === 'string' && parsed.selectedKey ? parsed.selectedKey : livePresetKey,
+      livePreset: normalizeLivePreset(parsed.livePreset)
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readLegacyProcessingPresetSession(): ProcessingPresetSessionState | null {
+  try {
+    const stored = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!stored) return null;
     const parsed = JSON.parse(stored) as StoredProcessingPresetSession;
     return {
       selectedKey: typeof parsed.selectedKey === 'string' && parsed.selectedKey ? parsed.selectedKey : livePresetKey,

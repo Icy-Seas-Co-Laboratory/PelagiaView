@@ -43,9 +43,13 @@
 
   async function selectProject(event: Event) {
     const projectId = (event.currentTarget as HTMLSelectElement).value;
+    const previousProjectId = $session.project?.id ?? '';
     projectSwitchError = null;
     try {
       await switchSessionProject(projectId);
+      if (projectId && projectId !== previousProjectId && typeof window !== 'undefined') {
+        window.location.reload();
+      }
     } catch (error) {
       projectSwitchError = error instanceof Error ? error.message : String(error);
     }

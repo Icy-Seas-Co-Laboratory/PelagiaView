@@ -217,11 +217,12 @@
   let liveSandboxSourceFrameId = '';
   let liveSandboxPreprocessingKey = '';
   let thresholdMaskUrl = '';
+  let thresholdMaskRevision = 0;
   let thresholdForegroundPixels: number | null = null;
   let thresholdForegroundFraction: number | null = null;
   let thresholdOverlayColorMode: ImageOverlayColorMode = 'red';
-  let thresholdOverlayBlendMode: ImageOverlayBlendMode | 'auto' = 'auto';
-  let thresholdOverlayOpacity = 1;
+  let thresholdOverlayBlendMode: ImageOverlayBlendMode | 'auto' = 'normal';
+  let thresholdOverlayOpacity = 0.5;
   const thresholdOverlayColorOptions: Array<{ value: ImageOverlayColorMode; label: string }> = [
     { value: 'red', label: 'Red' },
     { value: 'white', label: 'White' },
@@ -439,8 +440,6 @@
     cannyLowThreshold,
     cannyHighThreshold,
     cannyBlurKernel,
-    dilateKernelW,
-    dilateKernelH,
     adaptiveBlockSize,
     adaptiveC,
     percentileBackgroundPercentile,
@@ -450,7 +449,27 @@
     hysteresisConnectivity,
     sobelPercentile,
     sobelThreshold,
-    sobelKernelSize
+    sobelKernelSize,
+    {
+      maskAugmentationEnabled,
+      maskAugmentationSteps: [...maskAugmentationSteps],
+      dilateKernelW,
+      dilateKernelH,
+      dilateIterations,
+      erodeKernelW,
+      erodeKernelH,
+      erodeIterations,
+      openKernelW,
+      openKernelH,
+      openIterations,
+      closeKernelW,
+      closeKernelH,
+      closeIterations,
+      fillHoles,
+      removeSmallComponents,
+      minComponentArea,
+      clearBorder
+    }
   );
   $: detectionPreviewKey = detectionOptionsKey(
     thresholdPreviewKey,
@@ -1231,25 +1250,27 @@
   }
 
   function maskAugmentationOptions(): SegmentationOptions {
+    const steps = normalizedMaskSteps();
+    const hasStep = (step: string) => maskAugmentationEnabled && steps.includes(step);
     return {
       mask_augmentation_enabled: maskAugmentationEnabled,
-      mask_augmentation_steps: maskAugmentationEnabled ? normalizedMaskSteps() : [],
-      dilate_kernel_w: dilateKernelW,
-      dilate_kernel_h: dilateKernelH,
-      dilate_iterations: dilateIterations,
-      erode_kernel_w: erodeKernelW,
-      erode_kernel_h: erodeKernelH,
-      erode_iterations: erodeIterations,
-      open_kernel_w: openKernelW,
-      open_kernel_h: openKernelH,
-      open_iterations: openIterations,
-      close_kernel_w: closeKernelW,
-      close_kernel_h: closeKernelH,
-      close_iterations: closeIterations,
-      fill_holes: fillHoles,
-      remove_small_components: removeSmallComponents,
-      min_component_area: minComponentArea,
-      clear_border: clearBorder
+      mask_augmentation_steps: maskAugmentationEnabled ? steps : [],
+      dilate_kernel_w: hasStep('dilate') ? dilateKernelW : undefined,
+      dilate_kernel_h: hasStep('dilate') ? dilateKernelH : undefined,
+      dilate_iterations: hasStep('dilate') ? dilateIterations : undefined,
+      erode_kernel_w: hasStep('erode') ? erodeKernelW : undefined,
+      erode_kernel_h: hasStep('erode') ? erodeKernelH : undefined,
+      erode_iterations: hasStep('erode') ? erodeIterations : undefined,
+      open_kernel_w: hasStep('open') ? openKernelW : undefined,
+      open_kernel_h: hasStep('open') ? openKernelH : undefined,
+      open_iterations: hasStep('open') ? openIterations : undefined,
+      close_kernel_w: hasStep('close') ? closeKernelW : undefined,
+      close_kernel_h: hasStep('close') ? closeKernelH : undefined,
+      close_iterations: hasStep('close') ? closeIterations : undefined,
+      fill_holes: maskAugmentationEnabled && fillHoles ? true : undefined,
+      remove_small_components: maskAugmentationEnabled && removeSmallComponents ? true : undefined,
+      min_component_area: maskAugmentationEnabled && removeSmallComponents ? minComponentArea : undefined,
+      clear_border: maskAugmentationEnabled && clearBorder ? true : undefined
     };
   }
 
@@ -1323,7 +1344,7 @@
 
   function normalizedMaskSteps(): string[] {
     const steps = [...maskAugmentationSteps].filter((step) => step && step !== 'none');
-    return steps.length ? steps : ['none'];
+    return steps;
   }
 
   function toggleMaskStep(step: string) {
@@ -1522,8 +1543,6 @@
     cannyLowValue: number,
     cannyHighValue: number,
     cannyBlurValue: number,
-    dilateWValue: number,
-    dilateHValue: number,
     adaptiveBlockValue: number,
     adaptiveCValue: number,
     percentileBackgroundValue: number,
@@ -1533,7 +1552,8 @@
     hysteresisConnectivityValue: number,
     sobelPercentileValue: number,
     sobelThresholdValue: number | null,
-    sobelKernelValue: number
+    sobelKernelValue: number,
+    extraValues: unknown = null
   ): string {
     return JSON.stringify({
       threshold_method: thresholdMethodValue,
@@ -1545,8 +1565,6 @@
       canny_low_threshold: cannyLowValue,
       canny_high_threshold: cannyHighValue,
       canny_blur_kernel: cannyBlurValue,
-      dilate_kernel_w: dilateWValue,
-      dilate_kernel_h: dilateHValue,
       adaptive_block_size: adaptiveBlockValue,
       adaptive_c: adaptiveCValue,
       percentile_background_percentile: percentileBackgroundValue,
@@ -1556,7 +1574,8 @@
       hysteresis_connectivity: hysteresisConnectivityValue,
       sobel_percentile: sobelPercentileValue,
       sobel_threshold: sobelThresholdValue,
-      sobel_kernel_size: sobelKernelValue
+      sobel_kernel_size: sobelKernelValue,
+      extra_values: extraValues
     });
   }
 
@@ -1626,7 +1645,7 @@
       if (key === lastAutoThresholdPreviewKey) return;
       clearThresholdPreviewTimer();
     }
-    thresholdMaskUrl = '';
+    clearThresholdMaskUrl();
     thresholdPreviewTimer = window.setTimeout(() => {
       thresholdPreviewTimer = null;
       if (activeExplorerTab !== 'threshold' || selectedFrame?.id !== frameId) return;
@@ -1686,7 +1705,7 @@
     liveSandboxFrameId = '';
     liveSandboxSourceFrameId = '';
     liveSandboxPreprocessingKey = '';
-    thresholdMaskUrl = '';
+    clearThresholdMaskUrl();
     thresholdForegroundPixels = null;
     thresholdForegroundFraction = null;
     lastAutoThresholdPreviewKey = '';
@@ -1715,11 +1734,31 @@
     return liveSandboxFrameId;
   }
 
-  function thresholdMaskDataUrl(result: LiveThresholdResponse): string {
+  function thresholdMaskObjectUrl(result: LiveThresholdResponse): string {
     const payload = result.mask?.mask_payload_base64;
     if (!payload) return '';
     const format = result.mask?.mask_format || result.mask?.mask_encoding || 'png';
-    return `data:image/${format};base64,${payload}`;
+    const mimeType = format.includes('/') ? format : `image/${format}`;
+    const binary = window.atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  }
+
+  function setThresholdMaskUrl(url: string) {
+    clearThresholdMaskUrl();
+    thresholdMaskUrl = url;
+    thresholdMaskRevision += 1;
+  }
+
+  function clearThresholdMaskUrl() {
+    if (thresholdMaskUrl.startsWith('blob:')) URL.revokeObjectURL(thresholdMaskUrl);
+    if (thresholdMaskUrl) {
+      thresholdMaskUrl = '';
+      thresholdMaskRevision += 1;
+    }
   }
 
   function resolvedThresholdOverlayBlendMode(): ImageOverlayBlendMode {
@@ -1738,6 +1777,7 @@
       const sandboxFrameId = await ensureLivePreprocessedFrame(frame);
       const result = await client.liveThresholdFrame(sandboxFrameId, {
         ...thresholdOptions(),
+        ...maskAugmentationOptions(),
         frame_payload_kind: 'preprocessed',
         apply_preprocessing: false,
         include_mask_payload: true,
@@ -1745,7 +1785,7 @@
       });
       if (serial !== thresholdPreviewSerial) return;
       adoptLiveSandboxFrame(result, frame.id);
-      thresholdMaskUrl = thresholdMaskDataUrl(result);
+      setThresholdMaskUrl(thresholdMaskObjectUrl(result));
       thresholdForegroundPixels = result.mask?.foreground_pixels ?? null;
       thresholdForegroundFraction = result.mask?.foreground_fraction ?? null;
       refinedDetections = [];
@@ -1805,7 +1845,7 @@
       refinedDetections = [];
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
-      thresholdMaskUrl = '';
+      clearThresholdMaskUrl();
       thresholdForegroundPixels = null;
       thresholdForegroundFraction = null;
       commitLivePresetSettings();
@@ -3138,7 +3178,7 @@
         imageInverted ? 'inverted' : 'normal',
         liveSandboxFrameId,
         preprocessedReloadKey,
-        thresholdMaskUrl,
+        thresholdMaskRevision,
         thresholdOverlayColorMode,
         thresholdOverlayBlendMode,
         thresholdOverlayOpacity,
@@ -3293,7 +3333,7 @@
               {/if}
             </div>
           {:else}
-            {#key `${imageUrl}|${imageInverted}|${liveSandboxFrameId}|${preprocessedReloadKey}|${thresholdMaskUrl}|${thresholdOverlayColorMode}|${thresholdOverlayBlendMode}|${thresholdOverlayOpacity}|${detectionOverlayKey}`}
+            {#key `${imageUrl}|${imageInverted}|${liveSandboxFrameId}|${preprocessedReloadKey}|${thresholdMaskRevision}|${thresholdOverlayColorMode}|${thresholdOverlayBlendMode}|${thresholdOverlayOpacity}|${detectionOverlayKey}`}
               <KonvaImageCanvas
                 spec={frameRenderSpec(activeExplorerTab)}
                 mode="viewer"

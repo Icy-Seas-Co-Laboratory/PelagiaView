@@ -610,6 +610,31 @@
         maskUrl: roiImageMaskUrl(detection, viewMode),
         maskFilename: roiFilenameForDetection(detection, 'mask', viewMode),
         maskedFilename: roiFilenameForDetection(detection, 'masked', viewMode),
+        maskedAnnotatedFilename: roiFilenameForDetection(detection, 'masked-scale-bar', viewMode),
+        downloadOptions: [
+          {
+            label: 'Download ROI',
+            variant: 'original',
+            filename: roiFilenameForDetection(detection, 'roi', viewMode)
+          },
+          {
+            label: 'Download ROI + scale bar',
+            variant: 'annotated',
+            filename: roiFilenameForDetection(detection, 'scale-bar', viewMode)
+          },
+          {
+            label: 'Download masked ROI',
+            variant: 'masked',
+            filename: roiFilenameForDetection(detection, 'masked', viewMode),
+            requiresMask: true
+          },
+          {
+            label: 'Download masked ROI + scale bar',
+            variant: 'masked-annotated',
+            filename: roiFilenameForDetection(detection, 'masked-scale-bar', viewMode),
+            requiresMask: true
+          }
+        ],
         info: roiInfo(detection)
       },
       display: {
@@ -660,6 +685,24 @@
     return fullResolutionTileKeys.has(roiTileKey(detection)) ? null : roiTileProxyMaxDimension(detection);
   }
 
+  function frameRoiThumbnailSize(detection: DetectionSummary): { width: number; height: number } {
+    const maxWidth = 132;
+    const maxHeight = 180;
+    const width = roiImageSourceWidth(detection);
+    const height = roiImageSourceHeight(detection);
+    if (!width || !height) return { width: maxWidth, height: 112 };
+    const scale = Math.min(1, maxWidth / width, maxHeight / height);
+    return {
+      width: Math.max(24, Math.round(width * scale)),
+      height: Math.max(24, Math.round(height * scale))
+    };
+  }
+
+  function frameRoiThumbnailStyle(detection: DetectionSummary): string {
+    const size = frameRoiThumbnailSize(detection);
+    return `--roi-thumb-width: ${size.width}px; --roi-thumb-height: ${size.height}px;`;
+  }
+
   function promoteRoiTileToFullResolution(detection: DetectionSummary, proxyMaxDimension: number | null) {
     if (!proxyMaxDimension) return;
     const key = roiTileKey(detection);
@@ -676,17 +719,6 @@
     const height = roiImageSourceHeight(detection);
     if (!width || !height) return {};
     return width >= height ? { width: proxyMaxDimension } : { height: proxyMaxDimension };
-  }
-
-  function roiFilename(version = 'roi'): string {
-    const assetName =
-      selectedParentAsset?.filename?.replace(/\.[^.]+$/, '') ??
-      selectedDetection?.asset_filename?.replace(/\.[^.]+$/, '') ??
-      selectedDetection?.asset_id ??
-      'asset';
-    const frame = selectedDetection?.frame_index ?? selectedDetection?.frame_id ?? 'frame';
-    const roi = selectedDetection?.roi_index ?? selectedDetection?.id ?? 'roi';
-    return `${assetName}_frame_${frame}_roi_${roi}_${roiViewMode}_${version}.png`;
   }
 
   function roiFilenameForDetection(
@@ -1494,44 +1526,9 @@
               <dd>{valueLabel(selectedParentAsset?.collections)}</dd>
             </div>
           </dl>
+
         </div>
       </div>
-
-      <details class="roi-frame-detail">
-        <summary>Frame context</summary>
-        {#if selectedDetection.frame_id}
-          <div class="roi-frame-controls">
-            <FrameDisplayToggle bind:value={detailFrameDisplayMode} />
-          </div>
-          <div class="roi-frame-stage">
-            {#if detailFrameUnavailable}
-              <div class="preview-placeholder frame-unavailable">
-                {#if detailFramePayloadKind === 'preprocessed'}
-                  <strong>No preprocessed image is available for this frame.</strong>
-                  <span>Switch to Original or run preprocessing for this frame.</span>
-                {:else}
-                  <strong>The selected frame image could not be loaded.</strong>
-                  <span>Check that the frame data endpoint is available.</span>
-                {/if}
-              </div>
-            {:else}
-              {#key detailFrameUrl}
-                <KonvaImageCanvas
-                  spec={frameContextRenderSpec()}
-                  mode="viewer"
-                  onImageLoad={setFrameImageNaturalSize}
-                  onImageError={markDetailFrameUnavailable}
-                />
-              {/key}
-              {/if}
-          </div>
-          <p class="soft">
-            {frameDetections.length} ROI{frameDetections.length === 1 ? '' : 's'} loaded for this frame{frameDetectionsLoading ? '; loading more.' : frameDetectionsComplete ? '.' : ''}
-          </p>
-        {:else}
-          <p class="empty">This ROI does not include a frame id.</p>
-        {/if}
-      </details>
     </div>
   </div>
 {/if}
@@ -1553,7 +1550,6 @@
         <section class="frame-context-viewer">
           <div class="roi-frame-controls">
             <FrameDisplayToggle bind:value={frameModalDisplayMode} />
-            <span class="soft">Use the download menu for the original frame or frame + bounding boxes.</span>
           </div>
           <div class="frame-context-stage">
             {#if frameModalUnavailable || !frameModalUrl}
@@ -1649,9 +1645,9 @@
                   type="button"
                   on:click={() => (selectedDetection = detection)}
                 >
-                  <div class="frame-roi-thumbnail-image">
+                  <div class="frame-roi-thumbnail-image" style={frameRoiThumbnailStyle(detection)}>
                     <KonvaImageCanvas
-                      spec={roiRenderSpec(detection, 132, 112, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
+                      spec={roiRenderSpec(detection, 132, 180, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
                       mode="thumbnail"
                     />
                   </div>
