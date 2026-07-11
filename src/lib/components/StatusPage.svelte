@@ -9,6 +9,7 @@
   import type { Job, JobsSummaryResponse, KvStoreOverview, SystemStatus, WorkerSession } from '$lib/api/types';
   import { formatBytes, formatCount, formatDate, numericValue, statusTone } from '$lib/utils/format';
   import { dashboardViewHref, type DashboardView } from '$lib/utils/dashboardNavigation';
+  import { projectPreferenceKey } from '$lib/utils/preferences';
 
   let status: SystemStatus | null = $session.systemStatus;
   let jobs: Job[] = [];
@@ -29,7 +30,6 @@
   let workerPage = 1;
   let workerPreferencesReady = false;
   const workerPageSize = 5;
-  const statusPreferenceKey = 'pelagia-view:status:v1';
   const staleWorkerThresholdMs = 5 * 60 * 1000;
   const terminalReviewStatuses = ['failed', 'dead_lettered'];
   const pausedReviewStatuses = ['paused'];
@@ -395,7 +395,7 @@
 
   function restoreWorkerPreferences() {
     if (typeof localStorage === 'undefined') return;
-    const saved = localStorage.getItem(statusPreferenceKey);
+    const saved = localStorage.getItem(statusPreferenceKey());
     if (!saved) return;
     try {
       const preferences = JSON.parse(saved) as Partial<WorkerPreferences>;
@@ -409,7 +409,11 @@
 
   function persistWorkerPreferences(preferences: WorkerPreferences) {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(statusPreferenceKey, JSON.stringify(preferences));
+    localStorage.setItem(statusPreferenceKey(), JSON.stringify(preferences));
+  }
+
+  function statusPreferenceKey(): string {
+    return projectPreferenceKey('status', $session);
   }
 
   function workerSortColumnPreference(value: unknown, fallback: WorkerSortColumn): WorkerSortColumn {

@@ -6,7 +6,7 @@
   import { ApiError, authenticatedFetch } from '$lib/api/client';
   import { listProcessingPresets, saveProcessingPreset } from '$lib/api/processingPresets';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
-  import { getClient } from '$lib/stores/session';
+  import { getClient, session } from '$lib/stores/session';
   import type {
     DetectionSummary,
     FrameSummary,
@@ -54,7 +54,7 @@
     booleanPreference,
     nullableNumberPreference as nullablePreferenceNumber,
     numberPreference,
-    preferenceKey,
+    projectPreferenceKey,
     readPreferences,
     stringArrayPreference,
     stringPreference,
@@ -157,7 +157,7 @@
   let maxWidthPlusHeight: number | null = null;
   let padding = 100;
   let roiEncoding = 'zstd';
-  let roiEncodingOptions = ['zstd', 'png', 'raw', 'auto'];
+  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'raw', 'auto'];
   let zstdMinBytes: number | null = null;
   let alwaysStoreMask = true;
   let storeRoiPayloadMinArea: number | null = null;
@@ -186,7 +186,7 @@
   let refinementExpansionPixels: number | null = null;
   let refinementEdgeTouchMargin = 1;
   let refinementEncoding = 'auto';
-  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'raw'];
+  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'raw'];
   let refining = false;
   let flatfieldCorrection = false;
   let flatfieldQ = 0.5;
@@ -249,7 +249,6 @@
   let thresholdPreviewTimer: number | null = null;
   let thresholdPreviewSerial = 0;
   let detectionPreviewSerial = 0;
-  const explorerPreferenceKey = preferenceKey('explorer');
   let processingPresets: ProcessingPreset[] = [];
   let selectedProcessingPresetKey = 'live:live';
   let presetMessage: string | null = null;
@@ -368,7 +367,7 @@
     if (backgroundFrameLimit !== clampedBackgroundFrameLimit) backgroundFrameLimit = clampedBackgroundFrameLimit;
   }
   $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
-  $: if (preferencesReady) writePreferences(explorerPreferenceKey, explorerPreferenceSnapshot);
+  $: if (preferencesReady) writePreferences(explorerPreferenceKey(), explorerPreferenceSnapshot);
   $: liveProcessingPreset = $processingPresetSession.livePreset;
   $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
   $: if (preferencesReady) {
@@ -893,6 +892,10 @@
     }
   }
 
+  function explorerPreferenceKey(): string {
+    return projectPreferenceKey('explorer', $session);
+  }
+
   function handleHeaderProcessingPresetApplied(event: Event) {
     const preset = (event as CustomEvent<ProcessingPreset>).detail;
     if (!preset?.settings) return;
@@ -911,7 +914,7 @@
   }
 
   function restorePreferences() {
-    const preferences = readPreferences<ExplorerPreferences>(explorerPreferenceKey);
+    const preferences = readPreferences<ExplorerPreferences>(explorerPreferenceKey());
     if (!preferences) return;
     selectedAssetId = stringPreference(preferences.selectedAssetId, selectedAssetId);
     selectedFrameNum = numberPreference(preferences.selectedFrameNum, selectedFrameNum);

@@ -1,8 +1,9 @@
 import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
 import { PelagiaApiClient, normalizeBaseUrl, setActiveApiToken } from '$lib/api/client';
-import type { AuthUserSummary, HealthResponse, ProjectSummary, SystemStatus } from '$lib/api/types';
+import type { AuthLoginResponse, AuthUserSummary, HealthResponse, ProjectSummary, SystemStatus } from '$lib/api/types';
 import { recordSessionEvent } from '$lib/utils/analytics';
+import { clearPreferences, uiStatePreferenceKeys } from '$lib/utils/preferenceRegistry';
 
 const STORAGE_KEY = 'pelagia-view-session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -24,6 +25,16 @@ export type ConnectSessionInput = {
   password: string;
   projectId?: string | null;
   projectKey?: string | null;
+};
+
+export type ProjectSelectionLogin = {
+  baseUrl: string;
+  token: string;
+  user: AuthUserSummary | null;
+  projects: ProjectSummary[];
+  health: HealthResponse;
+  loginProject: ProjectSummary | null;
+  expiresAt: string;
 };
 
 export type SessionState = {
@@ -79,6 +90,107 @@ export async function connectSession(input: ConnectSessionInput): Promise<void> 
   await establishSession(input, { persistActive: true });
 }
 
+export async function beginProjectSelectionLogin(input: ConnectSessionInput): Promise<ProjectSelectionLogin> {
+  const normalized = normalizeBaseUrl(input.baseUrl);
+  session.update((state) => ({ ...state, baseUrl: normalized, connecting: true, error: null }));
+  const loginClient = new PelagiaApiClient(normalized);
+
+  try {
+    const health = await loginClient.health();
+    const login = await loginClient.login({
+      username: input.username,
+      password: input.password,
+      metadata: { client: 'PelagiaView' }
+    });
+    const temporaryClient = new PelagiaApiClient(normalized, { token: login.token });
+    const [me, listedProjects] = await Promise.all([
+      temporaryClient.authMe().catch(() => null),
+      temporaryClient.listProjects().catch(() => [])
+    ]);
+    const projects = me?.projects?.length ? me.projects : listedProjects.length ? listedProjects : login.project ? [login.project] : [];
+    if (projects.length < 1) {
+      await temporaryClient.logout().catch(() => undefined);
+      throw new Error('No projects are available for this login.');
+    }
+    session.update((state) => ({ ...state, connecting: false, error: null }));
+    return {
+      baseUrl: normalized,
+      token: login.token,
+      user: me?.user ?? login.user ?? null,
+      projects,
+      health,
+      loginProject: me?.project ?? login.project ?? null,
+      expiresAt: login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString()
+    };
+  } catch (error) {
+    session.update((state) => ({
+      ...state,
+      token: null,
+      user: null,
+      project: null,
+      projects: [],
+      connected: false,
+      connecting: false,
+      switchingProject: false,
+      error: error instanceof Error ? error.message : String(error),
+      health: null,
+      systemStatus: null,
+      connectedAt: null
+    }));
+    recordSessionEvent('client_session_failed', {
+      base_origin: baseOrigin(normalized),
+      restoring: false,
+      error_name: error instanceof Error ? error.name : 'UnknownError'
+    });
+    throw error;
+  }
+}
+
+export async function completeProjectSelectionLogin(draft: ProjectSelectionLogin, projectId: string): Promise<void> {
+  if (!projectId) throw new Error('Choose a project to continue.');
+  session.update((state) => ({ ...state, baseUrl: draft.baseUrl, connecting: true, error: null }));
+  const temporaryClient = new PelagiaApiClient(draft.baseUrl, { token: draft.token });
+
+  try {
+    const selectedProject = draft.projects.find((candidate) => candidate.id === projectId) ?? null;
+    if (!selectedProject) throw new Error('Choose a valid project to continue.');
+    const login: AuthLoginResponse = selectedProject.id === draft.loginProject?.id
+      ? {
+          token: draft.token,
+          user: draft.user ?? undefined,
+          project: selectedProject,
+          session: {
+            project_id: selectedProject.id,
+            project_key: selectedProject.project_key,
+            expires_at: draft.expiresAt
+          }
+        }
+      : await temporaryClient.switchProject({ project_id: projectId, metadata: { client: 'PelagiaView' } });
+    await finishAuthenticatedSession(draft.baseUrl, login, draft.health, { persistActive: true, restoring: false, fallbackProjects: draft.projects });
+  } catch (error) {
+    session.update((state) => ({
+      ...state,
+      connected: false,
+      connecting: false,
+      switchingProject: false,
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    recordSessionEvent('client_session_failed', {
+      base_origin: baseOrigin(draft.baseUrl),
+      restoring: false,
+      error_name: error instanceof Error ? error.name : 'UnknownError'
+    });
+    throw error;
+  }
+}
+
+export async function cancelProjectSelectionLogin(draft: ProjectSelectionLogin | null): Promise<void> {
+  if (draft?.token) {
+    await new PelagiaApiClient(draft.baseUrl, { token: draft.token }).logout().catch(() => undefined);
+  }
+  session.update((state) => ({ ...state, connecting: false, error: null }));
+}
+
 export async function restoreSession(): Promise<void> {
   if (!browser) return;
   const stored = readStoredSession();
@@ -91,6 +203,30 @@ export async function restoreSession(): Promise<void> {
     await restoreStoredSession(stored);
   } catch {
     persistStoredSession({ baseUrl: stored.baseUrl, active: false });
+  }
+}
+
+export function skipSessionRestore(baseUrl?: string): void {
+  const nextBaseUrl = baseUrl ? normalizeBaseUrl(baseUrl) : get(session).baseUrl;
+  client = null;
+  setActiveApiToken(null);
+  session.update((state) => ({
+    ...state,
+    baseUrl: nextBaseUrl,
+    token: null,
+    user: null,
+    project: null,
+    projects: [],
+    connected: false,
+    connecting: false,
+    switchingProject: false,
+    error: null,
+    health: null,
+    systemStatus: null,
+    connectedAt: null
+  }));
+  if (browser) {
+    persistStoredSession({ baseUrl: nextBaseUrl, active: false });
   }
 }
 
@@ -111,53 +247,7 @@ async function establishSession(
       project_key: input.projectKey,
       metadata: { client: 'PelagiaView' }
     });
-    const nextClient = new PelagiaApiClient(normalized, { token: login.token });
-    setActiveApiToken(login.token);
-    const [me, listedProjects] = await Promise.all([
-      nextClient.authMe().catch(() => null),
-      nextClient.listProjects().catch(() => [])
-    ]);
-    const projects = me?.projects?.length ? me.projects : listedProjects.length ? listedProjects : login.project ? [login.project] : [];
-    const user = me?.user ?? login.user ?? null;
-    const project = me?.project ?? login.project ?? projects.find((candidate) => candidate.id === login.session?.project_id) ?? null;
-    const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
-    const connectedAt = new Date().toISOString();
-    const expiresAt = login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString();
-    client = nextClient;
-    session.set({
-      baseUrl: normalized,
-      token: login.token,
-      user,
-      project,
-      projects,
-      connected: true,
-      connecting: false,
-      switchingProject: false,
-      error: null,
-      health,
-      systemStatus,
-      connectedAt
-    });
-    if (browser && options.persistActive) {
-      persistStoredSession({
-        baseUrl: normalized,
-        token: login.token,
-        user,
-        project,
-        projects,
-        active: true,
-        connectedAt,
-        expiresAt
-      });
-    }
-    recordSessionEvent(options.restoring ? 'client_session_restored' : 'client_session_connected', {
-      base_origin: baseOrigin(normalized),
-      project_id: project?.id ?? null,
-      project_key: project?.project_key ?? null,
-      username: user?.username ?? null,
-      health_status: health.status,
-      has_system_status: Boolean(systemStatus)
-    });
+    await finishAuthenticatedSession(normalized, login, health, { persistActive: options.persistActive, restoring: Boolean(options.restoring) });
   } catch (error) {
     session.update((state) => ({
       ...state,
@@ -183,6 +273,77 @@ async function establishSession(
     });
     throw error;
   }
+}
+
+async function finishAuthenticatedSession(
+  baseUrl: string,
+  login: AuthLoginResponse,
+  health: HealthResponse,
+  options: { persistActive: boolean; restoring?: boolean; fallbackProjects?: ProjectSummary[] }
+): Promise<void> {
+  const nextClient = new PelagiaApiClient(baseUrl, { token: login.token });
+  setActiveApiToken(login.token);
+  const [me, listedProjects] = await Promise.all([
+    nextClient.authMe().catch(() => null),
+    nextClient.listProjects().catch(() => [])
+  ]);
+  const projects = me?.projects?.length
+    ? me.projects
+    : listedProjects.length
+      ? listedProjects
+      : options.fallbackProjects?.length
+        ? options.fallbackProjects
+        : login.project
+          ? [login.project]
+          : [];
+  const user = me?.user ?? login.user ?? null;
+  const project =
+    me?.project ??
+    login.project ??
+    projects.find((candidate) => candidate.id === login.session?.project_id) ??
+    projects.find((candidate) => candidate.project_key === login.session?.project_key) ??
+    null;
+  const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
+  const connectedAt = new Date().toISOString();
+  const expiresAt = login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  client = nextClient;
+  if (browser && options.persistActive && !options.restoring) {
+    clearPreferences(uiStatePreferenceKeys());
+  }
+  session.set({
+    baseUrl,
+    token: login.token,
+    user,
+    project,
+    projects,
+    connected: true,
+    connecting: false,
+    switchingProject: false,
+    error: null,
+    health,
+    systemStatus,
+    connectedAt
+  });
+  if (browser && options.persistActive) {
+    persistStoredSession({
+      baseUrl,
+      token: login.token,
+      user,
+      project,
+      projects,
+      active: true,
+      connectedAt,
+      expiresAt
+    });
+  }
+  recordSessionEvent(options.restoring ? 'client_session_restored' : 'client_session_connected', {
+    base_origin: baseOrigin(baseUrl),
+    project_id: project?.id ?? null,
+    project_key: project?.project_key ?? null,
+    username: user?.username ?? null,
+    health_status: health.status,
+    has_system_status: Boolean(systemStatus)
+  });
 }
 
 async function restoreStoredSession(stored: StoredSession): Promise<void> {

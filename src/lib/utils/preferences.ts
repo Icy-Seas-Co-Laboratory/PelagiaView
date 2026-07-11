@@ -8,6 +8,16 @@ export function preferenceKey(name: string, version = 1): string {
   return `pelagia-view:${name}:v${version}`;
 }
 
+export function projectPreferenceKey(
+  name: string,
+  scope: { baseUrl?: string | null; project?: { id?: string | null; project_key?: string | null } | null },
+  version = 1
+): string {
+  const server = scopeToken(normalizedServerScope(scope.baseUrl));
+  const project = scopeToken(scope.project?.id ?? scope.project?.project_key ?? 'no-project');
+  return `${preferenceKey(name, version)}:server:${server}:project:${project}`;
+}
+
 export function readPreferences<T extends PreferenceObject>(key: string): Partial<T> | null {
   if (!browser) return null;
   const saved = localStorage.getItem(key);
@@ -56,4 +66,19 @@ export function stringArrayPreference(value: unknown, fallback: string[] = []): 
 
 export function stringSetPreference(value: unknown, fallback = new Set<string>()): Set<string> {
   return new Set(stringArrayPreference(value, [...fallback]));
+}
+
+function normalizedServerScope(value: string | null | undefined): string {
+  const fallback = 'unknown-server';
+  if (!value) return fallback;
+  try {
+    const url = new URL(value);
+    return url.origin;
+  } catch {
+    return value.trim().replace(/\/+$/, '') || fallback;
+  }
+}
+
+function scopeToken(value: string | null | undefined): string {
+  return encodeURIComponent(value || 'unknown');
 }

@@ -302,7 +302,7 @@ export type AnalyzeIngestionRequest = {
   compute_checksum?: boolean;
   collections?: string | string[] | null;
   n_tile?: number | null;
-  image_encoding?: 'zstd' | 'jpg' | 'png' | string | null;
+  image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -338,7 +338,7 @@ export type QueueAssetsRequest = {
   source_type?: string | null;
   metadata?: Record<string, unknown>;
   n_tile?: number | null;
-  image_encoding?: 'zstd' | 'jpg' | 'png' | string | null;
+  image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | string | null;
   adaptive_background_subtraction?: boolean | null;
   adaptive_background_period?: number | null;
   apply_mask?: boolean | null;
@@ -772,7 +772,7 @@ export type SegmentationOptions = {
   padding?: number | null;
   flatfield_correction?: boolean | null;
   flatfield_q?: number | null;
-  roi_encoding?: 'png' | 'raw' | 'zstd' | 'auto' | null;
+  roi_encoding?: 'png' | 'jpg' | 'jxl' | 'raw' | 'zstd' | 'auto' | null;
   zstd_min_bytes?: number | null;
   store_roi_payload_min_area?: number | null;
   store_roi_payload_min_width?: number | null;
@@ -867,7 +867,7 @@ export type RoiRefinementOptions = {
   expansion_pixels?: number | null;
   edge_touch_margin?: number | null;
   output_threshold?: number | null;
-  encoding?: 'png' | 'raw' | 'zstd' | 'auto' | null;
+  encoding?: 'png' | 'jpg' | 'jxl' | 'raw' | 'zstd' | 'auto' | null;
   allow_frame_expansion?: boolean | null;
   store?: boolean | null;
   dry_run?: boolean | null;
@@ -911,7 +911,7 @@ export type FramePreprocessOptions = {
   background_limit?: number | null;
   invert_intensity?: boolean | null;
   store?: boolean;
-  encoding?: 'png' | 'jpg' | 'raw' | 'zstd' | null;
+  encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | null;
   response_format?: 'metadata' | 'matrix';
 };
 

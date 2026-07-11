@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
-  import { getClient } from '$lib/stores/session';
+  import { getClient, session } from '$lib/stores/session';
   import type { CollectionSummary, FrameProcessingState } from '$lib/api/types';
   import { formatCount, formatDate, numericValue } from '$lib/utils/format';
+  import { projectPreferenceKey } from '$lib/utils/preferences';
   import type { ImageInfoSpec, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   type FrameRow = NonNullable<FrameProcessingState['frames']>[number];
@@ -30,15 +31,16 @@
   let selectedFrame: FrameRow | null = null;
   let tileScroller: HTMLElement;
   let loadMoreSentinel: HTMLElement;
+  let pageScroller: HTMLElement | null = null;
 
-  const preferenceKey = 'pelagia-view:frame-browser:v1';
-  const pageSize = 120;
+  const pageSize = 40;
   const tileDisplayMaxWidth = 250;
   const tileDisplayMaxHeight = 210;
   const modalDisplayMaxWidth = 900;
   const modalDisplayMaxHeight = 680;
   const tilePreviewMaxDimensionPx = 280;
   const modalPreviewMaxDimensionPx = 900;
+  const displayImageFormat = 'jpg';
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
   $: visibleCount = frames.length;
@@ -56,6 +58,7 @@
     imageFormat
   };
   $: if (preferencesReady) persistPreferences(preferenceSnapshot);
+  $: syncPageScrollListener(tileScroller);
 
   onMount(async () => {
     const client = getClient();
@@ -69,6 +72,10 @@
       error = err instanceof Error ? err.message : String(err);
       loading = false;
     }
+  });
+
+  onDestroy(() => {
+    detachPageScrollListener();
   });
 
   async function loadFrames(reset = false) {
@@ -121,14 +128,36 @@
     void loadFrames(true);
   }
 
-  function maybeLoadMore() {
-    if (!tileScroller || !loadMoreSentinel || loading || !hasMore) return;
-    const scrollerBottom = tileScroller.scrollTop + tileScroller.clientHeight;
-    if (loadMoreSentinel.offsetTop - scrollerBottom < 480) void loadFrames(false);
+  function maybeLoadMore(event: Event) {
+    const scroller = event.currentTarget as HTMLElement;
+    if (!scroller || loading || !hasMore) return;
+    const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (remaining < 700) void loadFrames(false);
+  }
+
+  function maybeLoadMoreFromPageScroll(event: Event) {
+    const scroller = event.currentTarget as HTMLElement;
+    if (!scroller || loading || !hasMore || !loadMoreSentinel) return;
+    const remaining = loadMoreSentinel.getBoundingClientRect().top - scroller.getBoundingClientRect().bottom;
+    if (remaining < 700) void loadFrames(false);
+  }
+
+  function syncPageScrollListener(scroller: HTMLElement | undefined) {
+    const nextScroller = scroller?.closest('.page-scroll-content') as HTMLElement | null;
+    if (nextScroller === pageScroller) return;
+    detachPageScrollListener();
+    pageScroller = nextScroller;
+    pageScroller?.addEventListener('scroll', maybeLoadMoreFromPageScroll, { passive: true });
+  }
+
+  function detachPageScrollListener() {
+    pageScroller?.removeEventListener('scroll', maybeLoadMoreFromPageScroll);
+    pageScroller = null;
   }
 
   function scrollToTop() {
     tileScroller?.scrollTo({ top: 0, behavior: 'smooth' });
+    pageScroller?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function openFrameDetail(frame: FrameRow) {
@@ -139,17 +168,25 @@
     selectedFrame = null;
   }
 
-  function frameImageUrl(frame: FrameRow, previewMaxDimension: number | null = tilePreviewMaxDimensionPx): string | null {
+  function frameImageUrl(
+    frame: FrameRow,
+    previewMaxDimension: number | null = tilePreviewMaxDimensionPx,
+    format = displayImageFormat
+  ): string | null {
     const client = getClient();
     if (!client) return null;
     if (payloadKind === 'preprocessed' && !frame.has_preprocessed_payload) return null;
     const options = {
       frame_id: frame.frame_id,
-      format: imageFormat,
-      preview_max_dim: previewMaxDimension,
+      format,
+      width: previewMaxDimension,
       cache_bust: cacheBustKey(frame)
     };
     return payloadKind === 'preprocessed' ? client.preprocessedFrameUrl(options) : client.originalFrameUrl(options);
+  }
+
+  function frameDownloadUrl(frame: FrameRow): string | null {
+    return frameImageUrl(frame, null, imageFormat);
   }
 
   function frameRenderSpec(
@@ -159,8 +196,9 @@
     previewMaxDimension: number | null = tilePreviewMaxDimensionPx,
     exportControls: 'menu' | 'full' | 'none' = 'menu'
   ): ImageRenderSpec | null {
-    const url = frameImageUrl(frame, previewMaxDimension);
+    const url = frameImageUrl(frame, previewMaxDimension, displayImageFormat);
     if (!url) return null;
+    const downloadUrl = frameDownloadUrl(frame) ?? url;
     return {
       key: frameCanvasKey(frame, previewMaxDimension),
       image: {
@@ -172,9 +210,10 @@
       scaleBar: { enabled: true, placement: 'inside', lengths: scaleBarLengths },
       toolbar: {
         exportControls,
-        filename: frameDownloadFilename(frame, 'annotated'),
-        originalUrl: url,
+        filename: frameDownloadFilename(frame, 'annotated', 'png'),
+        originalUrl: downloadUrl,
         originalFilename: frameDownloadFilename(frame),
+        annotatedFilename: frameDownloadFilename(frame, 'overlay', 'png'),
         info: frameInfo(frame)
       }
     };
@@ -185,7 +224,7 @@
       frame.frame_id,
       frame.frame_num ?? frame.frame_index ?? '',
       payloadKind,
-      imageFormat,
+      displayImageFormat,
       payloadKind !== 'original' && $imageInversionEnabled ? 'inverted' : 'normal',
       previewMaxDimension ? `preview-${previewMaxDimension}` : 'full',
       cacheBustKey(frame)
@@ -212,10 +251,10 @@
     return `${payloadKind} frame ${frame.frame_num ?? frame.frame_index ?? frame.frame_id}`;
   }
 
-  function frameDownloadFilename(frame: FrameRow, suffix: string = payloadKind): string {
+  function frameDownloadFilename(frame: FrameRow, suffix: string = payloadKind, format = imageFormat): string {
     const base = (frame.asset_filename ?? frame.asset_id ?? 'frame').replace(/[^a-zA-Z0-9._-]+/g, '_');
     const frameNumber = frame.frame_num ?? frame.frame_index ?? 'unknown';
-    return `${base}_frame-${frameNumber}_${suffix}.${imageFormat}`;
+    return `${base}_frame-${frameNumber}_${suffix}.${format}`;
   }
 
   function frameNumberLabel(frame: FrameRow): string {
@@ -253,12 +292,12 @@
 
   function persistPreferences(snapshot: typeof preferenceSnapshot) {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(preferenceKey, JSON.stringify(snapshot));
+    localStorage.setItem(frameBrowserPreferenceKey(), JSON.stringify(snapshot));
   }
 
   function restorePreferences() {
     if (typeof localStorage === 'undefined') return;
-    const raw = localStorage.getItem(preferenceKey);
+    const raw = localStorage.getItem(frameBrowserPreferenceKey());
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw) as Partial<typeof preferenceSnapshot>;
@@ -273,8 +312,12 @@
       payloadKind = parsed.payloadKind === 'preprocessed' ? 'preprocessed' : 'original';
       imageFormat = parsed.imageFormat === 'jpg' ? 'jpg' : 'png';
     } catch {
-      localStorage.removeItem(preferenceKey);
+      localStorage.removeItem(frameBrowserPreferenceKey());
     }
+  }
+
+  function frameBrowserPreferenceKey(): string {
+    return projectPreferenceKey('frame-browser', $session);
   }
 
   function normalizedStateFilter(value: string): string {
@@ -383,7 +426,7 @@
     </label>
 
     <label>
-      Image format
+      Download format
       <select bind:value={imageFormat}>
         <option value="png">png</option>
         <option value="jpg">jpg</option>

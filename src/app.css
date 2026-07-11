@@ -210,7 +210,7 @@ h2 {
 
 .credential-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.5rem;
 }
 
@@ -242,6 +242,95 @@ h2 {
 .form-error,
 .empty {
   margin: 0;
+}
+
+.project-login-backdrop {
+  z-index: 80;
+}
+
+.project-login-modal {
+  display: grid;
+  gap: 0.5rem;
+  width: min(680px, 100%);
+  max-height: min(92vh, 820px);
+  overflow: auto;
+  border: 1px solid #d0ddd8;
+  border-radius: 6px;
+  padding: 1rem;
+  background: #fbfdfc;
+  box-shadow: 0 1.5rem 4rem rgba(5, 8, 7, 0.35);
+}
+
+.project-login-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.project-login-summary div {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  border: 1px solid #d8e5e0;
+  border-radius: 6px;
+  padding: 0.65rem;
+  background: #f4f8f6;
+}
+
+.project-login-summary span {
+  color: #60746c;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.project-login-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-login-list {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.project-login-list label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: center;
+  border: 1px solid #d8e5e0;
+  border-radius: 6px;
+  padding: 0.65rem;
+  cursor: pointer;
+  background: #ffffff;
+}
+
+.project-login-list label:hover {
+  background: #edf5f2;
+}
+
+.project-login-list label.active {
+  border-color: #1f6b57;
+  background: #e7f2ef;
+}
+
+.project-login-list span {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.project-login-list small {
+  overflow: hidden;
+  color: #60746c;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-login-actions {
+  justify-content: flex-end;
 }
 
 .app-shell {
@@ -4275,6 +4364,7 @@ button.job-action-muted:hover:not(:disabled) {
 
   .endpoint-row,
   .credential-grid,
+  .project-login-summary,
   .topbar,
   .session-controls,
   .sidebar-session,

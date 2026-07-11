@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
-  import { getClient } from '$lib/stores/session';
+  import { getClient, session } from '$lib/stores/session';
   import type {
     AnalyzedIngestionAsset,
     DirectoryListing,
@@ -22,7 +22,7 @@
   import {
     booleanPreference,
     numberPreference,
-    preferenceKey,
+    projectPreferenceKey,
     readPreferences,
     stringPreference,
     writePreferences
@@ -50,7 +50,6 @@
   let submittedAssetIds: string[] = [];
   let ingestionJobsById: Record<string, Job> = {};
   let ingestionJobIdsByAssetKey: Record<string, string> = {};
-  const ingestionPreferenceKey = preferenceKey('ingestion');
 
   type IngestionPreferences = {
     currentPath: string;
@@ -90,7 +89,7 @@
     recursive,
     collections
   };
-  $: if (preferencesReady) writePreferences(ingestionPreferenceKey, ingestionPreferenceSnapshot);
+  $: if (preferencesReady) writePreferences(ingestionPreferenceKey(), ingestionPreferenceSnapshot);
   $: if (preferencesReady) {
     ingestionPreferenceSnapshot;
     setLiveProcessingPresetFromSettings(captureProcessingSettings());
@@ -118,13 +117,17 @@
     preferencesReady = true;
   }
 
+  function ingestionPreferenceKey(): string {
+    return projectPreferenceKey('ingestion', $session);
+  }
+
   function applyConfigDefaults(config: SystemConfigResponse | null) {
     const videoIngest = processingSection(config, 'video_ingest');
     nTile = numberDefault(videoIngest, 'n_tile', nTile);
   }
 
   function restorePreferences() {
-    const preferences = readPreferences<IngestionPreferences>(ingestionPreferenceKey);
+    const preferences = readPreferences<IngestionPreferences>(ingestionPreferenceKey());
     if (!preferences) return;
     currentPath = stringPreference(preferences.currentPath, currentPath);
     nTile = numberPreference(preferences.nTile, nTile);
@@ -382,7 +385,7 @@
         addJobs(
           await client.listJobs({
             run_id: runId,
-            stage: ['extract_frames', 'ingestion'],
+            stage: ['extract_frames', 'ingest_run'],
             include_progress: true,
             include_payload: true,
             limit: 500,
@@ -634,7 +637,7 @@
   }
 
   function normalizeFrameStorageMode(value: string): string {
-    return ['zstd', 'jpg', 'png'].includes(value) ? value : 'zstd';
+    return ['zstd', 'jxl', 'jxs', 'jpg', 'png'].includes(value) ? value : 'zstd';
   }
 
   function assetMatchKeys(asset: Pick<EditableAnalyzedAsset, 'path' | 'asset_id'>): string[] {
@@ -707,6 +710,8 @@
             Frame storage
             <select bind:value={frameStorageMode}>
               <option value="zstd">zstd</option>
+              <option value="jxl">jxl</option>
+              <option value="jxs">jxs</option>
               <option value="jpg">jpg</option>
               <option value="png">png</option>
             </select>

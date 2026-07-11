@@ -4,7 +4,7 @@
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
-  import { getClient } from '$lib/stores/session';
+  import { getClient, session } from '$lib/stores/session';
   import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
   import { processingSection, stringDefault } from '$lib/utils/configDefaults';
   import { roiBrowserHref } from '$lib/utils/dashboardNavigation';
@@ -15,6 +15,7 @@
     type FrameDisplayMode
   } from '$lib/utils/frameDisplay';
   import { formatBytes } from '$lib/utils/format';
+  import { projectPreferenceKey } from '$lib/utils/preferences';
   import type { ImageInfoSpec, ImageLayer, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   type RoiViewMode = 'candidate' | 'refined';
@@ -70,7 +71,6 @@
   let loadMoreSentinel: HTMLElement;
   let pageScroller: HTMLElement | null = null;
   let lastRequestedAppendOffset: number | null = null;
-  const roiBrowserPreferenceKey = 'pelagia-view:roi-browser:v1';
   const pageSize = 120;
   const frameDetectionBatchSize = 100;
   const roiDisplayMaxWidth = 220;
@@ -245,7 +245,7 @@
 
   function restorePreferences(): boolean {
     if (typeof localStorage === 'undefined') return false;
-    const saved = localStorage.getItem(roiBrowserPreferenceKey);
+    const saved = localStorage.getItem(roiBrowserPreferenceKey());
     if (!saved) return false;
     try {
       const preferences = JSON.parse(saved) as Partial<RoiPreferences>;
@@ -275,7 +275,11 @@
 
   function persistPreferences(preferences: RoiPreferences) {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(roiBrowserPreferenceKey, JSON.stringify(preferences));
+    localStorage.setItem(roiBrowserPreferenceKey(), JSON.stringify(preferences));
+  }
+
+  function roiBrowserPreferenceKey(): string {
+    return projectPreferenceKey('roi-browser', $session);
   }
 
   function applyConfigDefaults(config: SystemConfigResponse | null, restored: boolean) {
@@ -1304,6 +1308,7 @@
           <option value="">Any</option>
           <option value="png">png</option>
           <option value="zstd">zstd</option>
+          <option value="jxl">jxl</option>
           <option value="raw">raw</option>
           <option value="jpg">jpg</option>
         </select>

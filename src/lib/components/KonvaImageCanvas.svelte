@@ -578,9 +578,13 @@
     status = null;
     const started = performance.now();
     try {
-      const dataUrl = await exportDataUrl(variant);
       const filename = exportFilename(variant, filenameOverride);
-      downloadDataUrl(dataUrl, filename);
+      if (variant === 'original' && spec.toolbar?.originalUrl) {
+        await downloadRemoteImage(spec.toolbar.originalUrl, filename);
+      } else {
+        const dataUrl = await exportDataUrl(variant);
+        downloadDataUrl(dataUrl, filename);
+      }
       status = 'Downloaded image.';
       recordClientEvent('image_export', {
         action: 'download',
@@ -736,6 +740,23 @@
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
+  }
+
+  async function downloadRemoteImage(url: string, filename: string) {
+    const response = await authenticatedFetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = filename;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
   }
 
   function exportFilename(variant: ImageDownloadVariant, filenameOverride?: string) {

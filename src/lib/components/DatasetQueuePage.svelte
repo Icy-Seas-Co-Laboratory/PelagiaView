@@ -34,7 +34,7 @@
     booleanPreference,
     nullableNumberPreference as nullablePreferenceNumber,
     numberPreference,
-    preferenceKey,
+    projectPreferenceKey,
     readPreferences,
     stringArrayPreference,
     stringPreference,
@@ -236,7 +236,7 @@
   let maxWidthPlusHeight: number | null = null;
   let padding = 100;
   let roiEncoding = 'zstd';
-  let roiEncodingOptions = ['zstd', 'png', 'raw', 'auto'];
+  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'raw', 'auto'];
   let zstdMinBytes: number | null = null;
   let alwaysStoreMask = true;
   let storeRoiPayloadMinArea: number | null = null;
@@ -260,7 +260,7 @@
   let refinementExpansionPixels: number | null = null;
   let refinementEdgeTouchMargin = 1;
   let refinementEncoding = 'auto';
-  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'raw'];
+  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'raw'];
   let refinementStore = true;
   let refinementDryRun = false;
 
@@ -484,7 +484,7 @@
   });
 
   function datasetQueuePreferenceKey(): string {
-    return preferenceKey(`dataset-queue:${mode}`);
+    return projectPreferenceKey(`dataset-queue:${mode}`, $session);
   }
 
   function buildPreferenceSnapshot(): DatasetQueuePreferences {
@@ -1515,7 +1515,7 @@
             crop_w: cropEnabled ? cropW : undefined,
             crop_h: cropEnabled ? cropH : undefined,
             invert_intensity: invertIntensity,
-            encoding: preprocessingEncoding as 'png' | 'jpg' | 'raw' | 'zstd'
+            encoding: preprocessingEncoding as 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd'
           });
           if (response.job?.id) nextJobIds.push(response.job.id);
         } else {
@@ -2151,6 +2151,8 @@
           <select bind:value={preprocessingEncoding}>
             <option value="png">png</option>
             <option value="zstd">zstd</option>
+            <option value="jxl">jxl</option>
+            <option value="jxs">jxs</option>
             <option value="raw">raw</option>
             <option value="jpg">jpg</option>
           </select>

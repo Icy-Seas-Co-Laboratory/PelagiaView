@@ -96,6 +96,13 @@ export const preferenceDefinitions: PreferenceDefinition[] = [
     resetWithUiState: true
   },
   {
+    key: preferenceKey('frame-browser'),
+    label: 'Frame browser',
+    description: 'Frame filters, display mode, download format, and tile browser options.',
+    category: 'image',
+    resetWithUiState: true
+  },
+  {
     key: 'pelagia-view-analytics-session-id',
     label: 'Analytics session',
     description: 'Anonymous local session id used to group PelagiaView analytics events.',
@@ -104,6 +111,9 @@ export const preferenceDefinitions: PreferenceDefinition[] = [
 ];
 
 const definitionByKey = new Map(preferenceDefinitions.map((definition) => [definition.key, definition]));
+const uiStateBaseKeys = preferenceDefinitions
+  .filter((definition) => definition.resetWithUiState)
+  .map((definition) => definition.key);
 
 export function listPreferenceEntries(): PreferenceEntry[] {
   if (!browser) return [];
@@ -160,13 +170,18 @@ export function clearPreferences(keys: string[]): void {
 }
 
 export function uiStatePreferenceKeys(): string[] {
-  return preferenceDefinitions
-    .filter((definition) => definition.resetWithUiState)
-    .map((definition) => definition.key);
+  const keys = new Set(uiStateBaseKeys);
+  if (browser) {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && isUiStatePreferenceKey(key)) keys.add(key);
+    }
+  }
+  return [...keys];
 }
 
 function preferenceEntryForKey(key: string): PreferenceEntry {
-  const definition = definitionByKey.get(key);
+  const definition = definitionByKey.get(key) ?? scopedDefinitionForKey(key);
   const value = browser ? localStorage.getItem(key) : null;
   return {
     key,
@@ -180,6 +195,15 @@ function preferenceEntryForKey(key: string): PreferenceEntry {
     updatedAt: updatedAtFromValue(value),
     valuePreview: value ? previewValue(value) : null
   };
+}
+
+function isUiStatePreferenceKey(key: string): boolean {
+  return uiStateBaseKeys.some((baseKey) => key === baseKey || key.startsWith(`${baseKey}:server:`));
+}
+
+function scopedDefinitionForKey(key: string): PreferenceDefinition | undefined {
+  const baseKey = uiStateBaseKeys.find((candidate) => key.startsWith(`${candidate}:server:`));
+  return baseKey ? definitionByKey.get(baseKey) : undefined;
 }
 
 function extractImportEntries(parsed: unknown): Record<string, unknown> {
