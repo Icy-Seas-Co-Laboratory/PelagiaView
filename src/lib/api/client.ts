@@ -37,6 +37,8 @@ import type {
   LogEntry,
   ProjectSummary,
   ProjectMembershipSummary,
+  ProjectStorageSettingsRequest,
+  ProjectStorageSettingsResponse,
   ProcessingStatusFilters,
   ProcessingStatusFrameIdsResponse,
   ProcessingStatusFramesResponse,
@@ -49,6 +51,7 @@ import type {
   SegmentationOptions,
   SegmentationCapabilities,
   SegmentationResolvedOptions,
+  SystemCapabilitiesResponse,
   SystemConfigResponse,
   SystemStatus,
   WorkerSession
@@ -138,6 +141,14 @@ type CreateProjectRequest = {
   kvstore_root_path?: string | null;
   is_active?: boolean;
   metadata?: Record<string, unknown>;
+};
+
+type UpdateProjectRequest = {
+  project_name?: string | null;
+  description?: string | null;
+  kvstore_root_path?: string | null;
+  is_active?: boolean | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 type CreateUserRequest = {
@@ -257,6 +268,10 @@ export class PelagiaApiClient {
     return this.get<SystemConfigResponse>('/system/config', undefined, 15000, { auth: 'none' });
   }
 
+  async systemCapabilities(): Promise<SystemCapabilitiesResponse> {
+    return this.get<SystemCapabilitiesResponse>('/system/capabilities', undefined, 15000, { auth: 'none' });
+  }
+
   async login(body: LoginRequest): Promise<AuthLoginResponse> {
     return this.post<AuthLoginResponse>('/auth/login', compact(body), { auth: 'none' });
   }
@@ -272,6 +287,29 @@ export class PelagiaApiClient {
 
   async createProject(body: CreateProjectRequest): Promise<{ project: ProjectSummary; membership?: ProjectMembershipSummary | null }> {
     return this.post('/projects', compact(body));
+  }
+
+  async updateProject(projectIdOrKey: string, body: UpdateProjectRequest): Promise<{ project: ProjectSummary }> {
+    return this.request(this.url(`/projects/${encodeURIComponent(projectIdOrKey)}`), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(compact(body))
+    });
+  }
+
+  async getProjectStorageSettings(projectIdOrKey: string): Promise<ProjectStorageSettingsResponse> {
+    return this.get<ProjectStorageSettingsResponse>(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-settings`);
+  }
+
+  async updateProjectStorageSettings(
+    projectIdOrKey: string,
+    body: ProjectStorageSettingsRequest
+  ): Promise<ProjectStorageSettingsResponse> {
+    return this.request(this.url(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-settings`), {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(compact(body))
+    });
   }
 
   async deleteProject(projectIdOrKey: string): Promise<{ deleted: boolean; project: ProjectSummary }> {
@@ -416,6 +454,8 @@ export class PelagiaApiClient {
     refinement_state?: string | null;
     start_frame?: number | null;
     end_frame?: number | null;
+    sort_by?: 'asset_frame' | 'frame' | 'captured_at' | 'filename' | 'roi_count' | 'refined_count' | null;
+    sort_dir?: 'asc' | 'desc' | null;
     limit?: number | null;
     offset?: number | null;
   } = {}): Promise<FrameProcessingState> {

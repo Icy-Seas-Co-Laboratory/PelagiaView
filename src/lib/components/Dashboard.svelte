@@ -9,13 +9,14 @@
   import HeaderProcessingPresetSelect from './HeaderProcessingPresetSelect.svelte';
   import IngestionPage from './IngestionPage.svelte';
   import FrameBrowserPage from './FrameBrowserPage.svelte';
-  import PageHeader from './PageHeader.svelte';
   import PreferencesModal from './PreferencesModal.svelte';
   import RoiBrowserPage from './RoiBrowserPage.svelte';
   import ExplorerPage from './ExplorerPage.svelte';
   import StatusPage from './StatusPage.svelte';
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
+    dashboardViewDefinition,
+    dashboardViewHref,
     dashboardViewFromParam,
     defaultDashboardView,
     type DashboardView
@@ -28,6 +29,8 @@
   let projectSwitchError: string | null = null;
   const sidebarPreferenceKey = 'pelagia-view:sidebar-collapsed';
   $: activeTab = dashboardViewFromParam($page.url.searchParams.get('view'));
+  $: activeDefinition = dashboardViewDefinition(activeTab);
+  $: nextDefinition = activeDefinition.nextView ? dashboardViewDefinition(activeDefinition.nextView) : null;
   $: if (preferencesReady && typeof localStorage !== 'undefined') {
     localStorage.setItem(sidebarPreferenceKey, sidebarCollapsed ? 'true' : 'false');
   }
@@ -76,18 +79,23 @@
     <header class="topbar">
       <div class="dashboard-brand">
         <div>
-          <p class="eyebrow">PelagiaView session</p>
-          <h1>Pelagia Dashboard</h1>
+          <p class="eyebrow">{activeDefinition.group} · {activeDefinition.detail}</p>
+          <h1>{activeDefinition.label}</h1>
         </div>
       </div>
       <div class="session-controls">
+        {#if activeDefinition.nextView && nextDefinition}
+          <a class="next-step-button topbar-next-step" href={dashboardViewHref(activeDefinition.nextView, $page.url)}>
+            <span>Next</span>
+            <strong>{nextDefinition.label}</strong>
+          </a>
+        {/if}
         <HeaderProcessingPresetSelect />
         <HeaderImageInversionToggle />
       </div>
     </header>
 
     <section class="dashboard-surface">
-      <PageHeader view={activeTab} currentUrl={$page.url} />
       <div class="page-scroll-content">
         {#if activeTab === 'status'}
           <StatusPage />

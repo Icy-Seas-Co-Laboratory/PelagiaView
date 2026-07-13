@@ -46,6 +46,21 @@ export type SystemConfigResponse = {
   defaults?: Record<string, unknown>;
 };
 
+export type SystemCapabilitiesResponse = {
+  name?: string;
+  version?: string;
+  supported?: {
+    image_encodings?: string[];
+    image_codec_availability?: Record<string, boolean>;
+    roi_encoding_options?: string[];
+    [key: string]: unknown;
+  };
+  processing?: Record<string, unknown>;
+  jobs?: Record<string, unknown>;
+  storage?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
 export type ProjectSummary = {
   id: string;
   project_key?: string;
@@ -53,9 +68,39 @@ export type ProjectSummary = {
   name?: string | null;
   description?: string | null;
   kvstore_root_path?: string | null;
+  settings?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
   role?: string | null;
   membership_role?: string | null;
   is_active?: boolean;
+};
+
+export type ProjectStorageSettingsRequest = {
+  frame_encoding?: string | null;
+  frame_quality?: number | null;
+  roi_encoding?: string | null;
+};
+
+export type ProjectStorageSettings = {
+  frame?: {
+    encoding?: string | null;
+    quality?: number | string | null;
+  };
+  roi?: {
+    encoding?: string | null;
+  };
+  sources?: {
+    frame_encoding?: string | null;
+    frame_quality?: string | null;
+    roi_encoding?: string | null;
+  };
+};
+
+export type ProjectStorageSettingsResponse = {
+  project?: ProjectSummary;
+  project_id?: string;
+  configured?: Record<string, unknown>;
+  effective?: ProjectStorageSettings;
 };
 
 export type AuthUserSummary = {
@@ -302,7 +347,7 @@ export type AnalyzeIngestionRequest = {
   compute_checksum?: boolean;
   collections?: string | string[] | null;
   n_tile?: number | null;
-  image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | string | null;
+  image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | 'raw' | string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -338,7 +383,7 @@ export type QueueAssetsRequest = {
   source_type?: string | null;
   metadata?: Record<string, unknown>;
   n_tile?: number | null;
-  image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | string | null;
+  image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | 'raw' | string | null;
   adaptive_background_subtraction?: boolean | null;
   adaptive_background_period?: number | null;
   apply_mask?: boolean | null;
@@ -685,6 +730,8 @@ export type DirectoryEntry = {
   name: string;
   path: string;
   relative_path?: string;
+  key?: string;
+  label?: string;
   kind: 'file' | 'directory';
   is_dir?: boolean;
   size_bytes?: number;
@@ -772,7 +819,7 @@ export type SegmentationOptions = {
   padding?: number | null;
   flatfield_correction?: boolean | null;
   flatfield_q?: number | null;
-  roi_encoding?: 'png' | 'jpg' | 'jxl' | 'raw' | 'zstd' | 'auto' | null;
+  roi_encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | 'auto' | null;
   zstd_min_bytes?: number | null;
   store_roi_payload_min_area?: number | null;
   store_roi_payload_min_width?: number | null;
@@ -867,7 +914,7 @@ export type RoiRefinementOptions = {
   expansion_pixels?: number | null;
   edge_touch_margin?: number | null;
   output_threshold?: number | null;
-  encoding?: 'png' | 'jpg' | 'jxl' | 'raw' | 'zstd' | 'auto' | null;
+  encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | 'auto' | null;
   allow_frame_expansion?: boolean | null;
   store?: boolean | null;
   dry_run?: boolean | null;

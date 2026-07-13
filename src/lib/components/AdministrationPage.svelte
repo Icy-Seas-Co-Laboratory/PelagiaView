@@ -2,9 +2,21 @@
   import { onMount } from 'svelte';
   import { ApiError } from '$lib/api/client';
   import FileSelector from '$lib/components/FileSelector.svelte';
-  import type { AuthUserSummary, DirectoryListing, ProjectSummary } from '$lib/api/types';
+  import type { AuthUserSummary, DirectoryListing, ProjectStorageSettingsResponse, ProjectSummary } from '$lib/api/types';
   import { getClient } from '$lib/stores/session';
   import { refreshSessionProjects, session } from '$lib/stores/session';
+  import {
+    codecAvailable,
+    codecUnavailableTitle,
+    ensureAvailableCodec,
+    type CodecAvailability
+  } from '$lib/utils/codecs';
+
+  type ProjectStorageDraft = {
+    frameEncoding: string;
+    frameQuality: number;
+    roiEncoding: string;
+  };
 
   let users: AuthUserSummary[] = [];
   let usersLoading = false;
@@ -20,10 +32,17 @@
   let projectName = '';
   let projectDescription = '';
   let kvstoreRootPath = '';
+  let projectFrameStorageEncoding = 'zstd';
+  let projectFrameStorageQuality = 90;
+  let projectRoiStorageEncoding = 'auto';
+  let imageCodecAvailability: CodecAvailability = {};
   let kvstoreDirectoryPath = '.';
   let kvstoreBrowserError: string | null = null;
   let creatingProject = false;
   let deletingProjectId = '';
+  let projectStorageDrafts: Record<string, ProjectStorageDraft> = {};
+  let projectStorageSettingsByKey: Record<string, ProjectStorageSettingsResponse> = {};
+  let updatingProjectStorageFor = '';
 
   let username = '';
   let password = '';
@@ -45,6 +64,8 @@
   $: canCreateProject = Boolean($session.user?.is_admin);
   $: canListAllProjectUsers = Boolean($session.user?.is_admin);
   $: if (!canListAllProjectUsers && usersIncludeAllProjects) usersIncludeAllProjects = false;
+  $: frameStorageOptions = ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
+  $: roiStorageOptions = ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
 
   onMount(() => {
     void loadAdministrationData();
@@ -53,7 +74,14 @@
   async function loadAdministrationData() {
     projectError = null;
     userError = null;
-    await Promise.all([refreshProjects(), loadUsers()]);
+    await Promise.all([loadSystemCapabilities(), refreshProjects(), loadUsers()]);
+  }
+
+  async function loadSystemCapabilities() {
+    const client = getClient();
+    if (!client) return;
+    const capabilities = await client.systemCapabilities().catch(() => null);
+    imageCodecAvailability = capabilities?.supported?.image_codec_availability ?? {};
   }
 
   async function loadKvstoreDirectory(path = kvstoreDirectoryPath): Promise<DirectoryListing> {
@@ -74,7 +102,9 @@
 
   async function refreshProjects() {
     try {
-      await refreshSessionProjects();
+      const nextProjects = await refreshSessionProjects();
+      projectStorageSettingsByKey = await fetchProjectStorageSettings(nextProjects);
+      syncProjectStorageDrafts(nextProjects);
     } catch (error) {
       projectError = error instanceof Error ? error.message : String(error);
     }
@@ -118,11 +148,22 @@
         description: projectDescription.trim() || undefined,
         kvstore_root_path: kvstoreRootPath.trim() || undefined
       });
-      projectMessage = `Created project ${projectLabel(response.project)}.`;
+      const projectId = response.project.id || response.project.project_key;
+      if (projectId) {
+        await client.updateProjectStorageSettings(projectId, {
+          frame_encoding: availableFrameStorageEncoding(projectFrameStorageEncoding),
+          frame_quality: normalizeFrameStorageQuality(projectFrameStorageQuality),
+          roi_encoding: availableRoiStorageEncoding(projectRoiStorageEncoding)
+        });
+      }
+      projectMessage = `Created project ${projectLabel(response.project)} with project storage defaults.`;
       projectKey = '';
       projectName = '';
       projectDescription = '';
       kvstoreRootPath = '';
+      projectFrameStorageEncoding = 'zstd';
+      projectFrameStorageQuality = 90;
+      projectRoiStorageEncoding = 'auto';
       await refreshProjects();
     } catch (error) {
       projectError = error instanceof Error ? error.message : String(error);
@@ -147,6 +188,29 @@
       projectError = error instanceof Error ? error.message : String(error);
     } finally {
       deletingProjectId = '';
+    }
+  }
+
+  async function updateProjectFrameStorage(project: ProjectSummary) {
+    const client = getClient();
+    const projectId = project.id || project.project_key;
+    const draft = projectStorageDrafts[projectKeyForDraft(project)] ?? projectStorageDraftFor(project);
+    if (!client || !projectId || !draft) return;
+    updatingProjectStorageFor = projectKeyForDraft(project);
+    projectMessage = null;
+    projectError = null;
+    try {
+      const response = await client.updateProjectStorageSettings(projectId, {
+        frame_encoding: availableFrameStorageEncoding(draft.frameEncoding),
+        frame_quality: normalizeFrameStorageQuality(draft.frameQuality),
+        roi_encoding: availableRoiStorageEncoding(draft.roiEncoding)
+      });
+      projectMessage = `Updated storage defaults for ${projectLabel(response.project ?? project)}.`;
+      await refreshProjects();
+    } catch (error) {
+      projectError = error instanceof Error ? error.message : String(error);
+    } finally {
+      updatingProjectStorageFor = '';
     }
   }
 
@@ -239,6 +303,132 @@
     return project.id === 'default' || project.project_key === 'default';
   }
 
+  function projectKeyForDraft(project: ProjectSummary): string {
+    return project.id || project.project_key || projectLabel(project);
+  }
+
+  async function fetchProjectStorageSettings(nextProjects: ProjectSummary[]): Promise<Record<string, ProjectStorageSettingsResponse>> {
+    const client = getClient();
+    if (!client) return {};
+    const entries = await Promise.all(
+      nextProjects.map(async (project) => {
+        const projectId = project.id || project.project_key;
+        if (!projectId) return null;
+        try {
+          const settings = await client.getProjectStorageSettings(projectId);
+          return [projectKeyForDraft(project), settings] as const;
+        } catch {
+          return null;
+        }
+      })
+    );
+    return Object.fromEntries(entries.filter((entry): entry is readonly [string, ProjectStorageSettingsResponse] => Boolean(entry)));
+  }
+
+  function syncProjectStorageDrafts(nextProjects: ProjectSummary[]) {
+    const nextDrafts: Record<string, ProjectStorageDraft> = {};
+    for (const project of nextProjects) {
+      const key = projectKeyForDraft(project);
+      nextDrafts[key] = projectStorageDrafts[key] ?? projectStorageDraftFor(project);
+    }
+    projectStorageDrafts = nextDrafts;
+  }
+
+  function projectStorageDraftFor(project: ProjectSummary): ProjectStorageDraft {
+    const storageSettings = projectStorageSettingsByKey[projectKeyForDraft(project)];
+    const effective = storageSettings?.effective ?? {};
+    const configured = storageSettings?.configured ?? objectValue(objectValue(project.settings).storage);
+    const effectiveFrame = objectValue(effective.frame);
+    const configuredFrame = objectValue(configured.frame);
+    const effectiveRoi = objectValue(effective.roi);
+    const configuredRoi = objectValue(configured.roi);
+    return {
+      frameEncoding: normalizeFrameStorageEncoding(
+        stringValue(effectiveFrame.encoding) ?? stringValue(configuredFrame.encoding) ?? projectLegacyFrameStorageEncoding(project)
+      ),
+      frameQuality: normalizeFrameStorageQuality(
+        numberValue(effectiveFrame.quality) ?? numberValue(configuredFrame.quality) ?? projectLegacyFrameStorageQuality(project)
+      ),
+      roiEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.encoding) ?? stringValue(configuredRoi.encoding) ?? 'auto')
+    };
+  }
+
+  function projectLegacyFrameStorageEncoding(project: ProjectSummary): string {
+    const metadata = project.metadata ?? {};
+    const processing = objectValue(metadata.processing);
+    const processingFrameStorage = objectValue(processing.frame_storage);
+    const metadataFrameStorage = objectValue(metadata.frame_storage);
+    const frameStorage = Object.keys(processingFrameStorage).length ? processingFrameStorage : metadataFrameStorage;
+    return normalizeFrameStorageEncoding(stringValue(frameStorage.image_encoding) ?? stringValue(metadata.frame_storage_image_encoding) ?? 'zstd');
+  }
+
+  function projectLegacyFrameStorageQuality(project: ProjectSummary): number {
+    const metadata = project.metadata ?? {};
+    const processing = objectValue(metadata.processing);
+    const processingFrameStorage = objectValue(processing.frame_storage);
+    const metadataFrameStorage = objectValue(metadata.frame_storage);
+    const frameStorage = Object.keys(processingFrameStorage).length ? processingFrameStorage : metadataFrameStorage;
+    return normalizeFrameStorageQuality(numberValue(frameStorage.image_quality) ?? numberValue(metadata.frame_storage_image_quality) ?? 90);
+  }
+
+  function setProjectStorageDraft(project: ProjectSummary, patch: Partial<ProjectStorageDraft>) {
+    const key = projectKeyForDraft(project);
+    projectStorageDrafts = {
+      ...projectStorageDrafts,
+      [key]: {
+        ...(projectStorageDrafts[key] ?? projectStorageDraftFor(project)),
+        ...patch
+      }
+    };
+  }
+
+  function projectStorageSourceLabel(project: ProjectSummary): string {
+    const sources = projectStorageSettingsByKey[projectKeyForDraft(project)]?.effective?.sources;
+    if (!sources) return 'Storage defaults';
+    return `Frame ${sources.frame_encoding ?? 'global'}, quality ${sources.frame_quality ?? 'global'}, ROI ${sources.roi_encoding ?? 'global'}`;
+  }
+
+  function projectStorageChanged(project: ProjectSummary): boolean {
+    const draft = projectStorageDrafts[projectKeyForDraft(project)] ?? projectStorageDraftFor(project);
+    const current = projectStorageDraftFor(project);
+    return draft.frameEncoding !== current.frameEncoding || draft.frameQuality !== current.frameQuality || draft.roiEncoding !== current.roiEncoding;
+  }
+
+  function normalizeFrameStorageEncoding(value: string): string {
+    return ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : 'zstd';
+  }
+
+  function normalizeRoiStorageEncoding(value: string): string {
+    return ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : 'auto';
+  }
+
+  function availableFrameStorageEncoding(value: string): string {
+    return ensureAvailableCodec(normalizeFrameStorageEncoding(value), frameStorageOptions, imageCodecAvailability, 'zstd');
+  }
+
+  function availableRoiStorageEncoding(value: string): string {
+    return ensureAvailableCodec(normalizeRoiStorageEncoding(value), roiStorageOptions, imageCodecAvailability, 'auto');
+  }
+
+  function normalizeFrameStorageQuality(value: number): number {
+    const next = Math.round(Number(value));
+    if (!Number.isFinite(next)) return 90;
+    return Math.max(0, Math.min(100, next));
+  }
+
+  function objectValue(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  }
+
+  function stringValue(value: unknown): string | null {
+    return typeof value === 'string' && value ? value : null;
+  }
+
+  function numberValue(value: unknown): number | null {
+    const next = Number(value);
+    return Number.isFinite(next) ? next : null;
+  }
+
   function selectUser(user: AuthUserSummary) {
     userActionTarget = user.username || user.id;
   }
@@ -324,6 +514,34 @@
           KV store root path
           <input bind:value={kvstoreRootPath} placeholder="Server default" disabled={!canCreateProject || creatingProject} />
         </label>
+        <label>
+          Frame encoding
+          <select bind:value={projectFrameStorageEncoding} disabled={!canCreateProject || creatingProject}>
+            {#each frameStorageOptions as encoding}
+              <option
+                value={encoding}
+                disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+              >{encoding}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Frame quality
+          <input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={!canCreateProject || creatingProject} />
+        </label>
+        <label>
+          ROI encoding
+          <select bind:value={projectRoiStorageEncoding} disabled={!canCreateProject || creatingProject}>
+            {#each roiStorageOptions as encoding}
+              <option
+                value={encoding}
+                disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+              >{encoding}</option>
+            {/each}
+          </select>
+        </label>
       </div>
       <details class="control-details span-2">
         <summary>Browse server folders</summary>
@@ -359,14 +577,66 @@
 
     <div class="admin-list">
       {#each projects as project}
-        <article class="admin-row">
+        {@const storageDraft = projectStorageDrafts[projectKeyForDraft(project)] ?? projectStorageDraftFor(project)}
+        <article class="admin-row project-admin-row">
           <div>
             <strong>{projectLabel(project)}</strong>
-            <small>{project.description || projectRole(project)}</small>
+            <small>{project.description || projectStorageSourceLabel(project)}</small>
           </div>
           <span class="status-pill {project.is_active === false ? 'bad' : 'good'}">
             {project.is_active === false ? 'Inactive' : projectRole(project)}
           </span>
+          <label class="inline-role-select project-storage-field">
+            <span>Frame</span>
+            <select
+              value={storageDraft.frameEncoding}
+              on:change={(event) => setProjectStorageDraft(project, { frameEncoding: normalizeFrameStorageEncoding((event.currentTarget as HTMLSelectElement).value) })}
+              disabled={updatingProjectStorageFor === projectKeyForDraft(project)}
+            >
+              {#each frameStorageOptions as encoding}
+                <option
+                  value={encoding}
+                  disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                  title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+                >{encoding}</option>
+              {/each}
+            </select>
+          </label>
+          <label class="inline-role-select project-storage-field">
+            <span>Quality</span>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={storageDraft.frameQuality}
+              on:input={(event) => setProjectStorageDraft(project, { frameQuality: normalizeFrameStorageQuality(Number((event.currentTarget as HTMLInputElement).value)) })}
+              disabled={updatingProjectStorageFor === projectKeyForDraft(project)}
+            />
+          </label>
+          <label class="inline-role-select project-storage-field">
+            <span>ROI</span>
+            <select
+              value={storageDraft.roiEncoding}
+              on:change={(event) => setProjectStorageDraft(project, { roiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value) })}
+              disabled={updatingProjectStorageFor === projectKeyForDraft(project)}
+            >
+              {#each roiStorageOptions as encoding}
+                <option
+                  value={encoding}
+                  disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                  title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+                >{encoding}</option>
+              {/each}
+            </select>
+          </label>
+          <button
+            class="ghost"
+            type="button"
+            on:click={() => updateProjectFrameStorage(project)}
+            disabled={updatingProjectStorageFor === projectKeyForDraft(project) || !projectStorageChanged(project)}
+          >
+            {updatingProjectStorageFor === projectKeyForDraft(project) ? 'Saving' : 'Save storage'}
+          </button>
           <button
             class="ghost danger"
             type="button"

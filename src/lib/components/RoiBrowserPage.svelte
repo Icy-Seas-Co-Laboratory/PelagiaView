@@ -1,12 +1,12 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { onDestroy, onMount, tick } from 'svelte';
+  import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
-  import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset, SystemConfigResponse } from '$lib/api/types';
-  import { processingSection, stringDefault } from '$lib/utils/configDefaults';
+  import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset } from '$lib/api/types';
   import { roiBrowserHref } from '$lib/utils/dashboardNavigation';
   import {
     displayModeForPayloadKind,
@@ -21,6 +21,7 @@
   type RoiViewMode = 'candidate' | 'refined';
 
   let assets: RawAsset[] = [];
+  let collectionOptions: string[] = [];
   let detections: DetectionSummary[] = [];
   let selectedAssetId = '';
   let selectedFrameId = '';
@@ -35,8 +36,7 @@
   let maxBBoxW: number | null = null;
   let minBBoxH: number | null = null;
   let maxBBoxH: number | null = null;
-  let roiEncoding = '';
-  let imageFormat = 'png';
+  const imageFormat = 'jpg';
   let invertImages = false;
   let applyRoiMask = false;
   let roiViewMode: RoiViewMode = 'candidate';
@@ -124,6 +124,21 @@
   $: resetFrameContextImage(detailFrameUrl);
   $: resetFrameModalImage(frameModalUrl);
   $: syncPageScrollListener(tileScroller);
+  $: advancedSearchActive = Boolean(
+    selectedAssetId ||
+      selectedFrameId ||
+      collection ||
+      hasFilterValue(startFrame) ||
+      hasFilterValue(endFrame) ||
+      hasFilterValue(minArea) ||
+      hasFilterValue(maxArea) ||
+      hasFilterValue(minPerimeter) ||
+      hasFilterValue(maxPerimeter) ||
+      hasFilterValue(minBBoxW) ||
+      hasFilterValue(maxBBoxW) ||
+      hasFilterValue(minBBoxH) ||
+      hasFilterValue(maxBBoxH)
+  );
   $: roiPreferenceSnapshot = {
     selectedAssetId,
     collection,
@@ -137,8 +152,6 @@
     maxBBoxW,
     minBBoxH,
     maxBBoxH,
-    roiEncoding,
-    imageFormat,
     applyRoiMask,
     roiViewMode,
     sortBy,
@@ -150,12 +163,15 @@
     const client = getClient();
     if (!client) return;
     try {
-      const restored = restorePreferences();
-      const config = await client.systemConfig().catch(() => null);
-      applyConfigDefaults(config, restored);
+      restorePreferences();
       applyUrlFilters($page.url.searchParams);
       preferencesReady = true;
-      assets = await client.listAssets('video', 500);
+      const [assetRows, collectionRows] = await Promise.all([
+        client.listAssets('video', 500),
+        client.listCollections(500).catch(() => [])
+      ]);
+      assets = assetRows;
+      collectionOptions = uniqueStrings(collectionRows.map((row) => row.collection));
       await loadDetections(true);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -211,7 +227,6 @@
       max_area: maxArea,
       min_perimeter: minPerimeter,
       max_perimeter: maxPerimeter,
-      roi_encoding: roiEncoding || undefined,
       refinement_state: roiViewMode === 'refined' ? 'refined' : undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
@@ -234,7 +249,6 @@
     maxBBoxW = null;
     minBBoxH = null;
     maxBBoxH = null;
-    roiEncoding = '';
     nextOffset = 0;
     hasMore = true;
     fullResolutionTileKeys = new Set();
@@ -261,8 +275,6 @@
       maxBBoxW = nullableNumberPreference(preferences.maxBBoxW, maxBBoxW);
       minBBoxH = nullableNumberPreference(preferences.minBBoxH, minBBoxH);
       maxBBoxH = nullableNumberPreference(preferences.maxBBoxH, maxBBoxH);
-      roiEncoding = stringPreference(preferences.roiEncoding, roiEncoding);
-      imageFormat = stringPreference(preferences.imageFormat, imageFormat);
       applyRoiMask = typeof preferences.applyRoiMask === 'boolean' ? preferences.applyRoiMask : applyRoiMask;
       roiViewMode = roiViewModePreference(preferences.roiViewMode, roiViewMode);
       sortBy = sortByPreference(preferences.sortBy, sortBy);
@@ -282,11 +294,22 @@
     return projectPreferenceKey('roi-browser', $session);
   }
 
-  function applyConfigDefaults(config: SystemConfigResponse | null, restored: boolean) {
-    if (restored) return;
-    const frameStorage = processingSection(config, 'frame_storage');
-    const configuredFormat = stringDefault(frameStorage, 'image_encoding', imageFormat);
-    imageFormat = configuredFormat === 'jpg' || configuredFormat === 'jpeg' ? 'jpg' : 'png';
+  function uniqueStrings(values: Array<string | null | undefined>): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const raw of values) {
+      const value = raw?.trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(value);
+    }
+    return result;
+  }
+
+  function hasFilterValue(value: unknown): boolean {
+    return value !== null && value !== undefined && value !== '';
   }
 
   function applyUrlFilters(params: URLSearchParams) {
@@ -1189,8 +1212,8 @@
   }
 </script>
 
-<div class="roi-browser-layout">
-  <aside class="panel roi-filter-panel">
+<div class="roi-browser-layout browser-top-layout">
+  <section class="panel roi-filter-panel browser-filter-bar">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">ROI Browser</p>
@@ -1198,56 +1221,86 @@
       </div>
     </div>
 
-    <div class="filter-group">
-      <div class="section-heading">
-        <p class="eyebrow">View</p>
-        <strong>ROI image source</strong>
-      </div>
-      <div class="toggle-list">
-        <button
-          class:active={roiViewMode === 'candidate'}
-          type="button"
-          on:click={() => setRoiViewMode('candidate')}
-        >
-          Candidate ROIs
-        </button>
-        <button
-          class:active={roiViewMode === 'refined'}
-          type="button"
-          on:click={() => setRoiViewMode('refined')}
-        >
-          Refined ROIs
-        </button>
-      </div>
-      {#if roiViewMode === 'refined'}
-        <p class="soft">Only detections with stored refined ROI payloads are shown.</p>
-      {/if}
-      <div class="view-option-stack">
-        <label class="switch-row">
-          <span>Apply ROI mask</span>
+    <div class="browser-primary-filters">
+      <div class="browser-view-options">
+        <div>
+          <span class="control-label">ROI source</span>
+          <div class="toggle-list">
+            <button
+              class:active={roiViewMode === 'candidate'}
+              type="button"
+              on:click={() => setRoiViewMode('candidate')}
+            >
+              Candidate
+            </button>
+            <button
+              class:active={roiViewMode === 'refined'}
+              type="button"
+              on:click={() => setRoiViewMode('refined')}
+            >
+              Refined
+            </button>
+          </div>
+        </div>
+
+        <label class="switch-row compact-switch-row">
+          <span>Mask</span>
           <input type="checkbox" bind:checked={applyRoiMask} />
           <span class="switch-track" aria-hidden="true"></span>
         </label>
       </div>
+
+      <div class="form-grid compact-grid browser-sort-group">
+        <label>
+          Sort by
+          <select bind:value={sortBy}>
+            <option value="asset_frame">Asset + frame</option>
+            <option value="area">Area</option>
+            <option value="byte_size">Byte size</option>
+            <option value="id">Random ID</option>
+          </select>
+        </label>
+        <label>
+          Direction
+          <select bind:value={sortDir}>
+            <option value="desc">Descending</option>
+            <option value="asc">Ascending</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="button-row browser-filter-actions">
+        <button type="button" on:click={() => loadDetections(true)}>Apply</button>
+        <button class="ghost" type="button" on:click={resetFilters}>Reset</button>
+      </div>
     </div>
 
-    <label>
-      Asset
-      <select bind:value={selectedAssetId}>
-        <option value="">All assets</option>
-        {#each assets as asset}
-          <option value={asset.id}>{asset.filename ?? asset.id}</option>
-        {/each}
-      </select>
-    </label>
+    <details class="advanced-search-panel">
+      <summary class:has-active-settings={advancedSearchActive}>Advanced search</summary>
+      <div class="advanced-search-grid">
+        <label>
+          Asset
+          <select bind:value={selectedAssetId}>
+            <option value="">All assets</option>
+            {#each assets as asset}
+              <option value={asset.id}>{asset.filename ?? asset.id}</option>
+            {/each}
+          </select>
+        </label>
 
-    <label>
-      Collection
-      <input bind:value={collection} placeholder="collection name" />
-    </label>
+        <label>
+          Collection
+          <CollectionTokenInput
+            value={collection}
+            suggestions={collectionOptions}
+            placeholder="Any collection"
+            multi={false}
+            ariaLabel="Collection filter"
+            onChange={(value) => collection = value}
+          />
+        </label>
 
-    <div class="form-grid compact-grid">
-      <label>
+        <label>
         Start frame
         <input type="number" min="1" bind:value={startFrame} />
       </label>
@@ -1255,9 +1308,7 @@
         End frame
         <input type="number" min="1" bind:value={endFrame} />
       </label>
-    </div>
 
-    <div class="form-grid compact-grid">
       <label>
         Min area
         <input type="number" min="0" bind:value={minArea} />
@@ -1266,9 +1317,7 @@
         Max area
         <input type="number" min="0" bind:value={maxArea} />
       </label>
-    </div>
 
-    <div class="form-grid compact-grid">
       <label>
         Min perimeter
         <input type="number" min="0" bind:value={minPerimeter} />
@@ -1277,9 +1326,7 @@
         Max perimeter
         <input type="number" min="0" bind:value={maxPerimeter} />
       </label>
-    </div>
 
-    <div class="form-grid compact-grid">
       <label>
         Min width
         <input type="number" min="0" bind:value={minBBoxW} />
@@ -1288,9 +1335,7 @@
         Max width
         <input type="number" min="0" bind:value={maxBBoxW} />
       </label>
-    </div>
 
-    <div class="form-grid compact-grid">
       <label>
         Min height
         <input type="number" min="0" bind:value={minBBoxH} />
@@ -1299,53 +1344,9 @@
         Max height
         <input type="number" min="0" bind:value={maxBBoxH} />
       </label>
-    </div>
-
-    <div class="form-grid compact-grid">
-      <label>
-        ROI encoding
-        <select bind:value={roiEncoding}>
-          <option value="">Any</option>
-          <option value="png">png</option>
-          <option value="zstd">zstd</option>
-          <option value="jxl">jxl</option>
-          <option value="raw">raw</option>
-          <option value="jpg">jpg</option>
-        </select>
-      </label>
-      <label>
-        Image format
-        <select bind:value={imageFormat}>
-          <option value="png">png</option>
-          <option value="jpg">jpg</option>
-        </select>
-      </label>
-    </div>
-
-    <div class="form-grid compact-grid">
-      <label>
-        Sort by
-        <select bind:value={sortBy}>
-          <option value="asset_frame">Asset + frame</option>
-          <option value="area">Area</option>
-          <option value="byte_size">Byte size</option>
-          <option value="id">Random ID</option>
-        </select>
-      </label>
-      <label>
-        Direction
-        <select bind:value={sortDir}>
-          <option value="desc">Descending</option>
-          <option value="asc">Ascending</option>
-        </select>
-      </label>
-    </div>
-
-    <div class="button-row">
-      <button type="button" on:click={() => loadDetections(true)}>Apply</button>
-      <button class="ghost" type="button" on:click={resetFilters}>Reset</button>
-    </div>
-  </aside>
+      </div>
+    </details>
+  </section>
 
   <section class="panel roi-results-panel">
     <div class="panel-heading">

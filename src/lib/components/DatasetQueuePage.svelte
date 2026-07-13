@@ -11,6 +11,7 @@
     RawAsset,
     RoiRefinementCapabilities,
     SegmentationCapabilities,
+    SystemCapabilitiesResponse,
     SystemConfigResponse
   } from '$lib/api/types';
   import {
@@ -41,6 +42,13 @@
     stringSetPreference,
     writePreferences
   } from '$lib/utils/preferences';
+  import {
+    codecAvailable,
+    codecUnavailableTitle,
+    ensureAvailableCodec,
+    uniqueCodecOptions,
+    type CodecAvailability
+  } from '$lib/utils/codecs';
 
   type QueueMode = 'preprocessing' | 'segmentation' | 'roi_refinement';
 
@@ -80,8 +88,6 @@
   };
 
   type FrameBatch = {
-    assetId: string;
-    runId?: string | null;
     frameIds: string[];
   };
 
@@ -93,14 +99,6 @@
   };
 
   type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection' | 'refinement';
-
-  type FrameFilters = {
-    assetIds: Set<string>;
-    collections: Set<string>;
-    preprocessStates: Set<string>;
-    detectionStates: Set<string>;
-    refinementStates: Set<string>;
-  };
 
   type ProcessingSummaryNumberKey =
     | 'total_frame_count'
@@ -116,7 +114,11 @@
   let datasets: Dataset[] = [];
   let frameRows: FrameCatalogRow[] = [];
   let collectionOptions: string[] = [];
-  let collectionAssetCounts = new Map<string, number>();
+  let assetOptionFrameCounts = new Map<string, number>();
+  let collectionOptionFrameCounts = new Map<string, number>();
+  let preprocessOptionFrameCounts = new Map<string, number>();
+  let detectionOptionFrameCounts = new Map<string, number>();
+  let refinementOptionRoiCounts = new Map<string, number>();
   let activeStatusSummary: ProcessingStatusSummary | null = null;
   let statusSnapshotVersion: string | null = null;
   let statusRefreshTimer: number | null = null;
@@ -158,6 +160,8 @@
   let cropH: number | null = null;
   let invertIntensity = false;
   let preprocessingEncoding = 'zstd';
+  let preprocessingEncodingOptions = ['png', 'zstd', 'jxl', 'jxs', 'raw', 'jpg'];
+  let imageCodecAvailability: CodecAvailability = {};
 
   let framePayloadKind: 'original' | 'preprocessed' = 'preprocessed';
   let applyPreprocessing = false;
@@ -236,7 +240,7 @@
   let maxWidthPlusHeight: number | null = null;
   let padding = 100;
   let roiEncoding = 'zstd';
-  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'raw', 'auto'];
+  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw', 'auto'];
   let zstdMinBytes: number | null = null;
   let alwaysStoreMask = true;
   let storeRoiPayloadMinArea: number | null = null;
@@ -260,7 +264,7 @@
   let refinementExpansionPixels: number | null = null;
   let refinementEdgeTouchMargin = 1;
   let refinementEncoding = 'auto';
-  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'raw'];
+  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw'];
   let refinementStore = true;
   let refinementDryRun = false;
 
@@ -397,13 +401,6 @@
     datasetQueuePreferenceSnapshot;
     setLiveProcessingPresetFromSettings(captureProcessingSettings());
   }
-  $: activeFilters = {
-    assetIds: selectedAssetIds,
-    collections: selectedCollections,
-    preprocessStates: selectedPreprocessStates,
-    detectionStates: selectedDetectionStates,
-    refinementStates: selectedRefinementStates
-  };
   $: selectedCollectionArray = [...selectedCollections];
   $: selectedAssetArray = [...selectedAssetIds];
   $: filteredDatasets = datasets.filter((dataset) => datasetMatchesFilters(dataset));
@@ -413,11 +410,11 @@
     { id: 'refined', label: 'Refined' },
     { id: 'unrefined', label: 'Unrefined' }
   ];
-  $: assetFrameCounts = new Map(datasets.map((dataset) => [dataset.asset.id, dataset.frameCount]));
-  $: collectionFrameCounts = collectionAssetCounts;
-  $: preprocessFrameCounts = statusCountMap('preprocessing');
-  $: detectionFrameCounts = statusCountMap('candidate_detection');
-  $: refinementRoiCounts = refinementCountMap();
+  $: assetFrameCounts = assetOptionFrameCounts;
+  $: collectionFrameCounts = collectionOptionFrameCounts;
+  $: preprocessFrameCounts = preprocessOptionFrameCounts;
+  $: detectionFrameCounts = detectionOptionFrameCounts;
+  $: refinementRoiCounts = refinementOptionRoiCounts;
   $: assetAnyFrameCount = statusFrameCount(activeStatusSummary);
   $: collectionAnyFrameCount = statusFrameCount(activeStatusSummary);
   $: preprocessAnyFrameCount = statusFrameCount(activeStatusSummary);
@@ -432,6 +429,28 @@
   $: prospectiveRefinementCandidateCount = prospectiveUnrefinedDetectionCount + prospectiveRefinedDetectionCount;
   $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
   $: missingPreprocessedFrameCount = 0;
+  $: payloadStorageThresholdsActive = Boolean(
+    hasSettingValue(storeRoiPayloadMinArea) ||
+      hasSettingValue(storeRoiPayloadMinWidth) ||
+      hasSettingValue(storeRoiPayloadMinHeight) ||
+      hasSettingValue(storeRoiPayloadMinWidthPlusHeight)
+  );
+  $: candidateDetectionAdvancedActive = Boolean(
+    boundedFrameBatchSizeValue !== defaultBatchSize() ||
+      hasSettingValue(priority) ||
+      roiAssemblyConnectivity !== 8 ||
+      numberSettingChanged(minPerimeter, 100) ||
+      hasSettingValue(maxPerimeter) ||
+      hasSettingValue(minWidth) ||
+      hasSettingValue(maxWidth) ||
+      hasSettingValue(minHeight) ||
+      hasSettingValue(maxHeight) ||
+      numberSettingChanged(padding, 100) ||
+      roiEncoding !== 'zstd' ||
+      hasSettingValue(zstdMinBytes) ||
+      alwaysStoreMask !== true ||
+      payloadStorageThresholdsActive
+  );
   $: prospectiveBatchCount =
     mode === 'roi_refinement'
       ? Math.ceil(prospectiveQueueItemCount / boundedFrameBatchSizeValue)
@@ -805,6 +824,7 @@
     if ('refinementEncoding' in settings) refinementEncoding = stringPreference(settings.refinementEncoding, refinementEncoding);
     if ('refinementStore' in settings) refinementStore = booleanPreference(settings.refinementStore, refinementStore);
     if ('refinementDryRun' in settings) refinementDryRun = booleanPreference(settings.refinementDryRun, refinementDryRun);
+    enforceCodecAvailability();
   }
 
   function setBackgroundCorrection(enabled: boolean) {
@@ -845,28 +865,27 @@
     error = null;
     catalogStatus = 'Loading queue status.';
     try {
-      const [assets, collections, config] = await Promise.all([
+      const [assets, collections, config, systemCapabilities] = await Promise.all([
         client.listAssets(undefined, 10000).catch(() => []),
         client.listCollections(500).catch(() => []),
-        client.systemConfig().catch(() => null)
+        client.systemConfig().catch(() => null),
+        client.systemCapabilities().catch(() => null)
       ]);
       const [segmentationCapabilities, roiRefinementCapabilities] = await Promise.all([
         client.segmentationOptions().catch(() => null),
         client.roiRefinementOptions().catch(() => null)
       ]);
       preferencesReady = false;
-      applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
+      applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities, systemCapabilities);
       restorePreferences();
       applyStoredLiveProcessingPreset();
+      enforceCodecAvailability();
       datasets = datasetsFromAssets(assets);
       frameRows = [];
       collectionOptions = uniqueStrings([
         ...collections.map((collection) => collection.collection),
         ...datasets.flatMap((dataset) => dataset.collections)
       ]);
-      collectionAssetCounts = new Map(
-        collections.map((collection) => [collection.collection, Number(collection.asset_count ?? 0)])
-      );
       await refreshStatusSummary();
       catalogStatus = `Loaded queue status for ${formatCount(datasets.length)} asset${datasets.length === 1 ? '' : 's'}.`;
       preferencesReady = true;
@@ -925,7 +944,8 @@
   function applyConfigDefaults(
     config: SystemConfigResponse | null,
     capabilities: SegmentationCapabilities | null = null,
-    refinementCapabilities: RoiRefinementCapabilities | null = null
+    refinementCapabilities: RoiRefinementCapabilities | null = null,
+    systemCapabilities: SystemCapabilitiesResponse | null = null
   ) {
     const thresholding = pipelineSection(config, capabilities, 'thresholding');
     const flatfield = capabilities?.defaults?.preprocessing ?? processingSection(config, 'flatfield');
@@ -946,16 +966,26 @@
     roiAssemblyMethods = capabilities?.supported?.roi_assembly_methods?.length
       ? capabilities.supported.roi_assembly_methods
       : roiAssemblyMethods;
-    roiEncodingOptions = capabilities?.supported?.roi_encoding_options?.length
-      ? capabilities.supported.roi_encoding_options
-      : roiEncodingOptions;
+    imageCodecAvailability = systemCapabilities?.supported?.image_codec_availability ?? {};
+    preprocessingEncodingOptions = uniqueCodecOptions(
+      systemCapabilities?.supported?.image_encodings?.length
+        ? systemCapabilities.supported.image_encodings
+        : preprocessingEncodingOptions
+    );
+    roiEncodingOptions = uniqueCodecOptions(
+      capabilities?.supported?.roi_encoding_options?.length
+        ? capabilities.supported.roi_encoding_options
+        : roiEncodingOptions
+    );
     refinementModelKinds = refinementCapabilities?.supported?.model_kinds?.length
       ? refinementCapabilities.supported.model_kinds
       : refinementModelKinds;
     refinementModelRefs = refinementCapabilities?.supported?.model_refs ?? refinementModelRefs;
-    refinementEncodingOptions = refinementCapabilities?.supported?.roi_encoding_options?.length
-      ? refinementCapabilities.supported.roi_encoding_options
-      : refinementEncodingOptions;
+    refinementEncodingOptions = uniqueCodecOptions(
+      refinementCapabilities?.supported?.roi_encoding_options?.length
+        ? refinementCapabilities.supported.roi_encoding_options
+        : refinementEncodingOptions
+    );
     refinementModelArtifacts = modelArtifactOptions(refinementCapabilities);
 
     flatfieldCorrection = booleanDefault(flatfield, 'flatfield_correction', flatfieldCorrection);
@@ -974,7 +1004,12 @@
     cropW = nullableNumberDefault(preprocessing, 'crop_w', cropW);
     cropH = nullableNumberDefault(preprocessing, 'crop_h', cropH);
     invertIntensity = booleanDefault(preprocessing, 'invert_intensity', invertIntensity);
-    preprocessingEncoding = stringDefault(frameStorage, 'image_encoding', preprocessingEncoding);
+    preprocessingEncoding = ensureAvailableCodec(
+      stringDefault(frameStorage, 'image_encoding', preprocessingEncoding),
+      preprocessingEncodingOptions,
+      imageCodecAvailability,
+      'zstd'
+    );
 
     thresholdMethod = stringDefault(thresholding, 'method', thresholdMethod);
     manualThreshold = numberDefault(thresholding, 'manual_threshold', manualThreshold);
@@ -1030,7 +1065,12 @@
     maxWidthPlusHeight = nullableNumberDefault(roiFilter, 'max_width_plus_height', maxWidthPlusHeight);
 
     padding = numberDefault(roiRecording, 'padding', padding);
-    roiEncoding = stringDefault(roiRecording, 'roi_encoding', roiEncoding);
+    roiEncoding = ensureAvailableCodec(
+      stringDefault(roiRecording, 'roi_encoding', roiEncoding),
+      roiEncodingOptions,
+      imageCodecAvailability,
+      'zstd'
+    );
     zstdMinBytes = nullableNumberDefault(roiRecording, 'zstd_min_bytes', zstdMinBytes);
     alwaysStoreMask = booleanDefault(roiRecording, 'always_store_mask', alwaysStoreMask);
     storeRoiPayloadMinArea = nullableNumberDefault(roiRecording, 'store_roi_payload_min_area', storeRoiPayloadMinArea);
@@ -1049,7 +1089,12 @@
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
     refinementOutputThreshold = numberDefault(roiRefinement, 'output_threshold', refinementOutputThreshold);
     refinementModelBatchSize = nullableNumberDefault(roiRefinement, 'batch_size', refinementModelBatchSize);
-    refinementEncoding = stringDefault(roiRefinement, 'encoding', refinementEncoding);
+    refinementEncoding = ensureAvailableCodec(
+      stringDefault(roiRefinement, 'encoding', refinementEncoding),
+      refinementEncodingOptions,
+      imageCodecAvailability,
+      'auto'
+    );
   }
 
   function modelArtifactOptions(capabilities: RoiRefinementCapabilities | null): string[] {
@@ -1058,6 +1103,12 @@
       ?.options;
     if (Array.isArray(fieldOptions)) return fieldOptions.map(String).filter(Boolean);
     return refinementModelArtifacts;
+  }
+
+  function enforceCodecAvailability() {
+    preprocessingEncoding = ensureAvailableCodec(preprocessingEncoding, preprocessingEncodingOptions, imageCodecAvailability, 'zstd');
+    roiEncoding = ensureAvailableCodec(roiEncoding, roiEncodingOptions, imageCodecAvailability, 'zstd');
+    refinementEncoding = ensureAvailableCodec(refinementEncoding, refinementEncodingOptions, imageCodecAvailability, 'auto');
   }
 
   function pipelineSection(
@@ -1149,9 +1200,23 @@
   }
 
   function summaryScopes(): ProcessingStatusFilters[] {
-    const base = baseStatusFilters();
-    const assets = selectedAssetIds.size ? [...selectedAssetIds] : [null];
-    const collections = selectedCollections.size ? [...selectedCollections] : [null];
+    return summaryScopesForOption();
+  }
+
+  function summaryScopesForOption(group?: FilterGroup, value?: string): ProcessingStatusFilters[] {
+    const base = baseStatusFiltersForOption(group, value);
+    const assets =
+      group === 'asset'
+        ? [value ?? null]
+        : selectedAssetIds.size
+          ? [...selectedAssetIds]
+          : [null];
+    const collections =
+      group === 'collection'
+        ? [value ?? null]
+        : selectedCollections.size
+          ? [...selectedCollections]
+          : [null];
     const scopes: ProcessingStatusFilters[] = [];
     for (const assetId of assets) {
       for (const collection of collections) {
@@ -1163,6 +1228,32 @@
       }
     }
     return scopes;
+  }
+
+  function baseStatusFiltersForOption(group?: FilterGroup, value?: string): ProcessingStatusFilters {
+    const filters: ProcessingStatusFilters = {};
+    if (mode === 'preprocessing') {
+      if (group === 'preprocess' && value) {
+        filters.preprocessing_status = value;
+      } else if (group !== 'preprocess' && selectedPreprocessStates.size) {
+        filters.preprocessing_status = [...selectedPreprocessStates];
+      }
+    }
+    if (mode === 'segmentation') {
+      filters.preprocessing_status = 'succeeded';
+      if (group === 'detection' && value) {
+        filters.candidate_detection_status = value;
+      } else if (group !== 'detection' && selectedDetectionStates.size) {
+        filters.candidate_detection_status = [...selectedDetectionStates];
+      }
+    }
+    if (mode === 'roi_refinement') {
+      filters.candidate_detection_status = 'succeeded';
+      const state = group === 'refinement' ? value : selectedRefinementStates.size === 1 ? [...selectedRefinementStates][0] : null;
+      if (state === 'refined') filters.has_refined_rois = true;
+      if (state === 'unrefined') filters.has_refined_rois = false;
+    }
+    return filters;
   }
 
   function scheduleStatusRefresh() {
@@ -1178,16 +1269,79 @@
     if (!client) return;
     const sequence = ++statusRefreshSequence;
     try {
-      const summaries = await Promise.all(summaryScopes().map((filters) => client.processingStatusSummary(filters)));
+      const [
+        active,
+        assetCounts,
+        collectionCounts,
+        preprocessCounts,
+        detectionCounts,
+        refinementCounts
+      ] = await Promise.all([
+        fetchMergedStatusSummary(client, summaryScopes()),
+        fetchOptionFrameCounts(client, 'asset', datasets.map((dataset) => dataset.asset.id).filter(Boolean)),
+        fetchOptionFrameCounts(client, 'collection', collectionOptions),
+        mode === 'preprocessing'
+          ? fetchOptionFrameCounts(client, 'preprocess', preprocessStateOptions.map((option) => option.id))
+          : Promise.resolve(new Map<string, number>()),
+        mode === 'segmentation'
+          ? fetchOptionFrameCounts(client, 'detection', detectionStateOptions.map((option) => option.id))
+          : Promise.resolve(new Map<string, number>()),
+        mode === 'roi_refinement'
+          ? fetchRefinementOptionCounts(client, refinementStateOptions.map((option) => option.id))
+          : Promise.resolve(new Map<string, number>())
+      ]);
       if (sequence !== statusRefreshSequence) return;
-      const merged = mergeStatusSummaries(summaries);
-      activeStatusSummary = merged.summary;
-      statusSnapshotVersion = merged.snapshotVersion;
+      activeStatusSummary = active.summary;
+      statusSnapshotVersion = active.snapshotVersion;
+      assetOptionFrameCounts = assetCounts;
+      collectionOptionFrameCounts = collectionCounts;
+      preprocessOptionFrameCounts = preprocessCounts;
+      detectionOptionFrameCounts = detectionCounts;
+      refinementOptionRoiCounts = refinementCounts;
     } catch (err) {
       if (sequence === statusRefreshSequence) {
         error = err instanceof Error ? err.message : String(err);
       }
     }
+  }
+
+  async function fetchMergedStatusSummary(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    scopes: ProcessingStatusFilters[]
+  ): Promise<{ summary: ProcessingStatusSummary; snapshotVersion: string | null }> {
+    const summaries = await Promise.all(scopes.map((filters) => client.processingStatusSummary(filters)));
+    return mergeStatusSummaries(summaries);
+  }
+
+  async function fetchOptionFrameCounts(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    group: Exclude<FilterGroup, 'refinement'>,
+    values: string[]
+  ): Promise<Map<string, number>> {
+    const entries = await Promise.all(
+      values.map(async (value) => {
+        const merged = await fetchMergedStatusSummary(client, summaryScopesForOption(group, value));
+        return [value, statusFrameCount(merged.summary)] as const;
+      })
+    );
+    return new Map(entries);
+  }
+
+  async function fetchRefinementOptionCounts(
+    client: NonNullable<ReturnType<typeof getClient>>,
+    values: string[]
+  ): Promise<Map<string, number>> {
+    const entries = await Promise.all(
+      values.map(async (value) => {
+        const merged = await fetchMergedStatusSummary(client, summaryScopesForOption('refinement', value));
+        const count =
+          value === 'refined'
+            ? numericStatusValue(merged.summary.refined_detection_count)
+            : numericStatusValue(merged.summary.unrefined_candidate_count);
+        return [value, count] as const;
+      })
+    );
+    return new Map(entries);
   }
 
   function mergeStatusSummaries(responses: ProcessingStatusSummaryResponse[]): {
@@ -1231,39 +1385,6 @@
     target.by_status = targetByStatus;
   }
 
-  function matchesFrame(frame: FrameCatalogRow, filters: FrameFilters): boolean {
-    const assetIds = filters.assetIds;
-    const collections = filters.collections;
-    const preprocessStates = filters.preprocessStates;
-    const detectionStates = filters.detectionStates;
-    const refinementStates = filters.refinementStates;
-    const preprocessingState = frame.preprocessingState;
-    const detectionState = frame.detectionState;
-
-    if (assetIds.size && !assetIds.has(frame.assetId)) return false;
-    if (collections.size && !frame.collections.some((collection) => collections.has(collection))) return false;
-    if (mode === 'segmentation' && !frame.hasPreprocessedPayload) return false;
-    if (mode === 'roi_refinement' && detectionState !== 'fully-detected') return false;
-    if (mode === 'preprocessing' && preprocessStates.size && (!preprocessingState || !preprocessStates.has(preprocessingState))) return false;
-    if (mode === 'segmentation' && detectionStates.size && (!detectionState || !detectionStates.has(detectionState))) {
-      return false;
-    }
-    if (mode === 'roi_refinement' && refinementStates.size && !frameMatchesRefinementStates(frame, refinementStates)) {
-      return false;
-    }
-    return true;
-  }
-
-  function frameMatchesRefinementStates(frame: FrameCatalogRow, states: Set<string>): boolean {
-    if (states.has('refined') && frame.refinedCandidateDetectionCount > 0) return true;
-    if (states.has('unrefined') && frame.unrefinedDetectionCount > 0) return true;
-    return false;
-  }
-
-  function stateOptions(states: Array<string | undefined>): Array<{ id: string; label: string }> {
-    return uniqueStrings(states).map((state) => ({ id: state, label: stateLabel(state) }));
-  }
-
   function stateLabel(state: string): string {
     return state
       .replace(/_/g, '-')
@@ -1272,41 +1393,8 @@
       .join(' ');
   }
 
-  function frameCountMap(group: FilterGroup, values: string[], filters: FrameFilters): Map<string, number> {
-    return new Map(values.map((value) => [value, framesForOption(group, value, filters).length]));
-  }
-
-  function refinementRoiCountMap(values: string[], filters: FrameFilters): Map<string, number> {
-    return new Map(
-      values.map((value) => {
-        const frames = framesForOption('refinement', value, filters);
-        const count = frames.reduce((total, frame) => {
-          if (value === 'refined') return total + frame.refinedCandidateDetectionCount;
-          if (value === 'unrefined') return total + frame.unrefinedDetectionCount;
-          return total;
-        }, 0);
-        return [value, count];
-      })
-    );
-  }
-
-  function sumFrameCounts(counts: Map<string, number>): number {
-    return [...counts.values()].reduce((total, count) => total + count, 0);
-  }
-
   function countFor(counts: Map<string, number>, value: string): number {
     return counts.get(value) ?? 0;
-  }
-
-  function framesForOption(group: FilterGroup, value: string, filters: FrameFilters): FrameCatalogRow[] {
-    const optionFilters: FrameFilters = {
-      assetIds: group === 'asset' ? new Set([value]) : filters.assetIds,
-      collections: group === 'collection' ? new Set([value]) : filters.collections,
-      preprocessStates: group === 'preprocess' ? new Set([value]) : filters.preprocessStates,
-      detectionStates: group === 'detection' ? new Set([value]) : filters.detectionStates,
-      refinementStates: group === 'refinement' ? new Set([value]) : filters.refinementStates
-    };
-    return frameRows.filter((frame) => matchesFrame(frame, optionFilters));
   }
 
   function refinementCandidateCountForFrames(frames: FrameCatalogRow[]): number {
@@ -1356,29 +1444,6 @@
 
   function compareFrameId(a: FrameCatalogRow, b: FrameCatalogRow): number {
     return a.frameId.localeCompare(b.frameId);
-  }
-
-  function frameBatches(frames: FrameCatalogRow[], batchSize: number): FrameBatch[] {
-    const resolvedBatchSize = boundedBatchSize(batchSize);
-    const grouped = new Map<string, FrameCatalogRow[]>();
-    for (const frame of frames) {
-      const key = `${frame.assetId}:${frame.runId ?? ''}`;
-      grouped.set(key, [...(grouped.get(key) ?? []), frame]);
-    }
-    const batches: FrameBatch[] = [];
-    for (const group of grouped.values()) {
-      group.sort(compareFrameId);
-      for (let index = 0; index < group.length; index += resolvedBatchSize) {
-        const batch = group.slice(index, index + resolvedBatchSize);
-        if (!batch.length) continue;
-        batches.push({
-          assetId: batch[0].assetId,
-          runId: batch[0].runId,
-          frameIds: batch.map((frame) => frame.frameId)
-        });
-      }
-    }
-    return batches.sort((a, b) => (a.frameIds[0] ?? '').localeCompare(b.frameIds[0] ?? ''));
   }
 
   function estimatedDetectionBatchCount(frames: FrameCatalogRow[], batchSize: number): number {
@@ -1462,8 +1527,6 @@
       for (const batch of batches) {
         try {
           const response = await client.queueRoiRefinementJob({
-            asset_id: batch.assetId,
-            run_id: batch.runId,
             detection_ids: batch.detectionIds,
             priority,
             ...roiRefinementOptions()
@@ -1484,7 +1547,7 @@
       return;
     }
 
-    const batches = await statusFrameBatchesForSelectedAssets(client, boundedFrameBatchSizeValue).catch((err) => {
+    const batches = await statusFrameBatchesForSelection(client, boundedFrameBatchSizeValue).catch((err) => {
       error = err instanceof Error ? err.message : String(err);
       return [] as FrameBatch[];
     });
@@ -1496,8 +1559,6 @@
       try {
         if (mode === 'preprocessing') {
           const response = await client.queuePreprocessJob({
-            asset_id: batch.assetId,
-            run_id: batch.runId,
             frame_ids: batch.frameIds,
             priority,
             flatfield_correction: backgroundCorrection ? false : flatfieldCorrection,
@@ -1520,8 +1581,6 @@
           if (response.job?.id) nextJobIds.push(response.job.id);
         } else {
           const response = await client.queueSegmentationJob({
-            asset_id: batch.assetId,
-            run_id: batch.runId,
             frame_ids: batch.frameIds,
             priority,
             ...thresholdOptions(),
@@ -1542,50 +1601,45 @@
       }
     }
     submittedJobIds = [...nextJobIds, ...submittedJobIds].slice(0, 100);
-    message = `Queued ${queued} ${mode === 'preprocessing' ? 'preprocessing' : 'segmentation'} batch job${queued === 1 ? '' : 's'} covering ${formatCount(prospectiveFrameCount)} frame${prospectiveFrameCount === 1 ? '' : 's'}.`;
+    const queuedFrameCount = batches.reduce((total, batch) => total + batch.frameIds.length, 0);
+    message = `Queued ${queued} ${mode === 'preprocessing' ? 'preprocessing' : 'segmentation'} batch job${queued === 1 ? '' : 's'} covering ${formatCount(queuedFrameCount)} frame${queuedFrameCount === 1 ? '' : 's'}.`;
     queueing = false;
   }
 
-  async function statusFrameBatchesForSelectedAssets(
+  async function statusFrameBatchesForSelection(
     client: NonNullable<ReturnType<typeof getClient>>,
     batchSize: number
   ): Promise<FrameBatch[]> {
     const batches: FrameBatch[] = [];
     const resolvedBatchSize = boundedBatchSize(batchSize);
-    for (const dataset of selectedAssetsForQueue()) {
-      const frameIds = await statusFrameIdsForAsset(client, dataset.asset.id);
-      for (let index = 0; index < frameIds.length; index += resolvedBatchSize) {
-        const batchFrameIds = frameIds.slice(index, index + resolvedBatchSize);
-        if (!batchFrameIds.length) continue;
-        batches.push({
-          assetId: dataset.asset.id,
-          runId: dataset.asset.run_id,
-          frameIds: batchFrameIds
-        });
-      }
+    const frameIds = await statusFrameIdsForSelection(client);
+    for (let index = 0; index < frameIds.length; index += resolvedBatchSize) {
+      const batchFrameIds = frameIds.slice(index, index + resolvedBatchSize);
+      if (!batchFrameIds.length) continue;
+      batches.push({ frameIds: batchFrameIds });
     }
     return batches;
   }
 
-  async function statusFrameIdsForAsset(
-    client: NonNullable<ReturnType<typeof getClient>>,
-    assetId: string
-  ): Promise<string[]> {
+  async function statusFrameIdsForSelection(client: NonNullable<ReturnType<typeof getClient>>): Promise<string[]> {
     const ids = new Set<string>();
+    const assets = selectedAssetIds.size ? [...selectedAssetIds] : [null];
     const collections = selectedCollections.size ? [...selectedCollections] : [null];
-    for (const collection of collections) {
-      let cursor: string | null = null;
-      while (true) {
-        const page = await client.processingStatusFrameIds({
-          ...baseStatusFilters(),
-          asset_id: assetId,
-          collection,
-          limit: 50000,
-          cursor
-        });
-        for (const frameId of page.frame_ids ?? []) ids.add(frameId);
-        cursor = page.next_cursor ?? null;
-        if (!cursor) break;
+    for (const assetId of assets) {
+      for (const collection of collections) {
+        let cursor: string | null = null;
+        while (true) {
+          const page = await client.processingStatusFrameIds({
+            ...baseStatusFilters(),
+            asset_id: assetId,
+            collection,
+            limit: 50000,
+            cursor
+          });
+          for (const frameId of page.frame_ids ?? []) ids.add(frameId);
+          cursor = page.next_cursor ?? null;
+          if (!cursor) break;
+        }
       }
     }
     return [...ids].sort((a, b) => a.localeCompare(b));
@@ -1844,6 +1898,16 @@
   function usesCanny(method: string): boolean {
     return method === 'canny' || method === 'bounded_otsu_canny';
   }
+
+  function hasSettingValue(value: unknown): boolean {
+    return value !== null && value !== undefined && value !== '';
+  }
+
+  function numberSettingChanged(value: unknown, defaultValue: number): boolean {
+    if (!hasSettingValue(value)) return false;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed !== defaultValue;
+  }
 </script>
 
 <div class="queue-layout">
@@ -2060,7 +2124,7 @@
       </div>
 
       <details class="form-section collapsible-section">
-        <summary class="section-heading">
+        <summary class="section-heading" class:has-active-settings={candidateDetectionAdvancedActive}>
           <span>
             <p class="eyebrow">Advanced options</p>
             <strong>Preprocessing details</strong>
@@ -2149,12 +2213,13 @@
         <label>
           Stored encoding
           <select bind:value={preprocessingEncoding}>
-            <option value="png">png</option>
-            <option value="zstd">zstd</option>
-            <option value="jxl">jxl</option>
-            <option value="jxs">jxs</option>
-            <option value="raw">raw</option>
-            <option value="jpg">jpg</option>
+            {#each preprocessingEncodingOptions as encoding}
+              <option
+                value={encoding}
+                disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+              >{encoding}</option>
+            {/each}
           </select>
         </label>
       </details>
@@ -2478,7 +2543,11 @@
           ROI encoding
           <select bind:value={roiEncoding}>
             {#each roiEncodingOptions as encoding}
-              <option value={encoding}>{encoding}</option>
+              <option
+                value={encoding}
+                disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+              >{encoding}</option>
             {/each}
           </select>
         </label>
@@ -2491,7 +2560,7 @@
           Always store mask
         </label>
         <details class="control-details">
-          <summary>Payload storage thresholds</summary>
+          <summary class:has-active-settings={payloadStorageThresholdsActive}>Payload storage thresholds</summary>
           <div class="form-grid compact-grid">
             <label>
               Min area
@@ -2650,7 +2719,11 @@
               <option value="auto">default</option>
               {#each refinementEncodingOptions as encoding}
                 {#if encoding !== 'auto'}
-                  <option value={encoding}>{encoding}</option>
+                  <option
+                    value={encoding}
+                    disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                    title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+                  >{encoding}</option>
                 {/if}
               {/each}
             </select>

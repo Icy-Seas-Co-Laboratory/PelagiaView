@@ -15,6 +15,7 @@
     RoiRefinementCapabilities,
     SegmentationCapabilities,
     SegmentationOptions,
+    SystemCapabilitiesResponse,
     SystemConfigResponse
   } from '$lib/api/types';
   import {
@@ -60,6 +61,13 @@
     stringPreference,
     writePreferences
   } from '$lib/utils/preferences';
+  import {
+    codecAvailable,
+    codecUnavailableTitle,
+    ensureAvailableCodec,
+    uniqueCodecOptions,
+    type CodecAvailability
+  } from '$lib/utils/codecs';
 
   let assets: RawAsset[] = [];
   let frames: FrameSummary[] = [];
@@ -157,7 +165,7 @@
   let maxWidthPlusHeight: number | null = null;
   let padding = 100;
   let roiEncoding = 'zstd';
-  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'raw', 'auto'];
+  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw', 'auto'];
   let zstdMinBytes: number | null = null;
   let alwaysStoreMask = true;
   let storeRoiPayloadMinArea: number | null = null;
@@ -186,7 +194,8 @@
   let refinementExpansionPixels: number | null = null;
   let refinementEdgeTouchMargin = 1;
   let refinementEncoding = 'auto';
-  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'raw'];
+  let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw'];
+  let imageCodecAvailability: CodecAvailability = {};
   let refining = false;
   let flatfieldCorrection = false;
   let flatfieldQ = 0.5;
@@ -395,6 +404,26 @@
   $: hasRefinementResults = refinedDetections.length > 0;
   $: refinementRoiPairs = buildRefinementRoiPairs(detections, refinedDetections);
   $: refinementSummary = summarizeRefinedDetections(refinedDetections);
+  $: candidateDetectionAdvancedActive = Boolean(
+    roiAssemblyConnectivity !== 8 ||
+      numberSettingChanged(minPerimeter, 100) ||
+      hasSettingValue(maxPerimeter) ||
+      hasSettingValue(minWidth) ||
+      hasSettingValue(maxWidth) ||
+      hasSettingValue(minHeight) ||
+      hasSettingValue(maxHeight) ||
+      numberSettingChanged(padding, 100) ||
+      roiEncoding !== 'zstd' ||
+      hasSettingValue(zstdMinBytes) ||
+      alwaysStoreMask !== true ||
+      payloadStorageThresholdsActive
+  );
+  $: payloadStorageThresholdsActive = Boolean(
+    hasSettingValue(storeRoiPayloadMinArea) ||
+      hasSettingValue(storeRoiPayloadMinWidth) ||
+      hasSettingValue(storeRoiPayloadMinHeight) ||
+      hasSettingValue(storeRoiPayloadMinWidthPlusHeight)
+  );
   $: canvasOverlays = hasRefinementResults
     ? []
     : frameCanvasOverlays(
@@ -527,14 +556,16 @@
     const client = getClient();
     if (!client) return;
     try {
-      const [config, segmentationCapabilities, roiRefinementCapabilities] = await Promise.all([
+      const [config, segmentationCapabilities, roiRefinementCapabilities, systemCapabilities] = await Promise.all([
         client.systemConfig().catch(() => null),
         client.segmentationOptions().catch(() => null),
-        client.roiRefinementOptions().catch(() => null)
+        client.roiRefinementOptions().catch(() => null),
+        client.systemCapabilities().catch(() => null)
       ]);
-      applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities);
+      applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities, systemCapabilities);
       restorePreferences();
       applyStoredLiveProcessingPreset();
+      enforceCodecAvailability();
       await loadProcessingPresets();
       assets = await client.listAssets('video');
       if (!assets.some((asset) => asset.id === selectedAssetId)) {
@@ -832,6 +863,7 @@
     if ('refinementExpansionPixels' in settings) refinementExpansionPixels = nullablePreferenceNumber(settings.refinementExpansionPixels, refinementExpansionPixels);
     if ('refinementEdgeTouchMargin' in settings) refinementEdgeTouchMargin = numberPreference(settings.refinementEdgeTouchMargin, refinementEdgeTouchMargin);
     if ('refinementEncoding' in settings) refinementEncoding = stringPreference(settings.refinementEncoding, refinementEncoding);
+    enforceCodecAvailability();
   }
 
   async function loadProcessingPresets() {
@@ -1019,7 +1051,8 @@
   function applyConfigDefaults(
     config: SystemConfigResponse | null,
     capabilities: SegmentationCapabilities | null = null,
-    refinementCapabilities: RoiRefinementCapabilities | null = null
+    refinementCapabilities: RoiRefinementCapabilities | null = null,
+    systemCapabilities: SystemCapabilitiesResponse | null = null
   ) {
     const thresholding = pipelineSection(config, capabilities, 'thresholding');
     const flatfield = capabilities?.defaults?.preprocessing ?? processingSection(config, 'flatfield');
@@ -1039,16 +1072,21 @@
     roiAssemblyMethods = capabilities?.supported?.roi_assembly_methods?.length
       ? capabilities.supported.roi_assembly_methods
       : roiAssemblyMethods;
-    roiEncodingOptions = capabilities?.supported?.roi_encoding_options?.length
-      ? capabilities.supported.roi_encoding_options
-      : roiEncodingOptions;
+    imageCodecAvailability = systemCapabilities?.supported?.image_codec_availability ?? {};
+    roiEncodingOptions = uniqueCodecOptions(
+      capabilities?.supported?.roi_encoding_options?.length
+        ? capabilities.supported.roi_encoding_options
+        : roiEncodingOptions
+    );
     refinementModelKinds = refinementCapabilities?.supported?.model_kinds?.length
       ? refinementCapabilities.supported.model_kinds
       : refinementModelKinds;
     refinementModelRefs = refinementCapabilities?.supported?.model_refs ?? refinementModelRefs;
-    refinementEncodingOptions = refinementCapabilities?.supported?.roi_encoding_options?.length
-      ? refinementCapabilities.supported.roi_encoding_options
-      : refinementEncodingOptions;
+    refinementEncodingOptions = uniqueCodecOptions(
+      refinementCapabilities?.supported?.roi_encoding_options?.length
+        ? refinementCapabilities.supported.roi_encoding_options
+        : refinementEncodingOptions
+    );
     refinementModelArtifacts = modelArtifactOptions(refinementCapabilities);
 
     thresholdMethod = stringDefault(thresholding, 'method', thresholdMethod);
@@ -1122,7 +1160,12 @@
     maxWidthPlusHeight = nullableNumberDefault(roiFilter, 'max_width_plus_height', maxWidthPlusHeight);
 
     padding = numberDefault(roiRecording, 'padding', padding);
-    roiEncoding = stringDefault(roiRecording, 'roi_encoding', roiEncoding);
+    roiEncoding = ensureAvailableCodec(
+      stringDefault(roiRecording, 'roi_encoding', roiEncoding),
+      roiEncodingOptions,
+      imageCodecAvailability,
+      'zstd'
+    );
     zstdMinBytes = nullableNumberDefault(roiRecording, 'zstd_min_bytes', zstdMinBytes);
     alwaysStoreMask = booleanDefault(roiRecording, 'always_store_mask', alwaysStoreMask);
     storeRoiPayloadMinArea = nullableNumberDefault(roiRecording, 'store_roi_payload_min_area', storeRoiPayloadMinArea);
@@ -1141,7 +1184,12 @@
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
     refinementOutputThreshold = numberDefault(roiRefinement, 'output_threshold', refinementOutputThreshold);
     refinementModelBatchSize = nullableNumberDefault(roiRefinement, 'batch_size', refinementModelBatchSize);
-    refinementEncoding = stringDefault(roiRefinement, 'encoding', refinementEncoding);
+    refinementEncoding = ensureAvailableCodec(
+      stringDefault(roiRefinement, 'encoding', refinementEncoding),
+      refinementEncodingOptions,
+      imageCodecAvailability,
+      'auto'
+    );
   }
 
   function modelArtifactOptions(capabilities: RoiRefinementCapabilities | null): string[] {
@@ -1150,6 +1198,11 @@
       ?.options;
     if (Array.isArray(fieldOptions)) return fieldOptions.map(String).filter(Boolean);
     return refinementModelArtifacts;
+  }
+
+  function enforceCodecAvailability() {
+    roiEncoding = ensureAvailableCodec(roiEncoding, roiEncodingOptions, imageCodecAvailability, 'zstd');
+    refinementEncoding = ensureAvailableCodec(refinementEncoding, refinementEncodingOptions, imageCodecAvailability, 'auto');
   }
 
   function pipelineSection(
@@ -1372,6 +1425,16 @@
 
   function usesCanny(method: string): boolean {
     return method === 'canny' || method === 'bounded_otsu_canny';
+  }
+
+  function hasSettingValue(value: unknown): boolean {
+    return value !== null && value !== undefined && value !== '';
+  }
+
+  function numberSettingChanged(value: unknown, defaultValue: number): boolean {
+    if (!hasSettingValue(value)) return false;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed !== defaultValue;
   }
 
   function preprocessingOptions() {
@@ -3446,7 +3509,7 @@
     </div>
 
     <details class="form-section collapsible-section">
-      <summary class="section-heading">
+      <summary class="section-heading" class:has-active-settings={candidateDetectionAdvancedActive}>
         <span>
           <p class="eyebrow">Advanced options</p>
           <strong>Preprocessing details</strong>
@@ -3885,7 +3948,11 @@
         ROI encoding
         <select bind:value={roiEncoding}>
           {#each roiEncodingOptions as encoding}
-            <option value={encoding}>{encoding}</option>
+            <option
+              value={encoding}
+              disabled={!codecAvailable(imageCodecAvailability, encoding)}
+              title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+            >{encoding}</option>
           {/each}
         </select>
       </label>
@@ -3898,7 +3965,7 @@
         Always store mask
       </label>
       <details class="control-details">
-        <summary>Payload storage thresholds</summary>
+        <summary class:has-active-settings={payloadStorageThresholdsActive}>Payload storage thresholds</summary>
         <div class="form-grid compact-grid">
           <label>
             Min area
@@ -4053,7 +4120,11 @@
               <option value="auto">default</option>
               {#each refinementEncodingOptions as encoding}
                 {#if encoding !== 'auto'}
-                  <option value={encoding}>{encoding}</option>
+                  <option
+                    value={encoding}
+                    disabled={!codecAvailable(imageCodecAvailability, encoding)}
+                    title={codecUnavailableTitle(imageCodecAvailability, encoding)}
+                  >{encoding}</option>
                 {/if}
               {/each}
             </select>

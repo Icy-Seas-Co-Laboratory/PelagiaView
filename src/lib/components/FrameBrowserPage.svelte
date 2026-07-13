@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
@@ -10,6 +11,8 @@
 
   type FrameRow = NonNullable<FrameProcessingState['frames']>[number];
   type FramePayloadKind = 'original' | 'preprocessed';
+  type FrameSortBy = 'asset_frame' | 'frame' | 'captured_at' | 'filename' | 'roi_count' | 'refined_count';
+  type SortDir = 'asc' | 'desc';
 
   let collections: CollectionSummary[] = [];
   let frames: FrameRow[] = [];
@@ -22,7 +25,8 @@
   let startFrame: number | null = null;
   let endFrame: number | null = null;
   let payloadKind: FramePayloadKind = 'original';
-  let imageFormat = 'png';
+  let sortBy: FrameSortBy = 'asset_frame';
+  let sortDir: SortDir = 'asc';
   let nextOffset = 0;
   let hasMore = true;
   let loading = false;
@@ -41,8 +45,20 @@
   const tilePreviewMaxDimensionPx = 280;
   const modalPreviewMaxDimensionPx = 900;
   const displayImageFormat = 'jpg';
+  const imageFormat = displayImageFormat;
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
+  $: collectionOptions = uniqueStrings(collections.map((collection) => collection.collection));
+  $: advancedSearchActive = Boolean(
+    selectedCollection ||
+      selectedKind ||
+      filename.trim() ||
+      preprocessingState ||
+      detectionState ||
+      refinementState ||
+      hasFilterValue(startFrame) ||
+      hasFilterValue(endFrame)
+  );
   $: visibleCount = frames.length;
   $: summaryLabel = `${formatCount(visibleCount)} frame${visibleCount === 1 ? '' : 's'} loaded`;
   $: preferenceSnapshot = {
@@ -55,7 +71,8 @@
     startFrame,
     endFrame,
     payloadKind,
-    imageFormat
+    sortBy,
+    sortDir
   };
   $: if (preferencesReady) persistPreferences(preferenceSnapshot);
   $: syncPageScrollListener(tileScroller);
@@ -101,6 +118,8 @@
         refinement_state: emptyToNull(normalizedStateFilter(refinementState)),
         start_frame: normalizedNumber(startFrame),
         end_frame: normalizedNumber(endFrame),
+        sort_by: sortBy,
+        sort_dir: sortDir,
         limit: pageSize,
         offset
       });
@@ -125,6 +144,8 @@
     startFrame = null;
     endFrame = null;
     payloadKind = 'original';
+    sortBy = 'asset_frame';
+    sortDir = 'asc';
     void loadFrames(true);
   }
 
@@ -284,6 +305,24 @@
     return value ? value : null;
   }
 
+  function hasFilterValue(value: unknown): boolean {
+    return value !== null && value !== undefined && value !== '';
+  }
+
+  function uniqueStrings(values: Array<string | null | undefined>): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const raw of values) {
+      const value = raw?.trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(value);
+    }
+    return result;
+  }
+
   function normalizedNumber(value: number | string | null): number | null {
     if (value === null || value === '') return null;
     const parsed = Number(value);
@@ -310,10 +349,26 @@
       startFrame = normalizedNumber(parsed.startFrame ?? null);
       endFrame = normalizedNumber(parsed.endFrame ?? null);
       payloadKind = parsed.payloadKind === 'preprocessed' ? 'preprocessed' : 'original';
-      imageFormat = parsed.imageFormat === 'jpg' ? 'jpg' : 'png';
+      sortBy = frameSortByPreference(parsed.sortBy, sortBy);
+      sortDir = sortDirPreference(parsed.sortDir, sortDir);
     } catch {
       localStorage.removeItem(frameBrowserPreferenceKey());
     }
+  }
+
+  function frameSortByPreference(value: unknown, fallback: FrameSortBy): FrameSortBy {
+    return value === 'asset_frame' ||
+      value === 'frame' ||
+      value === 'captured_at' ||
+      value === 'filename' ||
+      value === 'roi_count' ||
+      value === 'refined_count'
+      ? value
+      : fallback;
+  }
+
+  function sortDirPreference(value: unknown, fallback: SortDir): SortDir {
+    return value === 'asc' || value === 'desc' ? value : fallback;
   }
 
   function frameBrowserPreferenceKey(): string {
@@ -328,8 +383,8 @@
   }
 </script>
 
-<div class="roi-browser-layout">
-  <aside class="panel roi-filter-panel">
+<div class="roi-browser-layout browser-top-layout">
+  <section class="panel roi-filter-panel browser-filter-bar">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Filters</p>
@@ -337,107 +392,123 @@
       </div>
     </div>
 
-    <div class="filter-group">
-      <div class="section-heading">
-        <p class="eyebrow">View</p>
-        <strong>Frame image source</strong>
+    <div class="browser-primary-filters">
+      <div class="browser-view-options">
+        <div>
+          <span class="control-label">Frame source</span>
+          <div class="toggle-list">
+            <button class:active={payloadKind === 'original'} type="button" on:click={() => (payloadKind = 'original')}>
+              Raw
+            </button>
+            <button class:active={payloadKind === 'preprocessed'} type="button" on:click={() => (payloadKind = 'preprocessed')}>
+              Preprocessed
+            </button>
+          </div>
+        </div>
       </div>
-      <div class="toggle-list">
-        <button class:active={payloadKind === 'original'} type="button" on:click={() => (payloadKind = 'original')}>
-          Raw
-        </button>
-        <button class:active={payloadKind === 'preprocessed'} type="button" on:click={() => (payloadKind = 'preprocessed')}>
-          Preprocessed
-        </button>
+
+      <div class="form-grid compact-grid browser-sort-group">
+        <label>
+          Sort by
+          <select bind:value={sortBy}>
+            <option value="asset_frame">Asset + frame</option>
+            <option value="frame">Frame number</option>
+            <option value="captured_at">Captured time</option>
+            <option value="filename">Filename</option>
+            <option value="roi_count">ROI count</option>
+            <option value="refined_count">Refined count</option>
+          </select>
+        </label>
+        <label>
+          Direction
+          <select bind:value={sortDir}>
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+        </label>
       </div>
-      {#if payloadKind === 'preprocessed'}
-        <p class="soft">Frames without a stored preprocessed payload are kept in the result set but cannot render this view.</p>
-      {/if}
+
+      <div class="button-row browser-filter-actions">
+        <button type="button" on:click={() => loadFrames(true)}>Apply</button>
+        <button class="ghost" type="button" on:click={resetFilters}>Reset</button>
+      </div>
     </div>
 
-    <label>
-      Collection
-      <select bind:value={selectedCollection}>
-        <option value="">All collections</option>
-        {#each collections as collection}
-          <option value={collection.collection}>{collection.collection}</option>
-        {/each}
-      </select>
-    </label>
+    <details class="advanced-search-panel">
+      <summary class:has-active-settings={advancedSearchActive}>Advanced search</summary>
+      <div class="advanced-search-grid">
+        <label>
+          Collection
+          <CollectionTokenInput
+            value={selectedCollection}
+            suggestions={collectionOptions}
+            placeholder="Any collection"
+            multi={false}
+            ariaLabel="Collection filter"
+            onChange={(value) => selectedCollection = value}
+          />
+        </label>
 
-    <label>
-      Asset kind
-      <select bind:value={selectedKind}>
-        <option value="">All kinds</option>
-        <option value="video">Video</option>
-        <option value="image">Image</option>
-        <option value="image_sequence">Image sequence</option>
-      </select>
-    </label>
+        <label>
+          Asset kind
+          <select bind:value={selectedKind}>
+            <option value="">All kinds</option>
+            <option value="video">Video</option>
+            <option value="image">Image</option>
+            <option value="image_sequence">Image sequence</option>
+          </select>
+        </label>
 
-    <label>
-      Filename
-      <input bind:value={filename} placeholder="contains..." />
-    </label>
+        <label>
+          Filename
+          <input bind:value={filename} placeholder="contains..." />
+        </label>
 
-    <div class="form-grid compact-grid">
-      <label>
-        Start frame
-        <input type="number" min="1" bind:value={startFrame} />
-      </label>
-      <label>
-        End frame
-        <input type="number" min="1" bind:value={endFrame} />
-      </label>
-    </div>
+        <label>
+          Start frame
+          <input type="number" min="1" bind:value={startFrame} />
+        </label>
+        <label>
+          End frame
+          <input type="number" min="1" bind:value={endFrame} />
+        </label>
 
-    <label>
-      Preprocessing
-      <select bind:value={preprocessingState}>
-        <option value="">Any</option>
-        <option value="has-preprocessed">Has preprocessed payload</option>
-        <option value="fully-preprocessed">Fully preprocessed</option>
-        <option value="partially-preprocessed">Partially preprocessed</option>
-        <option value="needs-preprocessed">Needs preprocessing</option>
-      </select>
-    </label>
+        <label>
+          Preprocessing
+          <select bind:value={preprocessingState}>
+            <option value="">Any</option>
+            <option value="has-preprocessed">Has preprocessed payload</option>
+            <option value="fully-preprocessed">Fully preprocessed</option>
+            <option value="partially-preprocessed">Partially preprocessed</option>
+            <option value="needs-preprocessed">Needs preprocessing</option>
+          </select>
+        </label>
 
-    <label>
-      Candidate detection
-      <select bind:value={detectionState}>
-        <option value="">Any</option>
-        <option value="has-detections">Has detections</option>
-        <option value="fully-detected">Fully detected</option>
-        <option value="partially-detected">Partially detected</option>
-        <option value="needs-detections">Needs detection</option>
-      </select>
-    </label>
+        <label>
+          Candidate detection
+          <select bind:value={detectionState}>
+            <option value="">Any</option>
+            <option value="has-detections">Has detections</option>
+            <option value="fully-detected">Fully detected</option>
+            <option value="partially-detected">Partially detected</option>
+            <option value="needs-detections">Needs detection</option>
+          </select>
+        </label>
 
-    <label>
-      ROI refinement
-      <select bind:value={refinementState}>
-        <option value="">Any</option>
-        <option value="has-refinement">Has refinement</option>
-        <option value="fully-refined">Fully refined</option>
-        <option value="partially-refined">Partially refined</option>
-        <option value="needs-refinement">Needs refinement</option>
-        <option value="no-detections">No detections</option>
-      </select>
-    </label>
-
-    <label>
-      Download format
-      <select bind:value={imageFormat}>
-        <option value="png">png</option>
-        <option value="jpg">jpg</option>
-      </select>
-    </label>
-
-    <div class="button-row">
-      <button type="button" on:click={() => loadFrames(true)}>Apply</button>
-      <button class="ghost" type="button" on:click={resetFilters}>Reset</button>
-    </div>
-  </aside>
+        <label>
+          ROI refinement
+          <select bind:value={refinementState}>
+            <option value="">Any</option>
+            <option value="has-refinement">Has refinement</option>
+            <option value="fully-refined">Fully refined</option>
+            <option value="partially-refined">Partially refined</option>
+            <option value="needs-refinement">Needs refinement</option>
+            <option value="no-detections">No detections</option>
+          </select>
+        </label>
+      </div>
+    </details>
+  </section>
 
   <section class="panel roi-results-panel">
     <div class="panel-heading">

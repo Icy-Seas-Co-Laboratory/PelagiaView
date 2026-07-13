@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
@@ -20,7 +21,6 @@
   import { numberDefault, processingSection } from '$lib/utils/configDefaults';
   import { formatBytes, formatCount, formatPercent, numericValue, statusTone } from '$lib/utils/format';
   import {
-    booleanPreference,
     numberPreference,
     projectPreferenceKey,
     readPreferences,
@@ -35,10 +35,9 @@
   let message: string | null = null;
   let error: string | null = null;
   let nTile = 2;
-  let frameStorageMode = 'zstd';
-  let kind = 'auto';
-  let recursive = false;
   let collections = '';
+  let collectionOptions: string[] = [];
+  let browserReady = false;
   let preferencesReady = false;
   let analyzing = false;
   let queueing = false;
@@ -52,11 +51,7 @@
   let ingestionJobIdsByAssetKey: Record<string, string> = {};
 
   type IngestionPreferences = {
-    currentPath: string;
     nTile: number;
-    frameStorageMode: string;
-    kind: string;
-    recursive: boolean;
     collections: string;
   };
 
@@ -68,7 +63,6 @@
     metadataText: string;
     sourceTimestampText: string;
     nTile: number;
-    recursive: boolean;
   };
 
   type IngestionProgressSummary = {
@@ -82,13 +76,14 @@
   };
 
   $: ingestionPreferenceSnapshot = {
-    currentPath,
     nTile,
-    frameStorageMode,
-    kind,
-    recursive,
     collections
   };
+  $: collectionSuggestions = uniqueStrings([
+    ...collectionOptions,
+    ...collectionValues(collections),
+    ...analyzedAssets.flatMap((asset) => collectionValues(asset.collectionsText))
+  ]);
   $: if (preferencesReady) writePreferences(ingestionPreferenceKey(), ingestionPreferenceSnapshot);
   $: if (preferencesReady) {
     ingestionPreferenceSnapshot;
@@ -109,11 +104,17 @@
   async function initializeIngestion() {
     const client = getClient();
     if (client) {
-      const config = await client.systemConfig().catch(() => null);
+      const [config, collectionRows] = await Promise.all([
+        client.systemConfig().catch(() => null),
+        client.listCollections(500).catch(() => [])
+      ]);
       applyConfigDefaults(config);
+      collectionOptions = uniqueStrings(collectionRows.map((collection) => collection.collection));
     }
     restorePreferences();
     applyStoredLiveProcessingPreset();
+    if (client) await initializeRawBrowserPath(client);
+    browserReady = true;
     preferencesReady = true;
   }
 
@@ -129,28 +130,20 @@
   function restorePreferences() {
     const preferences = readPreferences<IngestionPreferences>(ingestionPreferenceKey());
     if (!preferences) return;
-    currentPath = stringPreference(preferences.currentPath, currentPath);
     nTile = numberPreference(preferences.nTile, nTile);
-    frameStorageMode = normalizeFrameStorageMode(stringPreference(preferences.frameStorageMode, frameStorageMode));
-    kind = stringPreference(preferences.kind, kind);
-    recursive = booleanPreference(preferences.recursive, recursive);
     collections = stringPreference(preferences.collections, collections);
   }
 
   function captureProcessingSettings(): ProcessingSettings {
     return pruneProcessingSettings({
       ...currentLiveProcessingPreset().settings,
-      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1))),
-      ingestionFrameStorageEncoding: frameStorageMode
+      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1)))
     });
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
     if ('ingestionTileCount' in settings) {
       nTile = Math.max(1, Math.round(numberPreference(settings.ingestionTileCount, nTile)));
-    }
-    if ('ingestionFrameStorageEncoding' in settings) {
-      frameStorageMode = normalizeFrameStorageMode(stringPreference(settings.ingestionFrameStorageEncoding, frameStorageMode));
     }
   }
 
@@ -174,6 +167,17 @@
     browserSource = listing.source;
     currentPath = listing.path;
     return listing;
+  }
+
+  async function initializeRawBrowserPath(client: NonNullable<ReturnType<typeof getClient>>) {
+    if (currentPath && currentPath !== '.') return;
+    try {
+      const roots = await client.listRawDirectory('.');
+      const importRoot = roots.entries.find((entry) => entry.key === 'import' || entry.name === 'Raw Asset Import Directory');
+      if (importRoot?.path) currentPath = importRoot.path;
+    } catch {
+      // Fall back to the server/browser default if roots are not available.
+    }
   }
 
   function updateSelection(paths: string[]) {
@@ -205,10 +209,7 @@
       try {
         const response = await client.analyzeIngestionSource({
           source_path: path,
-          kind,
-          recursive,
           n_tile: nTile,
-          image_encoding: frameStorageMode,
           collections: collections || undefined
         });
         nextAssets.push(...(response.assets ?? []).map((asset) => editableAsset(asset, response.suggested_ingestion_request)));
@@ -256,8 +257,7 @@
         assets,
         source_path: commonSourcePath(assets),
         source_type: sourceType(assets),
-        n_tile: nTile,
-        image_encoding: frameStorageMode
+        n_tile: nTile
       });
       const nextJobIds = (response.jobs ?? []).map((job) => job.id).filter((id): id is string => Boolean(id));
       submittedJobIds = uniqueStrings([...nextJobIds, ...submittedJobIds]).slice(0, 100);
@@ -301,8 +301,7 @@
       collectionsText: (asset.collections ?? []).join(','),
       metadataText: formatJson(asset.metadata ?? {}),
       sourceTimestampText: sourceTimestampValue(asset),
-      nTile: Number(suggested?.n_tile ?? nTile),
-      recursive: Boolean(asset.metadata?.recursive ?? recursive)
+      nTile: Number(suggested?.n_tile ?? nTile)
     };
   }
 
@@ -330,9 +329,15 @@
       collections: asset.collectionsText || undefined,
       media_count: asset.media_count,
       metadata,
-      n_tile: Math.max(1, Math.round(Number(asset.nTile) || nTile)),
-      recursive: asset.kind === 'image_sequence' ? asset.recursive : undefined
+      n_tile: Math.max(1, Math.round(Number(asset.nTile) || nTile))
     };
+  }
+
+  function collectionValues(value: string): string[] {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   function updateAsset(index: number, patch: Partial<EditableAnalyzedAsset>) {
@@ -636,10 +641,6 @@
     return analyzedAssets.filter((asset) => asset.enabled).length;
   }
 
-  function normalizeFrameStorageMode(value: string): string {
-    return ['zstd', 'jxl', 'jxs', 'jpg', 'png'].includes(value) ? value : 'zstd';
-  }
-
   function assetMatchKeys(asset: Pick<EditableAnalyzedAsset, 'path' | 'asset_id'>): string[] {
     return uniqueStrings([asset.path, asset.asset_id]);
   }
@@ -670,17 +671,21 @@
       <p class="callout">The live file endpoint was not available, so this view is reconstructed from registered assets.</p>
     {/if}
 
-    <FileSelector
-      mode="regular"
-      multiSelect={true}
-      selectableKinds={['file', 'directory']}
-      initialPath={currentPath}
-      selectedPaths={selectedPathList}
-      loadDirectory={loadBrowserDirectory}
-      onSelectionChange={updateSelection}
-      onPathChange={updateCurrentPath}
-      label="Raw asset files"
-    />
+    {#if browserReady}
+      <FileSelector
+        mode="regular"
+        multiSelect={true}
+        selectableKinds={['file', 'directory']}
+        initialPath={currentPath}
+        selectedPaths={selectedPathList}
+        loadDirectory={loadBrowserDirectory}
+        onSelectionChange={updateSelection}
+        onPathChange={updateCurrentPath}
+        label="Raw asset files"
+      />
+    {:else}
+      <p class="empty">Loading raw asset browser.</p>
+    {/if}
   </section>
 
   <section class="panel ingestion-queue-panel">
@@ -695,34 +700,17 @@
       <div class="ingestion-queue-controls">
         <div class="form-grid">
           <label>
-            Asset type
-            <select bind:value={kind}>
-              <option value="auto">auto</option>
-              <option value="video">video</option>
-              <option value="image_sequence">image sequence</option>
-            </select>
-          </label>
-          <label>
             Tile count
             <input type="number" min="1" bind:value={nTile} />
           </label>
           <label>
-            Frame storage
-            <select bind:value={frameStorageMode}>
-              <option value="zstd">zstd</option>
-              <option value="jxl">jxl</option>
-              <option value="jxs">jxs</option>
-              <option value="jpg">jpg</option>
-              <option value="png">png</option>
-            </select>
-          </label>
-          <label>
             Collections
-            <input bind:value={collections} placeholder="cruise-2026,station-a" />
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" bind:checked={recursive} />
-            Recursive folders
+            <CollectionTokenInput
+              value={collections}
+              suggestions={collectionSuggestions}
+              placeholder="Add collection"
+              onChange={(value) => collections = value}
+            />
           </label>
         </div>
 
@@ -790,7 +778,6 @@
                 <th>Collections</th>
                 <th>Tiles</th>
                 <th>Source datetime</th>
-                <th>Recursive</th>
                 <th>Facts</th>
                 <th>Status</th>
                 <th></th>
@@ -813,13 +800,15 @@
                     <small title={asset.path}>{asset.path}</small>
                   </td>
                   <td>
-                    <select value={asset.kind} on:change={(event) => updateAsset(index, { kind: event.currentTarget.value })}>
-                      <option value="video">video</option>
-                      <option value="image_sequence">image sequence</option>
-                    </select>
+                    <span>{asset.kind.replace(/_/g, ' ')}</span>
                   </td>
                   <td>
-                    <input value={asset.collectionsText} on:input={(event) => updateAsset(index, { collectionsText: event.currentTarget.value })} />
+                    <CollectionTokenInput
+                      value={asset.collectionsText}
+                      suggestions={collectionSuggestions}
+                      placeholder="Add collection"
+                      onChange={(value) => updateAsset(index, { collectionsText: value })}
+                    />
                   </td>
                   <td class="analysis-number-cell">
                     <input type="number" min="1" value={asset.nTile} on:input={(event) => updateAsset(index, { nTile: Number(event.currentTarget.value) })} />
@@ -832,16 +821,6 @@
                       aria-invalid={asset.sourceTimestampText.trim() && sourceTimestampInvalid(asset.sourceTimestampText) ? 'true' : undefined}
                       on:input={(event) => updateAsset(index, { sourceTimestampText: event.currentTarget.value })}
                     />
-                  </td>
-                  <td class="analysis-use-cell">
-                    {#if asset.kind === 'image_sequence'}
-                      <input
-                        aria-label="Scan image sequence folders recursively"
-                        type="checkbox"
-                        checked={asset.recursive}
-                        on:change={(event) => updateAsset(index, { recursive: event.currentTarget.checked })}
-                      />
-                    {/if}
                   </td>
                   <td class="analysis-facts-cell">
                     <span>{assetSummary(asset)}</span>
@@ -866,7 +845,7 @@
                   </td>
                 </tr>
                 <tr class:disabled={!asset.enabled && !asset.queued} class="analysis-detail-row">
-                  <td colspan="10">
+                  <td colspan="9">
                     <details class="analysis-row-details">
                       <summary>Details</summary>
                       <div class="analysis-detail-grid">

@@ -138,7 +138,7 @@ function groupSettings(settings: Record<string, unknown>): Record<string, Record
 }
 
 function settingGroupForKey(key: string): string {
-  if (['ingestionTileCount', 'ingestionFrameStorageEncoding'].includes(key)) {
+  if (['ingestionTileCount'].includes(key)) {
     return 'ingestion';
   }
   if (
