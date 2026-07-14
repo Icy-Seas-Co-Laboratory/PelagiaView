@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import AdministrationPage from './AdministrationPage.svelte';
   import AppSidebar from './AppSidebar.svelte';
+  import AssetsPage from './AssetsPage.svelte';
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
   import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
@@ -99,6 +100,8 @@
       <div class="page-scroll-content">
         {#if activeTab === 'status'}
           <StatusPage />
+        {:else if activeTab === 'assets'}
+          <AssetsPage />
         {:else if activeTab === 'ingestion'}
           <IngestionPage />
         {:else if activeTab === 'preprocessing'}

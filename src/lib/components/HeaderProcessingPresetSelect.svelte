@@ -22,6 +22,15 @@
   $: if (!loading && !error && !processingPresetByKey(availablePresets, $processingPresetSession.selectedKey)) {
     setSelectedProcessingPresetKey('live:live');
   }
+  $: if (
+    !loading &&
+    !error &&
+    $processingPresetSession.selectedKey !== 'live:live' &&
+    !$processingPresetSession.selectedPreset
+  ) {
+    const persistedPreset = processingPresetByKey(presets, $processingPresetSession.selectedKey);
+    if (persistedPreset) applyProcessingPresetToSession(persistedPreset);
+  }
 
   onMount(() => {
     void loadPresets();

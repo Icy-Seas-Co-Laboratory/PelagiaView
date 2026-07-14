@@ -143,7 +143,6 @@ function settingGroupForKey(key: string): string {
   }
   if (
     [
-      'preprocessingEncoding',
       'framePayloadKind',
       'applyPreprocessing',
       'backgroundCorrection',
@@ -236,9 +235,6 @@ function settingGroupForKey(key: string): string {
   }
   if (
     [
-      'roiEncoding',
-      'zstdMinBytes',
-      'alwaysStoreMask',
       'storeRoiPayloadMinArea',
       'storeRoiPayloadMinWidth',
       'storeRoiPayloadMinHeight',

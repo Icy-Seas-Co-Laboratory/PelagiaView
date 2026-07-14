@@ -1,6 +1,5 @@
 export type ProcessingSettings = {
   ingestionTileCount?: number;
-  preprocessingEncoding?: string;
   framePayloadKind?: 'original' | 'preprocessed';
   applyPreprocessing?: boolean;
   thresholdMethod?: string;
@@ -69,9 +68,6 @@ export type ProcessingSettings = {
   minWidthPlusHeight?: number | null;
   maxWidthPlusHeight?: number | null;
   padding?: number;
-  roiEncoding?: string;
-  zstdMinBytes?: number | null;
-  alwaysStoreMask?: boolean;
   storeRoiPayloadMinArea?: number | null;
   storeRoiPayloadMinWidth?: number | null;
   storeRoiPayloadMinHeight?: number | null;
@@ -92,6 +88,8 @@ export type ProcessingSettings = {
   refinementStore?: boolean;
   refinementDryRun?: boolean;
 };
+
+export type ProcessingSettingKey = keyof ProcessingSettings;
 
 export type ProcessingPresetSource = 'builtin' | 'user' | 'live';
 
@@ -152,7 +150,6 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
 
   copy('ingestionTileCount');
 
-  copy('preprocessingEncoding');
   copy('framePayloadKind');
   copy('applyPreprocessing');
 
@@ -260,9 +257,6 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   copyIfPresentValue('maxWidthPlusHeight');
   copy('padding');
 
-  copy('roiEncoding');
-  if (settings.roiEncoding === 'zstd') copy('zstdMinBytes');
-  copy('alwaysStoreMask');
   copyIfPresentValue('storeRoiPayloadMinArea');
   copyIfPresentValue('storeRoiPayloadMinWidth');
   copyIfPresentValue('storeRoiPayloadMinHeight');
@@ -287,4 +281,51 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   copy('refinementDryRun');
 
   return pruned;
+}
+
+export function processingSettingsBaseline(
+  globalDefaults: ProcessingSettings,
+  selectedPreset: ProcessingPreset | null | undefined
+): ProcessingSettings {
+  if (!selectedPreset || selectedPreset.source === 'live') return { ...globalDefaults };
+  return {
+    ...globalDefaults,
+    ...selectedPreset.settings
+  };
+}
+
+export function processingSettingChangedFromBaseline<K extends ProcessingSettingKey>(
+  baseline: ProcessingSettings,
+  key: K,
+  value: ProcessingSettings[K]
+): boolean {
+  return !processingSettingValuesEqual(value, baseline[key]);
+}
+
+export function processingSettingValuesEqual(left: unknown, right: unknown): boolean {
+  const normalizedLeft = normalizeProcessingSettingValue(left);
+  const normalizedRight = normalizeProcessingSettingValue(right);
+  if (Array.isArray(normalizedLeft) || Array.isArray(normalizedRight)) {
+    if (!Array.isArray(normalizedLeft) || !Array.isArray(normalizedRight)) return false;
+    if (normalizedLeft.length !== normalizedRight.length) return false;
+    return normalizedLeft.every((value, index) => processingSettingValuesEqual(value, normalizedRight[index]));
+  }
+  return normalizedLeft === normalizedRight;
+}
+
+function normalizeProcessingSettingValue(value: unknown): unknown {
+  if (value === undefined || value === null || value === '') return null;
+  if (Array.isArray(value)) {
+    const normalized = value
+      .filter((entry) => entry !== undefined && entry !== null && entry !== '' && entry !== 'none')
+      .map((entry) => normalizeProcessingSettingValue(entry))
+      .sort((left, right) => String(left).localeCompare(String(right)));
+    return normalized.length ? normalized : null;
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? Number(value.toFixed(8)) : value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return value.trim() !== '' && Number.isFinite(parsed) ? Number(parsed.toFixed(8)) : value;
+  }
+  return value;
 }

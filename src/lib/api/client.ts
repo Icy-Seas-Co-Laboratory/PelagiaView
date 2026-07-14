@@ -1,6 +1,8 @@
 import type {
   AssetDetectionStats,
+  AssetDeleteResponse,
   AssetProcessingState,
+  AssetUpdateRequest,
   AuthLoginResponse,
   AuthMeResponse,
   AuthUserSummary,
@@ -231,6 +233,16 @@ export class PelagiaApiClient {
   async post<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
     const value = await this.request<T>(this.url(path), {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    }, options);
+    this.cache.clear();
+    return value;
+  }
+
+  async patch<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
+    const value = await this.request<T>(this.url(path), {
+      method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body)
     }, options);
@@ -483,6 +495,15 @@ export class PelagiaApiClient {
   async getAsset(assetId: string): Promise<RawAsset> {
     const response = await this.get<{ asset: RawAsset }>(`/assets/${encodeURIComponent(assetId)}`, undefined, 2500);
     return response.asset;
+  }
+
+  async updateAsset(assetId: string, body: AssetUpdateRequest): Promise<RawAsset> {
+    const response = await this.patch<{ asset: RawAsset }>(`/assets/${encodeURIComponent(assetId)}`, compact(body));
+    return response.asset;
+  }
+
+  async deleteAsset(assetId: string): Promise<AssetDeleteResponse> {
+    return this.delete<AssetDeleteResponse>(`/assets/${encodeURIComponent(assetId)}`);
   }
 
   async listFrames(

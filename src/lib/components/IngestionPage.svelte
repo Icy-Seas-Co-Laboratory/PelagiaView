@@ -37,6 +37,7 @@
   let nTile = 2;
   let collections = '';
   let collectionOptions: string[] = [];
+  let globalDefaultProcessingSettings: ProcessingSettings = {};
   let browserReady = false;
   let preferencesReady = false;
   let analyzing = false;
@@ -109,6 +110,7 @@
         client.listCollections(500).catch(() => [])
       ]);
       applyConfigDefaults(config);
+      globalDefaultProcessingSettings = currentPageProcessingSettings();
       collectionOptions = uniqueStrings(collectionRows.map((collection) => collection.collection));
     }
     restorePreferences();
@@ -137,8 +139,30 @@
   function captureProcessingSettings(): ProcessingSettings {
     return pruneProcessingSettings({
       ...currentLiveProcessingPreset().settings,
-      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1)))
+      ...currentPageProcessingSettings()
     });
+  }
+
+  function currentPageProcessingSettings(): ProcessingSettings {
+    return {
+      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1)))
+    };
+  }
+
+  function processingSettingsWithDefaults(settings: ProcessingSettings): ProcessingSettings {
+    return {
+      ...globalDefaultProcessingSettings,
+      ...settings
+    };
+  }
+
+  function applyProcessingPresetSettings(preset: ProcessingPreset, options: { updateSession?: boolean } = {}) {
+    applyProcessingSettings(processingSettingsWithDefaults(preset.settings));
+    if (options.updateSession) {
+      setLiveProcessingPresetFromSettings(captureProcessingSettings(), {
+        selectedKey: preset.source === 'live' ? 'live:live' : undefined
+      });
+    }
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
@@ -150,14 +174,14 @@
   function applyStoredLiveProcessingPreset() {
     const preset = currentLiveProcessingPreset();
     if (preset?.source === 'live' && preset.settings) {
-      applyProcessingSettings(preset.settings);
+      applyProcessingPresetSettings(preset);
     }
   }
 
   function handleHeaderProcessingPresetApplied(event: Event) {
     const preset = (event as CustomEvent<ProcessingPreset>).detail;
     if (!preset?.settings) return;
-    applyProcessingSettings(preset.settings);
+    applyProcessingPresetSettings(preset, { updateSession: true });
   }
 
   async function loadBrowserDirectory(path = currentPath): Promise<DirectoryListing> {

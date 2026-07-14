@@ -27,10 +27,13 @@
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
     PROCESSING_PRESET_APPLIED_EVENT,
+    processingSettingChangedFromBaseline,
+    processingSettingsBaseline,
     pruneProcessingSettings
   } from '$lib/processing/settings';
   import {
     currentLiveProcessingPreset,
+    processingPresetSession,
     setLiveProcessingPresetFromSettings
   } from '$lib/stores/processingPresetSession';
   import {
@@ -108,13 +111,7 @@
   let lastCatalogKey = '';
   let preferencesReady = false;
   let submittedJobIds: string[] = [];
-  let frameBatchSize = mode === 'roi_refinement' ? 5000 : 250;
-  let boundedFrameBatchSizeValue = frameBatchSize;
-  let batchSizeMinimum = 20;
-  let batchSizeMaximum = 1000;
-  let batchSizeInterval = 20;
-  let lastBatchMode: QueueMode | null = null;
-  let priority: number | null = null;
+  let globalDefaultProcessingSettings: ProcessingSettings = {};
 
   let flatfieldCorrection = false;
   let flatfieldQ = 0.95;
@@ -131,8 +128,6 @@
   let cropW: number | null = null;
   let cropH: number | null = null;
   let invertIntensity = false;
-  let preprocessingEncoding = 'zstd';
-  let preprocessingEncodingOptions = ['png', 'zstd', 'jxl', 'jxs', 'raw', 'jpg'];
   let imageCodecAvailability: CodecAvailability = {};
 
   let framePayloadKind: 'original' | 'preprocessed' = 'preprocessed';
@@ -211,10 +206,6 @@
   let minWidthPlusHeight: number | null = null;
   let maxWidthPlusHeight: number | null = null;
   let padding = 100;
-  let roiEncoding = 'zstd';
-  let roiEncodingOptions = ['zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw', 'auto'];
-  let zstdMinBytes: number | null = null;
-  let alwaysStoreMask = true;
   let storeRoiPayloadMinArea: number | null = null;
   let storeRoiPayloadMinWidth: number | null = null;
   let storeRoiPayloadMinHeight: number | null = null;
@@ -246,8 +237,6 @@
     selectedPreprocessStates: string[];
     selectedDetectionStates: string[];
     selectedRefinementStates: string[];
-    frameBatchSize: number;
-    priority: number | null;
     flatfieldCorrection: boolean;
     flatfieldQ: number;
     flatfieldAxis: number;
@@ -263,7 +252,6 @@
     cropW: number | null;
     cropH: number | null;
     invertIntensity: boolean;
-    preprocessingEncoding: string;
     framePayloadKind: 'original' | 'preprocessed';
     applyPreprocessing: boolean;
     thresholdMethod: string;
@@ -316,9 +304,6 @@
     minWidthPlusHeight: number | null;
     maxWidthPlusHeight: number | null;
     padding: number;
-    roiEncoding: string;
-    zstdMinBytes: number | null;
-    alwaysStoreMask: boolean;
     storeRoiPayloadMinArea: number | null;
     storeRoiPayloadMinWidth: number | null;
     storeRoiPayloadMinHeight: number | null;
@@ -358,21 +343,16 @@
       : mode === 'segmentation'
         ? 'Queue segmentation jobs'
         : 'Queue refinement jobs';
-  $: if (mode !== lastBatchMode) {
-    preferencesReady = false;
-    lastBatchMode = mode;
-    frameBatchSize = defaultBatchSize();
-  }
-  $: batchSizeMinimum = batchSizeMin();
-  $: batchSizeMaximum = batchSizeMax();
-  $: batchSizeInterval = batchSizeStep();
-  $: boundedFrameBatchSizeValue = boundedBatchSize(frameBatchSize);
   $: datasetQueuePreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(datasetQueuePreferenceKey(), datasetQueuePreferenceSnapshot);
   $: if (preferencesReady) {
     datasetQueuePreferenceSnapshot;
     setLiveProcessingPresetFromSettings(captureProcessingSettings());
   }
+  $: processingBaselineSettings = processingSettingsBaseline(
+    globalDefaultProcessingSettings,
+    $processingPresetSession.selectedPreset
+  );
   $: selectedCollectionArray = [...selectedCollections];
   $: selectedAssetArray = [...selectedAssetIds];
   $: filteredDatasets = datasets.filter((dataset) => datasetMatchesFilters(dataset));
@@ -409,31 +389,57 @@
   $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
   $: missingPreprocessedFrameCount = 0;
   $: payloadStorageThresholdsActive = Boolean(
-    hasSettingValue(storeRoiPayloadMinArea) ||
-      hasSettingValue(storeRoiPayloadMinWidth) ||
-      hasSettingValue(storeRoiPayloadMinHeight) ||
-      hasSettingValue(storeRoiPayloadMinWidthPlusHeight)
+    fieldChanged('storeRoiPayloadMinArea', storeRoiPayloadMinArea) ||
+      fieldChanged('storeRoiPayloadMinWidth', storeRoiPayloadMinWidth) ||
+      fieldChanged('storeRoiPayloadMinHeight', storeRoiPayloadMinHeight) ||
+      fieldChanged('storeRoiPayloadMinWidthPlusHeight', storeRoiPayloadMinWidthPlusHeight)
   );
+  $: preprocessingAdvancedActive = Boolean(
+    (flatfieldCorrection &&
+        (fieldChanged('flatfieldMinFieldValue', flatfieldMinFieldValue) ||
+          fieldChanged('flatfieldMaxFieldValue', flatfieldMaxFieldValue) ||
+          fieldChanged('flatfieldAxis', flatfieldAxis))) ||
+      (backgroundCorrection &&
+        (fieldChanged('backgroundMinFieldValue', backgroundMinFieldValue) ||
+          fieldChanged('backgroundMaxFieldValue', backgroundMaxFieldValue))) ||
+      fieldChanged('applyMask', applyMask) ||
+      fieldChanged('cropEnabled', cropEnabled) ||
+      (cropEnabled &&
+        (fieldChanged('cropX', cropX) ||
+          fieldChanged('cropY', cropY) ||
+          fieldChanged('cropW', cropW) ||
+          fieldChanged('cropH', cropH)))
+  );
+  $: thresholdAdvancedActive = thresholdAdvancedSettingsActive();
+  $: maskAugmentationAdvancedActive = maskAugmentationSettingsActive();
   $: candidateDetectionAdvancedActive = Boolean(
-    boundedFrameBatchSizeValue !== defaultBatchSize() ||
-      hasSettingValue(priority) ||
-      roiAssemblyConnectivity !== 8 ||
-      numberSettingChanged(minPerimeter, 100) ||
-      hasSettingValue(maxPerimeter) ||
-      hasSettingValue(minWidth) ||
-      hasSettingValue(maxWidth) ||
-      hasSettingValue(minHeight) ||
-      hasSettingValue(maxHeight) ||
-      numberSettingChanged(padding, 100) ||
-      roiEncoding !== 'zstd' ||
-      hasSettingValue(zstdMinBytes) ||
-      alwaysStoreMask !== true ||
+    thresholdAdvancedActive ||
+      maskAugmentationAdvancedActive ||
+      fieldChanged('roiAssemblyConnectivity', roiAssemblyConnectivity) ||
+      fieldChanged('minArea', minArea) ||
+      fieldChanged('maxArea', maxArea) ||
+      fieldChanged('minPerimeter', minPerimeter) ||
+      fieldChanged('maxPerimeter', maxPerimeter) ||
+      fieldChanged('maxWidth', maxWidth) ||
+      fieldChanged('maxHeight', maxHeight) ||
+      fieldChanged('minWidthPlusHeight', minWidthPlusHeight) ||
+      fieldChanged('maxWidthPlusHeight', maxWidthPlusHeight) ||
+      fieldChanged('padding', padding) ||
       payloadStorageThresholdsActive
   );
-  $: prospectiveBatchCount =
-    mode === 'roi_refinement'
-      ? Math.ceil(prospectiveQueueItemCount / boundedFrameBatchSizeValue)
-      : Math.ceil(prospectiveFrameCount / boundedFrameBatchSizeValue);
+  $: refinementAdvancedActive = Boolean(
+    fieldChanged('refinementTileSize', refinementTileSize) ||
+      fieldChanged('refinementOverlapFraction', refinementOverlapFraction) ||
+      fieldChanged('refinementModelBatchSize', refinementModelBatchSize) ||
+      fieldChanged('refinementOutputThreshold', refinementOutputThreshold) ||
+      fieldChanged('refinementAllowFrameExpansion', refinementAllowFrameExpansion) ||
+      fieldChanged('refinementMaxIterations', refinementMaxIterations) ||
+      fieldChanged('refinementExpansionPixels', refinementExpansionPixels) ||
+      fieldChanged('refinementEdgeTouchMargin', refinementEdgeTouchMargin) ||
+      fieldChanged('refinementEncoding', refinementEncoding) ||
+      fieldChanged('refinementStore', refinementStore) ||
+      fieldChanged('refinementDryRun', refinementDryRun)
+  );
   $: queueItemLabel = mode === 'roi_refinement' ? 'ROI' : 'frame';
   $: queueItemLabelPlural = mode === 'roi_refinement' ? 'ROIs' : 'frames';
   $: queueStage = mode;
@@ -492,8 +498,6 @@
       selectedPreprocessStates: [...selectedPreprocessStates],
       selectedDetectionStates: [...selectedDetectionStates],
       selectedRefinementStates: [...selectedRefinementStates],
-      frameBatchSize,
-      priority,
       flatfieldCorrection,
       flatfieldQ,
       flatfieldAxis,
@@ -509,7 +513,6 @@
       cropW,
       cropH,
       invertIntensity,
-      preprocessingEncoding,
       framePayloadKind,
       applyPreprocessing,
       thresholdMethod,
@@ -562,9 +565,6 @@
       minWidthPlusHeight,
       maxWidthPlusHeight,
       padding,
-      roiEncoding,
-      zstdMinBytes,
-      alwaysStoreMask,
       storeRoiPayloadMinArea,
       storeRoiPayloadMinWidth,
       storeRoiPayloadMinHeight,
@@ -595,8 +595,6 @@
     selectedPreprocessStates = stringSetPreference(preferences.selectedPreprocessStates, selectedPreprocessStates);
     selectedDetectionStates = stringSetPreference(preferences.selectedDetectionStates, selectedDetectionStates);
     selectedRefinementStates = stringSetPreference(preferences.selectedRefinementStates, selectedRefinementStates);
-    frameBatchSize = restoredFrameBatchSize(preferences.frameBatchSize);
-    priority = nullablePreferenceNumber(preferences.priority, priority);
     flatfieldCorrection = booleanPreference(preferences.flatfieldCorrection, flatfieldCorrection);
     flatfieldQ = numberPreference(preferences.flatfieldQ, flatfieldQ);
     flatfieldAxis = numberPreference(preferences.flatfieldAxis, flatfieldAxis);
@@ -613,7 +611,6 @@
     cropW = nullablePreferenceNumber(preferences.cropW, cropW);
     cropH = nullablePreferenceNumber(preferences.cropH, cropH);
     invertIntensity = booleanPreference(preferences.invertIntensity, invertIntensity);
-    preprocessingEncoding = stringPreference(preferences.preprocessingEncoding, preprocessingEncoding);
     framePayloadKind = framePayloadKindPreference(preferences.framePayloadKind, framePayloadKind);
     applyPreprocessing = booleanPreference(preferences.applyPreprocessing, applyPreprocessing);
     thresholdMethod = stringPreference(preferences.thresholdMethod, thresholdMethod);
@@ -666,9 +663,6 @@
     minWidthPlusHeight = nullablePreferenceNumber(preferences.minWidthPlusHeight, minWidthPlusHeight);
     maxWidthPlusHeight = nullablePreferenceNumber(preferences.maxWidthPlusHeight, maxWidthPlusHeight);
     padding = numberPreference(preferences.padding, padding);
-    roiEncoding = stringPreference(preferences.roiEncoding, roiEncoding);
-    zstdMinBytes = nullablePreferenceNumber(preferences.zstdMinBytes, zstdMinBytes);
-    alwaysStoreMask = booleanPreference(preferences.alwaysStoreMask, alwaysStoreMask);
     storeRoiPayloadMinArea = nullablePreferenceNumber(preferences.storeRoiPayloadMinArea, storeRoiPayloadMinArea);
     storeRoiPayloadMinWidth = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
     storeRoiPayloadMinHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
@@ -695,24 +689,46 @@
   }
 
   function captureProcessingSettings(): ProcessingSettings {
+    return pruneProcessingSettings({
+      ...currentLiveProcessingPreset().settings,
+      ...currentPageProcessingSettings()
+    });
+  }
+
+  function currentPageProcessingSettings(): ProcessingSettings {
     const {
       selectedAssetIds: _selectedAssetIds,
       selectedCollections: _selectedCollections,
       selectedPreprocessStates: _selectedPreprocessStates,
       selectedDetectionStates: _selectedDetectionStates,
       selectedRefinementStates: _selectedRefinementStates,
-      frameBatchSize: _frameBatchSize,
-      priority: _priority,
       ...settings
     } = buildPreferenceSnapshot();
-    return pruneProcessingSettings({
-      ...currentLiveProcessingPreset().settings,
+    return settings;
+  }
+
+  function fieldChanged<K extends keyof ProcessingSettings>(key: K, value: ProcessingSettings[K]): boolean {
+    return processingSettingChangedFromBaseline(processingBaselineSettings, key, value);
+  }
+
+  function processingSettingsWithDefaults(settings: ProcessingSettings): ProcessingSettings {
+    return {
+      ...globalDefaultProcessingSettings,
       ...settings
-    });
+    };
+  }
+
+  function applyProcessingPresetSettings(preset: ProcessingPreset, options: { updateSession?: boolean } = {}) {
+    const resolvedSettings = processingSettingsWithDefaults(preset.settings);
+    applyProcessingSettings(resolvedSettings);
+    if (options.updateSession) {
+      setLiveProcessingPresetFromSettings(captureProcessingSettings(), {
+        selectedKey: preset.source === 'live' ? 'live:live' : undefined
+      });
+    }
   }
 
   function applyProcessingSettings(settings: ProcessingSettings) {
-    if ('preprocessingEncoding' in settings) preprocessingEncoding = stringPreference(settings.preprocessingEncoding, preprocessingEncoding);
     if ('framePayloadKind' in settings) framePayloadKind = framePayloadKindPreference(settings.framePayloadKind, framePayloadKind);
     if ('applyPreprocessing' in settings) applyPreprocessing = booleanPreference(settings.applyPreprocessing, applyPreprocessing);
     if ('thresholdMethod' in settings) thresholdMethod = stringPreference(settings.thresholdMethod, thresholdMethod);
@@ -781,9 +797,6 @@
     if ('minWidthPlusHeight' in settings) minWidthPlusHeight = nullablePreferenceNumber(settings.minWidthPlusHeight, minWidthPlusHeight);
     if ('maxWidthPlusHeight' in settings) maxWidthPlusHeight = nullablePreferenceNumber(settings.maxWidthPlusHeight, maxWidthPlusHeight);
     if ('padding' in settings) padding = numberPreference(settings.padding, padding);
-    if ('roiEncoding' in settings) roiEncoding = stringPreference(settings.roiEncoding, roiEncoding);
-    if ('zstdMinBytes' in settings) zstdMinBytes = nullablePreferenceNumber(settings.zstdMinBytes, zstdMinBytes);
-    if ('alwaysStoreMask' in settings) alwaysStoreMask = booleanPreference(settings.alwaysStoreMask, alwaysStoreMask);
     if ('storeRoiPayloadMinArea' in settings) storeRoiPayloadMinArea = nullablePreferenceNumber(settings.storeRoiPayloadMinArea, storeRoiPayloadMinArea);
     if ('storeRoiPayloadMinWidth' in settings) storeRoiPayloadMinWidth = nullablePreferenceNumber(settings.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
     if ('storeRoiPayloadMinHeight' in settings) storeRoiPayloadMinHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
@@ -823,14 +836,14 @@
   function applyStoredLiveProcessingPreset() {
     const preset = currentLiveProcessingPreset();
     if (preset?.source === 'live' && preset.settings) {
-      applyProcessingSettings(preset.settings);
+      applyProcessingPresetSettings(preset);
     }
   }
 
   function handleHeaderProcessingPresetApplied(event: Event) {
     const preset = (event as CustomEvent<ProcessingPreset>).detail;
     if (!preset?.settings) return;
-    applyProcessingSettings(preset.settings);
+    applyProcessingPresetSettings(preset, { updateSession: true });
   }
 
   async function loadCatalog() {
@@ -909,7 +922,6 @@
     const roiFilter = pipelineSection(config, capabilities, 'roi_filter');
     const roiRecording = pipelineSection(config, capabilities, 'roi_recording');
     const roiRefinement = refinementCapabilities?.defaults?.roi_refinement ?? processingSection(config, 'roi_refinement');
-    const frameStorage = processingSection(config, 'frame_storage');
 
     thresholdMethods = capabilities?.supported?.threshold_methods?.length
       ? capabilities.supported.threshold_methods
@@ -921,16 +933,6 @@
       ? capabilities.supported.roi_assembly_methods
       : roiAssemblyMethods;
     imageCodecAvailability = systemCapabilities?.supported?.image_codec_availability ?? {};
-    preprocessingEncodingOptions = uniqueCodecOptions(
-      systemCapabilities?.supported?.image_encodings?.length
-        ? systemCapabilities.supported.image_encodings
-        : preprocessingEncodingOptions
-    );
-    roiEncodingOptions = uniqueCodecOptions(
-      capabilities?.supported?.roi_encoding_options?.length
-        ? capabilities.supported.roi_encoding_options
-        : roiEncodingOptions
-    );
     refinementModelKinds = refinementCapabilities?.supported?.model_kinds?.length
       ? refinementCapabilities.supported.model_kinds
       : refinementModelKinds;
@@ -958,12 +960,6 @@
     cropW = nullableNumberDefault(preprocessing, 'crop_w', cropW);
     cropH = nullableNumberDefault(preprocessing, 'crop_h', cropH);
     invertIntensity = booleanDefault(preprocessing, 'invert_intensity', invertIntensity);
-    preprocessingEncoding = ensureAvailableCodec(
-      stringDefault(frameStorage, 'image_encoding', preprocessingEncoding),
-      preprocessingEncodingOptions,
-      imageCodecAvailability,
-      'zstd'
-    );
 
     thresholdMethod = stringDefault(thresholding, 'method', thresholdMethod);
     manualThreshold = numberDefault(thresholding, 'manual_threshold', manualThreshold);
@@ -1019,14 +1015,6 @@
     maxWidthPlusHeight = nullableNumberDefault(roiFilter, 'max_width_plus_height', maxWidthPlusHeight);
 
     padding = numberDefault(roiRecording, 'padding', padding);
-    roiEncoding = ensureAvailableCodec(
-      stringDefault(roiRecording, 'roi_encoding', roiEncoding),
-      roiEncodingOptions,
-      imageCodecAvailability,
-      'zstd'
-    );
-    zstdMinBytes = nullableNumberDefault(roiRecording, 'zstd_min_bytes', zstdMinBytes);
-    alwaysStoreMask = booleanDefault(roiRecording, 'always_store_mask', alwaysStoreMask);
     storeRoiPayloadMinArea = nullableNumberDefault(roiRecording, 'store_roi_payload_min_area', storeRoiPayloadMinArea);
     storeRoiPayloadMinWidth = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width', storeRoiPayloadMinWidth);
     storeRoiPayloadMinHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_height', storeRoiPayloadMinHeight);
@@ -1049,6 +1037,7 @@
       imageCodecAvailability,
       'auto'
     );
+    globalDefaultProcessingSettings = currentPageProcessingSettings();
   }
 
   function modelArtifactOptions(capabilities: RoiRefinementCapabilities | null): string[] {
@@ -1060,8 +1049,6 @@
   }
 
   function enforceCodecAvailability() {
-    preprocessingEncoding = ensureAvailableCodec(preprocessingEncoding, preprocessingEncodingOptions, imageCodecAvailability, 'zstd');
-    roiEncoding = ensureAvailableCodec(roiEncoding, roiEncodingOptions, imageCodecAvailability, 'zstd');
     refinementEncoding = ensureAvailableCodec(refinementEncoding, refinementEncodingOptions, imageCodecAvailability, 'auto');
   }
 
@@ -1212,8 +1199,7 @@
       crop_y: cropEnabled ? cropY : undefined,
       crop_w: cropEnabled ? cropW : undefined,
       crop_h: cropEnabled ? cropH : undefined,
-      invert_intensity: invertIntensity,
-      encoding: preprocessingEncoding
+      invert_intensity: invertIntensity
     };
   }
 
@@ -1222,11 +1208,6 @@
       stage: processingQueueStage(),
       filters: processingQueueFilters(),
       options: processingQueueOptions(),
-      batch: {
-        max_units: boundedFrameBatchSizeValue,
-        ordering: 'optimized'
-      },
-      priority,
       dry_run: false
     };
   }
@@ -1436,37 +1417,6 @@
     return counts.get(value) ?? 0;
   }
 
-  function batchSizeMin(): number {
-    return mode === 'roi_refinement' ? 100 : 20;
-  }
-
-  function batchSizeMax(): number {
-    return mode === 'roi_refinement' ? 10000 : 1000;
-  }
-
-  function batchSizeStep(): number {
-    return mode === 'roi_refinement' ? 100 : 20;
-  }
-
-  function defaultBatchSize(): number {
-    return mode === 'roi_refinement' ? 5000 : 250;
-  }
-
-  function legacyDefaultBatchSize(): number {
-    return mode === 'roi_refinement' ? 2500 : 100;
-  }
-
-  function restoredFrameBatchSize(value: unknown): number {
-    const parsed = numberPreference(value, defaultBatchSize());
-    return boundedBatchSize(parsed === legacyDefaultBatchSize() ? defaultBatchSize() : parsed);
-  }
-
-  function boundedBatchSize(batchSize: number): number {
-    const minimum = batchSizeMin();
-    const maximum = batchSizeMax();
-    return Math.min(maximum, Math.max(minimum, Math.round(Number(batchSize) || defaultBatchSize())));
-  }
-
   function toggleAsset(assetId: string) {
     selectedAssetIds = toggled(selectedAssetIds, assetId);
   }
@@ -1626,9 +1576,6 @@
   function roiRecordingOptions(): Record<string, unknown> {
     return {
       padding,
-      roi_encoding: roiEncoding,
-      zstd_min_bytes: zstdMinBytes,
-      always_store_mask: alwaysStoreMask,
       store_roi_payload_min_area: storeRoiPayloadMinArea,
       store_roi_payload_min_width: storeRoiPayloadMinWidth,
       store_roi_payload_min_height: storeRoiPayloadMinHeight,
@@ -1694,6 +1641,91 @@
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed !== defaultValue;
   }
+
+  function nullableNumberSettingEquals(value: unknown, defaultValue: number | null): boolean {
+    if (!hasSettingValue(value)) return defaultValue === null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed === defaultValue;
+  }
+
+  function thresholdAdvancedSettingsActive(): boolean {
+    if (fieldChanged('thresholdMethod', thresholdMethod)) return true;
+    if (thresholdMethod === 'manual') return fieldChanged('manualThreshold', manualThreshold);
+    if (usesBoundedOtsu(thresholdMethod)) {
+      return (
+        fieldChanged('thresholdingMaximumValue', thresholdingMaximumValue) ||
+        fieldChanged('boundedOtsuMinContrast', boundedOtsuMinContrast) ||
+        fieldChanged('boundedOtsuMaxForegroundFraction', boundedOtsuMaxForegroundFraction) ||
+        (thresholdMethod === 'bounded_otsu_canny' && fieldChanged('cannyEnabled', cannyEnabled)) ||
+        fieldChanged('cannyLowThreshold', cannyLowThreshold) ||
+        fieldChanged('cannyHighThreshold', cannyHighThreshold) ||
+        fieldChanged('cannyBlurKernel', cannyBlurKernel)
+      );
+    }
+    if (thresholdMethod === 'otsu') return fieldChanged('thresholdingMaximumValue', thresholdingMaximumValue);
+    if (thresholdMethod === 'canny') {
+      return (
+        fieldChanged('cannyLowThreshold', cannyLowThreshold) ||
+        fieldChanged('cannyHighThreshold', cannyHighThreshold) ||
+        fieldChanged('cannyBlurKernel', cannyBlurKernel)
+      );
+    }
+    if (thresholdMethod === 'adaptive_mean' || thresholdMethod === 'adaptive_gaussian') {
+      return fieldChanged('adaptiveBlockSize', adaptiveBlockSize) || fieldChanged('adaptiveC', adaptiveC);
+    }
+    if (thresholdMethod === 'percentile_background') {
+      return (
+        fieldChanged('percentileBackgroundPercentile', percentileBackgroundPercentile) ||
+        fieldChanged('percentileMinContrast', percentileMinContrast)
+      );
+    }
+    if (thresholdMethod === 'hysteresis') {
+      return (
+        fieldChanged('hysteresisLowThreshold', hysteresisLowThreshold) ||
+        fieldChanged('hysteresisHighThreshold', hysteresisHighThreshold) ||
+        fieldChanged('hysteresisConnectivity', hysteresisConnectivity)
+      );
+    }
+    if (thresholdMethod === 'sobel_edges') {
+      return (
+        fieldChanged('sobelThreshold', sobelThreshold) ||
+        fieldChanged('sobelPercentile', sobelPercentile) ||
+        fieldChanged('sobelKernelSize', sobelKernelSize)
+      );
+    }
+    return false;
+  }
+
+  function maskAugmentationSettingsActive(): boolean {
+    const steps = normalizedMaskSteps();
+    const hasStep = (step: string) => maskAugmentationEnabled && steps.includes(step);
+    return (
+      fieldChanged('maskAugmentationEnabled', maskAugmentationEnabled) ||
+      (maskAugmentationEnabled &&
+        (fieldChanged('maskAugmentationSteps', steps) ||
+          (hasStep('dilate') &&
+            (fieldChanged('dilateKernelW', dilateKernelW) ||
+              fieldChanged('dilateKernelH', dilateKernelH) ||
+              fieldChanged('dilateIterations', dilateIterations))) ||
+          (hasStep('erode') &&
+            (fieldChanged('erodeKernelW', erodeKernelW) ||
+              fieldChanged('erodeKernelH', erodeKernelH) ||
+              fieldChanged('erodeIterations', erodeIterations))) ||
+          (hasStep('open') &&
+            (fieldChanged('openKernelW', openKernelW) ||
+              fieldChanged('openKernelH', openKernelH) ||
+              fieldChanged('openIterations', openIterations))) ||
+          (hasStep('close') &&
+            (fieldChanged('closeKernelW', closeKernelW) ||
+              fieldChanged('closeKernelH', closeKernelH) ||
+              fieldChanged('closeIterations', closeIterations))) ||
+          fieldChanged('fillHoles', fillHoles) ||
+          fieldChanged('removeSmallComponents', removeSmallComponents) ||
+          ((removeSmallComponents || hasStep('remove_small_components')) &&
+            fieldChanged('minComponentArea', minComponentArea)) ||
+          fieldChanged('clearBorder', clearBorder)))
+    );
+  }
 </script>
 
 <div class="queue-layout">
@@ -1731,10 +1763,6 @@
           <strong>{formatCount(prospectiveUnrefinedDetectionCount)}</strong>
         </div>
       {/if}
-      <div class="metric">
-        <span>Queued batches</span>
-        <strong>{formatCount(prospectiveBatchCount)}</strong>
-      </div>
     </div>
 
     <div class="queue-filter-grid">
@@ -1879,7 +1907,7 @@
             <strong>Preprocessing</strong>
           </span>
         </div>
-        <label class="check-row">
+        <label class="check-row" class:has-field-override={fieldChanged('backgroundCorrection', backgroundCorrection)}>
           <input
             type="checkbox"
             checked={backgroundCorrection}
@@ -1887,7 +1915,7 @@
           />
           Background correction
         </label>
-        <label class="check-row">
+        <label class="check-row" class:has-field-override={fieldChanged('flatfieldCorrection', flatfieldCorrection)}>
           <input
             type="checkbox"
             checked={flatfieldCorrection}
@@ -1896,56 +1924,40 @@
           Flatfield correction
         </label>
         {#if flatfieldCorrection}
-          <label>
+          <label class:has-field-override={fieldChanged('flatfieldQ', flatfieldQ)}>
             Flatfield q
             <input type="range" min="0" max="1" step="0.01" bind:value={flatfieldQ} />
             <span class="range-value">{flatfieldQ.toFixed(2)}</span>
           </label>
         {/if}
 
-        <label class="check-row">
+        <label class="check-row" class:has-field-override={fieldChanged('invertIntensity', invertIntensity)}>
           <input type="checkbox" bind:checked={invertIntensity} />
           Invert intensity
         </label>
       </div>
 
       <details class="form-section collapsible-section">
-        <summary class="section-heading" class:has-active-settings={candidateDetectionAdvancedActive}>
+        <summary class="section-heading" class:has-active-settings={preprocessingAdvancedActive}>
           <span>
             <p class="eyebrow">Advanced options</p>
             <strong>Preprocessing details</strong>
           </span>
         </summary>
 
-        <label class="span-2">
-          Batch size
-          <input
-            type="range"
-            min={batchSizeMinimum}
-            max={batchSizeMaximum}
-            step={batchSizeInterval}
-            bind:value={frameBatchSize}
-          />
-          <span class="range-value">{boundedFrameBatchSizeValue} frames per job</span>
-        </label>
-        <label>
-          Priority
-          <input type="number" bind:value={priority} placeholder="default" />
-        </label>
-
         {#if flatfieldCorrection}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('flatfieldMinFieldValue', flatfieldMinFieldValue)}>
               Min field value
               <input type="range" min="0" max="255" step="1" bind:value={flatfieldMinFieldValue} />
               <span class="range-value">{flatfieldMinFieldValue}</span>
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('flatfieldMaxFieldValue', flatfieldMaxFieldValue)}>
               Max field value
               <input type="range" min="1" max="4096" step="1" bind:value={flatfieldMaxFieldValue} />
               <span class="range-value">{flatfieldMaxFieldValue ?? 'none'}</span>
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('flatfieldAxis', flatfieldAxis)}>
               Flatfield axis
               <select bind:value={flatfieldAxis}>
                 <option value={0}>0</option>
@@ -1955,12 +1967,12 @@
           </div>
         {:else if backgroundCorrection}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('backgroundMinFieldValue', backgroundMinFieldValue)}>
               Min background field value
               <input type="range" min="0" max="255" step="1" bind:value={backgroundMinFieldValue} />
               <span class="range-value">{backgroundMinFieldValue}</span>
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('backgroundMaxFieldValue', backgroundMaxFieldValue)}>
               Max background field value
               <input type="range" min="1" max="4096" step="1" bind:value={backgroundMaxFieldValue} />
               <span class="range-value">{backgroundMaxFieldValue ?? 'none'}</span>
@@ -1968,46 +1980,34 @@
           </div>
         {/if}
 
-        <label class="check-row">
+        <label class="check-row" class:has-field-override={fieldChanged('applyMask', applyMask)}>
           <input type="checkbox" bind:checked={applyMask} />
           Apply frame mask
         </label>
-        <label class="check-row">
+        <label class="check-row" class:has-field-override={fieldChanged('cropEnabled', cropEnabled)}>
           <input type="checkbox" bind:checked={cropEnabled} />
           Crop image
         </label>
         {#if cropEnabled}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('cropX', cropX)}>
               Crop x
               <input type="number" min="0" bind:value={cropX} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('cropY', cropY)}>
               Crop y
               <input type="number" min="0" bind:value={cropY} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('cropW', cropW)}>
               Crop width
               <input type="number" min="1" bind:value={cropW} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('cropH', cropH)}>
               Crop height
               <input type="number" min="1" bind:value={cropH} />
             </label>
           </div>
         {/if}
-        <label>
-          Stored encoding
-          <select bind:value={preprocessingEncoding}>
-            {#each preprocessingEncodingOptions as encoding}
-              <option
-                value={encoding}
-                disabled={!codecAvailable(imageCodecAvailability, encoding)}
-                title={codecUnavailableTitle(imageCodecAvailability, encoding)}
-              >{encoding}</option>
-            {/each}
-          </select>
-        </label>
       </details>
     {:else if mode === 'segmentation'}
       <div class="form-section">
@@ -2018,7 +2018,7 @@
           </span>
         </div>
         <div class="form-grid compact-grid">
-          <label>
+          <label class:has-field-override={fieldChanged('thresholdMethod', thresholdMethod)}>
             Threshold method
             <select bind:value={thresholdMethod}>
               {#each thresholdMethods as method}
@@ -2026,7 +2026,7 @@
               {/each}
             </select>
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('roiAssemblyMethod', roiAssemblyMethod)}>
             Method
             <select bind:value={roiAssemblyMethod}>
               {#each roiAssemblyMethods as method}
@@ -2034,94 +2034,68 @@
               {/each}
             </select>
           </label>
-          <label>
-            Min area
-            <input type="number" min="0" bind:value={minArea} placeholder="none" />
+          <label class:has-field-override={fieldChanged('minWidth', minWidth)}>
+            Min width
+            <input type="number" min="0" bind:value={minWidth} placeholder="none" />
           </label>
-          <label>
-            Max area
-            <input type="number" min="0" bind:value={maxArea} placeholder="none" />
-          </label>
-          <label>
-            Min width + height
-            <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
-          </label>
-          <label>
-            Max width + height
-            <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
+          <label class:has-field-override={fieldChanged('minHeight', minHeight)}>
+            Min height
+            <input type="number" min="0" bind:value={minHeight} placeholder="none" />
           </label>
         </div>
       </div>
 
       <details class="form-section collapsible-section">
-        <summary class="section-heading">
+        <summary class="section-heading" class:has-active-settings={candidateDetectionAdvancedActive}>
           <span>
             <p class="eyebrow">Advanced options</p>
             <strong>Candidate detection details</strong>
           </span>
         </summary>
 
-        <div class="form-grid compact-grid">
-          <label class="span-2">
-            Batch size
-            <input
-              type="range"
-              min={batchSizeMinimum}
-              max={batchSizeMaximum}
-              step={batchSizeInterval}
-              bind:value={frameBatchSize}
-            />
-            <span class="range-value">{boundedFrameBatchSizeValue} frames per job</span>
-          </label>
-          <label>
-            Priority
-            <input type="number" bind:value={priority} placeholder="default" />
-          </label>
-        </div>
-
         <details class="control-details" open>
-          <summary>Threshold</summary>
+          <summary class:has-active-settings={thresholdAdvancedActive}>Threshold</summary>
         {#if thresholdMethod === 'manual'}
-          <label>
+          <label class:has-field-override={fieldChanged('manualThreshold', manualThreshold)}>
             Manual threshold
             <input type="number" min="0" max="255" bind:value={manualThreshold} />
           </label>
         {/if}
         {#if usesThresholdMaximum(thresholdMethod)}
-          <label>
+          <label class:has-field-override={fieldChanged('thresholdingMaximumValue', thresholdingMaximumValue)}>
             Maximum threshold
             <input type="number" min="0" max="255" bind:value={thresholdingMaximumValue} placeholder="none" />
           </label>
         {/if}
         {#if usesBoundedOtsu(thresholdMethod)}
-          <label>
+          <label class:has-field-override={fieldChanged('boundedOtsuMinContrast', boundedOtsuMinContrast)}>
             Minimum contrast
             <input type="range" min="0" max="255" step="1" bind:value={boundedOtsuMinContrast} />
             <span class="range-value">{boundedOtsuMinContrast}</span>
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('boundedOtsuMaxForegroundFraction', boundedOtsuMaxForegroundFraction)}>
             Max foreground fraction
             <input type="range" min="0" max="1" step="0.01" bind:value={boundedOtsuMaxForegroundFraction} />
             <span class="range-value">{boundedOtsuMaxForegroundFraction.toFixed(2)}</span>
           </label>
         {/if}
         {#if thresholdMethod === 'bounded_otsu_canny'}
-          <label class="check-row">
+          <label class="check-row" class:has-field-override={fieldChanged('cannyEnabled', cannyEnabled)}>
             <input type="checkbox" bind:checked={cannyEnabled} />
             Add Canny edges
           </label>
         {/if}
         {#if usesCanny(thresholdMethod)}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('cannyLowThreshold', cannyLowThreshold)}>
               Canny low
               <input type="number" min="0" max="255" bind:value={cannyLowThreshold} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('cannyHighThreshold', cannyHighThreshold)}>
               Canny high
               <input type="number" min="0" max="255" bind:value={cannyHighThreshold} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('cannyBlurKernel', cannyBlurKernel)}>
               Blur kernel
               <input type="number" min="1" step="2" bind:value={cannyBlurKernel} />
             </label>
@@ -2129,23 +2103,23 @@
         {/if}
         {#if thresholdMethod === 'adaptive_mean' || thresholdMethod === 'adaptive_gaussian'}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('adaptiveBlockSize', adaptiveBlockSize)}>
               Block size
               <input type="number" min="3" step="2" bind:value={adaptiveBlockSize} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('adaptiveC', adaptiveC)}>
               C offset
               <input type="number" bind:value={adaptiveC} />
             </label>
           </div>
         {/if}
         {#if thresholdMethod === 'percentile_background'}
-          <label>
+          <label class:has-field-override={fieldChanged('percentileBackgroundPercentile', percentileBackgroundPercentile)}>
             Background percentile
             <input type="range" min="0" max="100" step="1" bind:value={percentileBackgroundPercentile} />
             <span class="range-value">{percentileBackgroundPercentile}</span>
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('percentileMinContrast', percentileMinContrast)}>
             Minimum contrast
             <input type="range" min="0" max="255" step="1" bind:value={percentileMinContrast} />
             <span class="range-value">{percentileMinContrast}</span>
@@ -2153,15 +2127,15 @@
         {/if}
         {#if thresholdMethod === 'hysteresis'}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('hysteresisLowThreshold', hysteresisLowThreshold)}>
               Low threshold
               <input type="number" min="0" max="255" bind:value={hysteresisLowThreshold} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('hysteresisHighThreshold', hysteresisHighThreshold)}>
               High threshold
               <input type="number" min="0" max="255" bind:value={hysteresisHighThreshold} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('hysteresisConnectivity', hysteresisConnectivity)}>
               Connectivity
               <select bind:value={hysteresisConnectivity}>
                 <option value={4}>4</option>
@@ -2172,16 +2146,16 @@
         {/if}
         {#if thresholdMethod === 'sobel_edges'}
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('sobelThreshold', sobelThreshold)}>
               Sobel threshold
               <input type="number" bind:value={sobelThreshold} placeholder="percentile" />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('sobelPercentile', sobelPercentile)}>
               Percentile
               <input type="range" min="0" max="100" step="1" bind:value={sobelPercentile} />
               <span class="range-value">{sobelPercentile}</span>
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('sobelKernelSize', sobelKernelSize)}>
               Kernel size
               <input type="number" min="1" step="2" bind:value={sobelKernelSize} />
             </label>
@@ -2190,13 +2164,13 @@
         </details>
 
         <details class="control-details" open>
-          <summary>Mask augmentation</summary>
-        <label class="check-row">
+          <summary class:has-active-settings={maskAugmentationAdvancedActive}>Mask augmentation</summary>
+        <label class="check-row" class:has-field-override={fieldChanged('maskAugmentationEnabled', maskAugmentationEnabled)}>
           <input type="checkbox" bind:checked={maskAugmentationEnabled} />
           Enable mask augmentation
         </label>
         {#if maskAugmentationEnabled}
-          <div class="toggle-list">
+          <div class="toggle-list field-control" class:has-field-override={fieldChanged('maskAugmentationSteps', [...maskAugmentationSteps])}>
             {#each maskAugmentationStepOptions as step}
               <button
                 class:active={maskAugmentationSteps.has(step)}
@@ -2208,27 +2182,27 @@
             {/each}
           </div>
           <div class="form-grid compact-grid">
-            <label>
+            <label class:has-field-override={fieldChanged('dilateKernelW', dilateKernelW)}>
               Dilate width
               <input type="number" min="1" bind:value={dilateKernelW} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('dilateKernelH', dilateKernelH)}>
               Dilate height
               <input type="number" min="1" bind:value={dilateKernelH} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('dilateIterations', dilateIterations)}>
               Dilate iterations
               <input type="number" min="1" bind:value={dilateIterations} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('erodeKernelW', erodeKernelW)}>
               Erode width
               <input type="number" min="1" bind:value={erodeKernelW} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('erodeKernelH', erodeKernelH)}>
               Erode height
               <input type="number" min="1" bind:value={erodeKernelH} />
             </label>
-            <label>
+            <label class:has-field-override={fieldChanged('erodeIterations', erodeIterations)}>
               Erode iterations
               <input type="number" min="1" bind:value={erodeIterations} />
             </label>
@@ -2236,44 +2210,44 @@
           <details class="control-details">
             <summary>Additional mask controls</summary>
             <div class="form-grid compact-grid">
-              <label>
+              <label class:has-field-override={fieldChanged('openKernelW', openKernelW)}>
                 Open width
                 <input type="number" min="1" bind:value={openKernelW} />
               </label>
-              <label>
+              <label class:has-field-override={fieldChanged('openKernelH', openKernelH)}>
                 Open height
                 <input type="number" min="1" bind:value={openKernelH} />
               </label>
-              <label>
+              <label class:has-field-override={fieldChanged('openIterations', openIterations)}>
                 Open iterations
                 <input type="number" min="1" bind:value={openIterations} />
               </label>
-              <label>
+              <label class:has-field-override={fieldChanged('closeKernelW', closeKernelW)}>
                 Close width
                 <input type="number" min="1" bind:value={closeKernelW} />
               </label>
-              <label>
+              <label class:has-field-override={fieldChanged('closeKernelH', closeKernelH)}>
                 Close height
                 <input type="number" min="1" bind:value={closeKernelH} />
               </label>
-              <label>
+              <label class:has-field-override={fieldChanged('closeIterations', closeIterations)}>
                 Close iterations
                 <input type="number" min="1" bind:value={closeIterations} />
               </label>
-              <label>
+              <label class:has-field-override={fieldChanged('minComponentArea', minComponentArea)}>
                 Min component area
                 <input type="number" min="0" bind:value={minComponentArea} />
               </label>
             </div>
-            <label class="check-row">
+            <label class="check-row" class:has-field-override={fieldChanged('fillHoles', fillHoles)}>
               <input type="checkbox" bind:checked={fillHoles} />
               Fill holes
             </label>
-            <label class="check-row">
+            <label class="check-row" class:has-field-override={fieldChanged('removeSmallComponents', removeSmallComponents)}>
               <input type="checkbox" bind:checked={removeSmallComponents} />
               Remove small components
             </label>
-            <label class="check-row">
+            <label class="check-row" class:has-field-override={fieldChanged('clearBorder', clearBorder)}>
               <input type="checkbox" bind:checked={clearBorder} />
               Clear border components
             </label>
@@ -2282,90 +2256,75 @@
         </details>
 
         <details class="control-details" open>
-          <summary>Assembly and secondary geometry</summary>
+          <summary>Geometry and assembly</summary>
         <div class="form-grid compact-grid">
-          <label>
+          <label class:has-field-override={fieldChanged('roiAssemblyConnectivity', roiAssemblyConnectivity)}>
             Connectivity
             <select bind:value={roiAssemblyConnectivity}>
               <option value={4}>4</option>
               <option value={8}>8</option>
             </select>
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('minArea', minArea)}>
+            Min area
+            <input type="number" min="0" bind:value={minArea} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('maxArea', maxArea)}>
+            Max area
+            <input type="number" min="0" bind:value={maxArea} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('minPerimeter', minPerimeter)}>
             Min perimeter
             <input type="number" min="0" bind:value={minPerimeter} />
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('maxPerimeter', maxPerimeter)}>
             Max perimeter
             <input type="number" min="0" bind:value={maxPerimeter} placeholder="none" />
           </label>
-          <label>
-            Min width
-            <input type="number" min="0" bind:value={minWidth} placeholder="none" />
-          </label>
-          <label>
+          <label class:has-field-override={fieldChanged('maxWidth', maxWidth)}>
             Max width
             <input type="number" min="0" bind:value={maxWidth} placeholder="none" />
           </label>
-          <label>
-            Min height
-            <input type="number" min="0" bind:value={minHeight} placeholder="none" />
-          </label>
-          <label>
+          <label class:has-field-override={fieldChanged('maxHeight', maxHeight)}>
             Max height
             <input type="number" min="0" bind:value={maxHeight} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('minWidthPlusHeight', minWidthPlusHeight)}>
+            Min width + height
+            <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('maxWidthPlusHeight', maxWidthPlusHeight)}>
+            Max width + height
+            <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
           </label>
         </div>
         </details>
 
         <details class="control-details" open>
-          <summary>ROI payloads</summary>
-        <label>
+          <summary class:has-active-settings={fieldChanged('padding', padding) || payloadStorageThresholdsActive}>ROI payloads</summary>
+        <label class:has-field-override={fieldChanged('padding', padding)}>
           Padding
           <input type="range" min="0" max="500" step="1" bind:value={padding} />
           <span class="range-value">{padding}</span>
         </label>
-        <label>
-          ROI encoding
-          <select bind:value={roiEncoding}>
-            {#each roiEncodingOptions as encoding}
-              <option
-                value={encoding}
-                disabled={!codecAvailable(imageCodecAvailability, encoding)}
-                title={codecUnavailableTitle(imageCodecAvailability, encoding)}
-              >{encoding}</option>
-            {/each}
-          </select>
-        </label>
-        <label>
-          zstd min bytes
-          <input type="number" min="0" bind:value={zstdMinBytes} placeholder="default" />
-        </label>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={alwaysStoreMask} />
-          Always store mask
-        </label>
-        <details class="control-details">
-          <summary class:has-active-settings={payloadStorageThresholdsActive}>Payload storage thresholds</summary>
-          <div class="form-grid compact-grid">
-            <label>
-              Min area
-              <input type="number" min="0" bind:value={storeRoiPayloadMinArea} placeholder="none" />
-            </label>
-            <label>
-              Min width
-              <input type="number" min="0" bind:value={storeRoiPayloadMinWidth} placeholder="none" />
-            </label>
-            <label>
-              Min height
-              <input type="number" min="0" bind:value={storeRoiPayloadMinHeight} placeholder="none" />
-            </label>
-            <label>
-              Min width + height
-              <input type="number" min="0" bind:value={storeRoiPayloadMinWidthPlusHeight} placeholder="none" />
-            </label>
-          </div>
-        </details>
+        <div class="form-grid compact-grid">
+          <label class:has-field-override={fieldChanged('storeRoiPayloadMinArea', storeRoiPayloadMinArea)}>
+            Store payload min area
+            <input type="number" min="0" bind:value={storeRoiPayloadMinArea} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('storeRoiPayloadMinWidth', storeRoiPayloadMinWidth)}>
+            Store payload min width
+            <input type="number" min="0" bind:value={storeRoiPayloadMinWidth} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('storeRoiPayloadMinHeight', storeRoiPayloadMinHeight)}>
+            Store payload min height
+            <input type="number" min="0" bind:value={storeRoiPayloadMinHeight} placeholder="none" />
+          </label>
+          <label class:has-field-override={fieldChanged('storeRoiPayloadMinWidthPlusHeight', storeRoiPayloadMinWidthPlusHeight)}>
+            Store payload min width + height
+            <input type="number" min="0" bind:value={storeRoiPayloadMinWidthPlusHeight} placeholder="none" />
+          </label>
+        </div>
         </details>
       </details>
     {:else}
@@ -2376,7 +2335,7 @@
             <strong>Refinement model</strong>
           </span>
         </div>
-        <label>
+        <label class:has-field-override={fieldChanged('refinementModelKind', refinementModelKind)}>
           Model kind
           <select bind:value={refinementModelKind}>
             {#each refinementModelKinds as kind}
@@ -2385,7 +2344,7 @@
           </select>
         </label>
         {#if refinementModelRefs.length}
-          <label>
+          <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
             Model reference
             <select bind:value={refinementModelRef}>
               <option value="">Default</option>
@@ -2395,19 +2354,19 @@
             </select>
           </label>
         {:else}
-          <label>
+          <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
             Model reference
             <input bind:value={refinementModelRef} placeholder="default" />
           </label>
         {/if}
         {#if refinementModelKind === 'oracle_builder_unet'}
-          <label>
+          <label class:has-field-override={fieldChanged('refinementModelRunDir', refinementModelRunDir)}>
             Model run directory
             <input bind:value={refinementModelRunDir} placeholder="oracle-builder run path" />
           </label>
         {/if}
         {#if refinementModelKind === 'keras_artifact'}
-          <label>
+          <label class:has-field-override={fieldChanged('refinementModelArtifact', refinementModelArtifact)}>
             Model artifact
             <select bind:value={refinementModelArtifact}>
               {#each refinementModelArtifacts as artifact}
@@ -2419,7 +2378,7 @@
       </div>
 
       <details class="form-section collapsible-section">
-        <summary class="section-heading">
+        <summary class="section-heading" class:has-active-settings={refinementAdvancedActive}>
           <span>
             <p class="eyebrow">Advanced options</p>
             <strong>ROI refinement details</strong>
@@ -2427,38 +2386,17 @@
         </summary>
 
         <details class="control-details" open>
-          <summary>Scope</summary>
-          <div class="form-grid compact-grid">
-            <label class="span-2">
-              Batch size
-              <input
-                type="range"
-                min={batchSizeMinimum}
-                max={batchSizeMaximum}
-                step={batchSizeInterval}
-                bind:value={frameBatchSize}
-              />
-              <span class="range-value">{boundedFrameBatchSizeValue} ROIs per job</span>
-            </label>
-            <label>
-              Priority
-              <input type="number" bind:value={priority} placeholder="default" />
-            </label>
-          </div>
-        </details>
-
-        <details class="control-details" open>
           <summary>Model input geometry</summary>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementTileSize', refinementTileSize)}>
             Tile size
             <input type="number" min="1" step="1" bind:value={refinementTileSize} />
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementOverlapFraction', refinementOverlapFraction)}>
             Overlap fraction
             <input type="range" min="0" max="0.99" step="0.01" bind:value={refinementOverlapFraction} />
             <span class="range-value">{Number(refinementOverlapFraction).toFixed(2)}</span>
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementModelBatchSize', refinementModelBatchSize)}>
             Model batch size
             <input type="number" min="1" bind:value={refinementModelBatchSize} placeholder="default" />
           </label>
@@ -2466,7 +2404,7 @@
 
         <details class="control-details" open>
           <summary>Prediction</summary>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementOutputThreshold', refinementOutputThreshold)}>
             Output threshold
             <input type="range" min="0" max="1" step="0.01" bind:value={refinementOutputThreshold} />
             <span class="range-value">{Number(refinementOutputThreshold).toFixed(2)}</span>
@@ -2475,19 +2413,19 @@
 
         <details class="control-details" open>
           <summary>Frame-aware ROI growth</summary>
-          <label class="check-row">
+          <label class="check-row" class:has-field-override={fieldChanged('refinementAllowFrameExpansion', refinementAllowFrameExpansion)}>
             <input type="checkbox" bind:checked={refinementAllowFrameExpansion} />
             Allow frame expansion
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementMaxIterations', refinementMaxIterations)}>
             Max iterations
             <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementExpansionPixels', refinementExpansionPixels)}>
             Expansion pixels
             <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementEdgeTouchMargin', refinementEdgeTouchMargin)}>
             Edge touch margin
             <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
           </label>
@@ -2495,11 +2433,11 @@
 
         <details class="control-details" open>
           <summary>Refined detections</summary>
-          <label class="check-row">
+          <label class="check-row" class:has-field-override={fieldChanged('refinementStore', refinementStore)}>
             <input type="checkbox" bind:checked={refinementStore} />
             Store refined detections
           </label>
-          <label>
+          <label class:has-field-override={fieldChanged('refinementEncoding', refinementEncoding)}>
             Encoding
             <select bind:value={refinementEncoding}>
               <option value="auto">default</option>
@@ -2514,7 +2452,7 @@
               {/each}
             </select>
           </label>
-          <label class="check-row">
+          <label class="check-row" class:has-field-override={fieldChanged('refinementDryRun', refinementDryRun)}>
             <input type="checkbox" bind:checked={refinementDryRun} />
             Dry run
           </label>
@@ -2528,14 +2466,13 @@
       {#if mode === 'roi_refinement'}
         <small>from {formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}</small>
       {/if}
-      <small>{formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'}</small>
     </div>
 
-    <button type="button" on:click={queueJobs} disabled={queueing || prospectiveBatchCount === 0 || queueBlocked}>
+    <button type="button" on:click={queueJobs} disabled={queueing || prospectiveQueueItemCount === 0 || queueBlocked}>
       {queueing ? 'Queueing' : actionLabel}
     </button>
     <p class="soft">
-      {formatCount(prospectiveBatchCount)} batch job{prospectiveBatchCount === 1 ? '' : 's'} covering {formatCount(prospectiveQueueItemCount)} {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}.
+      The backend will plan optimized jobs for {formatCount(prospectiveQueueItemCount)} selected {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}.
     </p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}

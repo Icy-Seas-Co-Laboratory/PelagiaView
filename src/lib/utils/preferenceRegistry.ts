@@ -57,21 +57,21 @@ export const preferenceDefinitions: PreferenceDefinition[] = [
   {
     key: preferenceKey('dataset-queue:preprocessing'),
     label: 'Preprocessing queue',
-    description: 'Frame filters, batch size, priority, and preprocessing parameters.',
+    description: 'Frame filters and preprocessing parameters.',
     category: 'workflow',
     resetWithUiState: true
   },
   {
     key: preferenceKey('dataset-queue:segmentation'),
     label: 'Candidate queue',
-    description: 'Frame filters, batch size, priority, and candidate generation parameters.',
+    description: 'Frame filters and candidate generation parameters.',
     category: 'workflow',
     resetWithUiState: true
   },
   {
     key: preferenceKey('dataset-queue:roi_refinement'),
     label: 'Refinement queue',
-    description: 'Frame and ROI filters, batch size, priority, and refinement parameters.',
+    description: 'Frame and ROI filters plus refinement parameters.',
     category: 'workflow',
     resetWithUiState: true
   },

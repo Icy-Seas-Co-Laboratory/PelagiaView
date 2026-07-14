@@ -10,7 +10,6 @@
 # ingestionTileCount = 2
 
 [settings.preprocessing]
-# preprocessingEncoding = "png"
 # backgroundCorrection = true
 # backgroundPercentile = 50
 # flatfieldCorrection = true
@@ -83,9 +82,6 @@
 # padding = 100
 
 [settings.roi_storage]
-# roiEncoding = "zstd"
-# zstdMinBytes = 1024
-# alwaysStoreMask = true
 # storeRoiPayloadMinArea = 1
 # storeRoiPayloadMinWidth = 1
 # storeRoiPayloadMinHeight = 1

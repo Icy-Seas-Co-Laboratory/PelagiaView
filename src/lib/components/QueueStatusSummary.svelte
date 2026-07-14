@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import JobStatusTable from '$lib/components/JobStatusTable.svelte';
   import { getClient } from '$lib/stores/session';
   import type { Job, JobAggregateSummary, JobsSummaryResponse } from '$lib/api/types';
   import { formatCount, formatPercent, numericValue } from '$lib/utils/format';
@@ -23,13 +22,18 @@
   let loadSequence = 0;
   let lastFilterKey = '';
   let mounted = false;
+  let nowMs = Date.now();
 
   type QueueProgressSummary = {
     percent: number;
     completed: number;
     total: number;
+    remaining: number;
     failed: number;
     skipped: number;
+    rate: number | null;
+    elapsedSeconds: number | null;
+    etaSeconds: number | null;
     unitLabel: string;
     detail: string;
   };
@@ -46,8 +50,8 @@
   $: sourceJobs = jobs ?? summary?.recent_jobs ?? polledJobs;
   $: visibleJobs = filterJobs(sourceJobs, { stages: stageAliases, jobIds });
   $: counts = summary ? aggregateCounts(summary.total) : countJobs(visibleJobs);
-  $: progressSummary = summary ? aggregateProgress(summary.total) : jobsProgressSummary(visibleJobs);
-  $: recentJobs = [...visibleJobs].sort(compareJobUpdated).slice(0, mode === 'compact' ? 5 : visibleJobs.length);
+  $: progressSummary = summary ? aggregateProgress(summary.total, visibleJobs) : jobsProgressSummary(visibleJobs);
+  $: jobStateSummary = buildJobStateSummary(counts);
   $: filterKey = JSON.stringify({ stage, stages, jobIds });
   $: if (filterKey !== lastFilterKey) {
     lastFilterKey = filterKey;
@@ -89,32 +93,26 @@
 
   onMount(() => {
     mounted = true;
-    if (jobs || !poll) return;
-    void loadStatus();
-    const timer = window.setInterval(loadStatus, 5000);
+    const clockTimer = window.setInterval(() => {
+      nowMs = Date.now();
+    }, 1000);
+    let statusTimer: number | null = null;
+    if (!jobs && poll) {
+      void loadStatus();
+      statusTimer = window.setInterval(loadStatus, 5000);
+    }
     return () => {
       mounted = false;
       loadSequence += 1;
-      window.clearInterval(timer);
+      window.clearInterval(clockTimer);
+      if (statusTimer !== null) window.clearInterval(statusTimer);
     };
   });
-
-  function compareJobUpdated(a: Job, b: Job): number {
-    return dateValue(b.updated_at ?? b.created_at) - dateValue(a.updated_at ?? a.created_at);
-  }
 
   function dateValue(value: string | undefined): number {
     if (!value) return 0;
     const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : 0;
-  }
-
-  function replaceJobs(nextJobs: Job[]) {
-    if (jobs) jobs = nextJobs;
-    else {
-      summary = null;
-      polledJobs = nextJobs;
-    }
   }
 
   function aggregateCounts(row: JobAggregateSummary | null | undefined): JobStatusCounts {
@@ -137,7 +135,10 @@
     };
   }
 
-  function aggregateProgress(row: JobAggregateSummary | null | undefined): QueueProgressSummary | null {
+  function aggregateProgress(
+    row: JobAggregateSummary | null | undefined,
+    jobs: Job[] = []
+  ): QueueProgressSummary | null {
     const progress = row?.progress;
     const completed = numericValue(progress?.completed_units);
     const total = numericValue(progress?.known_total_units);
@@ -151,7 +152,8 @@
         failed,
         skipped,
         percent ?? (completed / total) * 100,
-        'work units'
+        'work units',
+        jobs
       );
     }
 
@@ -164,7 +166,8 @@
       counts.failed,
       0,
       (finished / counts.total) * 100,
-      'jobs'
+      'jobs',
+      jobs
     );
   }
 
@@ -195,7 +198,8 @@
         failedUnits,
         skippedUnits,
         (completedUnits / totalUnits) * 100,
-        unit || 'work units'
+        unit || 'work units',
+        jobs
       );
     }
 
@@ -207,7 +211,8 @@
       counts.failed,
       0,
       counts.total > 0 ? (finished / counts.total) * 100 : 0,
-      'jobs'
+      'jobs',
+      jobs
     );
   }
 
@@ -217,8 +222,13 @@
     failed: number,
     skipped: number,
     percent: number,
-    unitLabel: string
+    unitLabel: string,
+    jobs: Job[] = []
   ): QueueProgressSummary {
+    const remaining = Math.max(0, total - completed);
+    const rate = estimateUnitRate(jobs);
+    const elapsedSeconds = estimateElapsedSeconds(jobs);
+    const etaSeconds = rate !== null && remaining > 0 ? remaining / rate : null;
     const details = [
       `${formatCount(completed)} / ${formatCount(total)} ${unitLabel}`,
       failed > 0 ? `${formatCount(failed)} failed` : null,
@@ -228,11 +238,71 @@
       percent: Math.max(0, Math.min(100, percent)),
       completed,
       total,
+      remaining,
       failed,
       skipped,
+      rate,
+      elapsedSeconds,
+      etaSeconds,
       unitLabel,
       detail: details
     };
+  }
+
+  function estimateUnitRate(jobs: Job[]): number | null {
+    let rate = 0;
+    for (const job of jobs) {
+      if (!isActiveJob(job)) continue;
+      rate += numericValue(job.progress?.rates?.units_per_second) ?? 0;
+    }
+    return rate > 0 ? rate : null;
+  }
+
+  function estimateElapsedSeconds(jobs: Job[]): number | null {
+    if (!jobs.length) return null;
+    const starts = jobs
+      .map((job) => dateValue(job.started_at ?? job.created_at ?? job.updated_at))
+      .filter((value) => value > 0);
+    if (!starts.length) return null;
+    const start = Math.min(...starts);
+    const active = jobs.some(isActiveJob);
+    const ends = jobs
+      .map((job) => dateValue(job.finished_at ?? job.updated_at ?? job.created_at))
+      .filter((value) => value > 0);
+    const end = active ? nowMs : ends.length ? Math.max(...ends) : nowMs;
+    return Math.max(0, (end - start) / 1000);
+  }
+
+  function isActiveJob(job: Job): boolean {
+    const status = (job.status ?? '').toLowerCase();
+    return status === 'leased' || status === 'working' || status === 'running';
+  }
+
+  function formatDuration(seconds: number | null): string {
+    if (seconds === null || !Number.isFinite(seconds)) return 'Unknown';
+    const rounded = Math.max(0, Math.round(seconds));
+    const hours = Math.floor(rounded / 3600);
+    const minutes = Math.floor((rounded % 3600) / 60);
+    const secs = rounded % 60;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+  }
+
+  function formatRate(rate: number | null, unitLabel: string): string {
+    if (rate === null || !Number.isFinite(rate) || rate <= 0) return 'Unknown';
+    const formatted = rate >= 10 ? rate.toFixed(0) : rate >= 1 ? rate.toFixed(1) : rate.toFixed(2);
+    return `${formatted} ${unitLabel}/s`;
+  }
+
+  function buildJobStateSummary(nextCounts: JobStatusCounts): string {
+    return [
+      `${formatCount(nextCounts.queued)} queued`,
+      `${formatCount(nextCounts.running)} running`,
+      `${formatCount(nextCounts.succeeded)} done`,
+      nextCounts.failed > 0 ? `${formatCount(nextCounts.failed)} failed` : null,
+      nextCounts.paused > 0 ? `${formatCount(nextCounts.paused)} paused` : null
+    ].filter(Boolean).join(' · ');
   }
 </script>
 
@@ -245,34 +315,45 @@
     {#if loading}<span class="soft">Refreshing</span>{/if}
   </div>
 
-  <div class="metric-grid metric-grid-dense queue-status-metrics">
-    <div class="metric metric-compact">
-      <span>Queued</span>
-      <strong>{formatCount(counts.queued)}</strong>
-    </div>
-    <div class="metric metric-compact">
-      <span>Running</span>
-      <strong>{formatCount(counts.running)}</strong>
-    </div>
-    <div class="metric metric-compact">
-      <span>Done (Failed)</span>
-      <span>
-        <strong class:tone-good={counts.succeeded > 0}>{formatCount(counts.succeeded)}</strong>  
-        <strong class:tone-bad={counts.failed > 0}>({formatCount(counts.failed)})</strong>
-      </span>
-    </div>
-  </div>
-
   {#if progressSummary}
     <div class="queue-progress-summary" class:warn={progressSummary.failed > 0}>
       <div class="queue-progress-heading">
-        <span>Overall progress</span>
+        <span>{progressSummary.detail}</span>
         <strong>{formatPercent(progressSummary.percent)}</strong>
       </div>
       <div class="stage-progress-track" aria-label={`Overall progress ${formatPercent(progressSummary.percent)}`}>
         <span style={`width: ${progressSummary.percent}%`}></span>
       </div>
-      <p>{progressSummary.detail}</p>
+      <div class="queue-progress-metrics">
+        <div>
+          <span>Remaining</span>
+          <strong>{formatCount(progressSummary.remaining)}</strong>
+        </div>
+        <div>
+          <span>Rate</span>
+          <strong>{formatRate(progressSummary.rate, progressSummary.unitLabel)}</strong>
+        </div>
+        <div>
+          <span>Elapsed</span>
+          <strong>{formatDuration(progressSummary.elapsedSeconds)}</strong>
+        </div>
+        <div>
+          <span>ETA</span>
+          <strong>{formatDuration(progressSummary.etaSeconds)}</strong>
+        </div>
+      </div>
+      <p class="queue-job-state">{jobStateSummary}</p>
+    </div>
+  {:else}
+    <div class="queue-progress-summary">
+      <div class="queue-progress-heading">
+        <span>No countable work reported</span>
+        <strong>0%</strong>
+      </div>
+      <div class="stage-progress-track" aria-label="Overall progress 0%">
+        <span style="width: 0%"></span>
+      </div>
+      <p class="queue-job-state">{jobStateSummary}</p>
     </div>
   {/if}
 

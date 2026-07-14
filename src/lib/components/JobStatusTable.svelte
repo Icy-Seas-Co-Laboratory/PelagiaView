@@ -55,7 +55,6 @@
         <th>Stage</th>
         <th>Status</th>
         <th>Summary</th>
-        {#if !compact}<th>Priority</th>{/if}
         <th>Updated</th>
         <th></th>
       </tr>
@@ -66,7 +65,6 @@
           <td>{job.stage ?? 'unknown'}</td>
           <td><span class="status-dot {statusTone(job.status)}"></span>{job.status ?? 'unknown'}</td>
           <td>{job.summary ?? job.id}</td>
-          {#if !compact}<td>{job.priority ?? '-'}</td>{/if}
           <td>{formatDate(job.updated_at ?? job.created_at)}</td>
           <td class="actions">
             {#each jobActions(job) as action}
@@ -77,7 +75,7 @@
           </td>
         </tr>
       {:else}
-        <tr><td colspan={compact ? 5 : 6} class="empty">{emptyLabel}</td></tr>
+        <tr><td colspan="5" class="empty">{emptyLabel}</td></tr>
       {/each}
     </tbody>
   </table>

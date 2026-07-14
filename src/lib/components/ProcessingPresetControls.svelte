@@ -32,7 +32,6 @@
       id: 'preprocessing',
       label: 'Preprocessing',
       keys: [
-        'preprocessingEncoding',
         'framePayloadKind',
         'applyPreprocessing',
         'backgroundCorrection',
@@ -125,9 +124,6 @@
       id: 'roi-storage',
       label: 'ROI Storage',
       keys: [
-        'roiEncoding',
-        'zstdMinBytes',
-        'alwaysStoreMask',
         'storeRoiPayloadMinArea',
         'storeRoiPayloadMinWidth',
         'storeRoiPayloadMinHeight',

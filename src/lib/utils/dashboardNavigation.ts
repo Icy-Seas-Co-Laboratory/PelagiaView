@@ -1,5 +1,6 @@
 export type DashboardView =
   | 'status'
+  | 'assets'
   | 'ingestion'
   | 'preprocessing'
   | 'segmentation'
@@ -26,6 +27,7 @@ export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
   { id: 'status', label: 'Status', detail: 'queue and workers', group: 'system' },
   { id: 'admin', label: 'Administration', detail: 'projects and users', group: 'system' },
+  { id: 'assets', label: 'Assets', detail: 'asset catalog', group: 'workflow', nextView: 'ingestion' },
   { id: 'ingestion', label: 'Ingestion', detail: 'server assets', group: 'workflow', nextView: 'preprocessing' },
   { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep', group: 'workflow', nextView: 'segmentation' },
   { id: 'segmentation', label: 'Candidate ROIs', detail: 'queue ROI jobs', group: 'workflow', nextView: 'roi_refinement' },

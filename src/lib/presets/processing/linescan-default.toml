@@ -3,9 +3,6 @@ id = "linescan-default"
 name = "Linescan default"
 description = "Manual thresholding with flatfield correction for linescan frame review."
 
-[settings.ingestion]
-ingestionTileCount = 2
-
 [settings.preprocessing]
 flatfieldCorrection = true
 flatfieldQ = 0.5
@@ -18,16 +15,9 @@ invertIntensity = true
 thresholdMethod = "manual"
 manualThreshold = 100
 
-[settings.mask_augmentation]
-maskAugmentationEnabled = false
-
 [settings.candidate_detection]
 roiAssemblyMethod = "connected_components"
 roiAssemblyConnectivity = 8
-minWidth = 20
-minHeight = 20
+minWidth = 8
+minHeight = 8
 padding = 50
-
-[settings.roi_storage]
-roiEncoding = "zstd"
-alwaysStoreMask = true

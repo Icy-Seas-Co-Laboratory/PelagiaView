@@ -16,6 +16,7 @@ const livePresetKey = 'live:live';
 type ProcessingPresetSessionState = {
   selectedKey: string;
   livePreset: ProcessingPreset;
+  selectedPreset: ProcessingPreset | null;
 };
 
 type StoredProcessingPresetSession = Partial<ProcessingPresetSessionState>;
@@ -28,7 +29,8 @@ const initialState = browser ? readStoredProcessingPresetSession(activeStorageKe
 
 export const processingPresetSession = writable<ProcessingPresetSessionState>({
   selectedKey: initialState?.selectedKey ?? livePresetKey,
-  livePreset: normalizeLivePreset(initialState?.livePreset)
+  livePreset: normalizeLivePreset(initialState?.livePreset),
+  selectedPreset: normalizeSelectedPreset(initialState?.selectedPreset)
 });
 
 if (browser) {
@@ -51,7 +53,8 @@ if (browser) {
 export function setSelectedProcessingPresetKey(selectedKey: string) {
   processingPresetSession.update((state) => ({
     ...state,
-    selectedKey: selectedKey || livePresetKey
+    selectedKey: selectedKey || livePresetKey,
+    selectedPreset: selectedKey && selectedKey !== livePresetKey ? state.selectedPreset : null
   }));
 }
 
@@ -59,15 +62,23 @@ export function setLiveProcessingPresetFromSettings(settings: ProcessingSettings
   const livePreset = liveProcessingPreset(settings);
   processingPresetSession.update((state) => ({
     selectedKey: options.selectedKey ?? state.selectedKey,
-    livePreset
+    livePreset,
+    selectedPreset: options.selectedKey === livePresetKey ? null : state.selectedPreset
   }));
   return livePreset;
 }
 
-export function applyProcessingPresetToSession(preset: ProcessingPreset): ProcessingPreset {
+export function applyProcessingPresetToSession(
+  preset: ProcessingPreset,
+  options: { appliedSettings?: ProcessingSettings } = {}
+): ProcessingPreset {
   const selectedKey = preset.source === 'live' ? livePresetKey : processingPresetKey(preset);
-  const livePreset = liveProcessingPreset(preset.settings);
-  processingPresetSession.set({ selectedKey, livePreset });
+  const livePreset = liveProcessingPreset(options.appliedSettings ?? preset.settings);
+  processingPresetSession.set({
+    selectedKey,
+    livePreset,
+    selectedPreset: preset.source === 'live' ? null : normalizeSelectedPreset(preset)
+  });
   return preset.source === 'live' ? livePreset : preset;
 }
 
@@ -78,7 +89,8 @@ export function currentLiveProcessingPreset(): ProcessingPreset {
 function defaultProcessingPresetSession(stored?: ProcessingPresetSessionState | null): ProcessingPresetSessionState {
   return {
     selectedKey: stored?.selectedKey ?? livePresetKey,
-    livePreset: normalizeLivePreset(stored?.livePreset)
+    livePreset: normalizeLivePreset(stored?.livePreset),
+    selectedPreset: normalizeSelectedPreset(stored?.selectedPreset)
   };
 }
 
@@ -102,12 +114,13 @@ function readStoredProcessingPresetSession(
       const legacySession = readLegacyProcessingPresetSession();
       if (legacySession) return legacySession;
       const legacyPreset = readLegacyLivePreset();
-      return legacyPreset ? { selectedKey: livePresetKey, livePreset: legacyPreset } : null;
+      return legacyPreset ? { selectedKey: livePresetKey, livePreset: legacyPreset, selectedPreset: null } : null;
     }
     const parsed = JSON.parse(stored) as StoredProcessingPresetSession;
     return {
       selectedKey: typeof parsed.selectedKey === 'string' && parsed.selectedKey ? parsed.selectedKey : livePresetKey,
-      livePreset: normalizeLivePreset(parsed.livePreset)
+      livePreset: normalizeLivePreset(parsed.livePreset),
+      selectedPreset: normalizeSelectedPreset(parsed.selectedPreset)
     };
   } catch {
     return null;
@@ -121,7 +134,8 @@ function readLegacyProcessingPresetSession(): ProcessingPresetSessionState | nul
     const parsed = JSON.parse(stored) as StoredProcessingPresetSession;
     return {
       selectedKey: typeof parsed.selectedKey === 'string' && parsed.selectedKey ? parsed.selectedKey : livePresetKey,
-      livePreset: normalizeLivePreset(parsed.livePreset)
+      livePreset: normalizeLivePreset(parsed.livePreset),
+      selectedPreset: normalizeSelectedPreset(parsed.selectedPreset)
     };
   } catch {
     return null;
@@ -148,4 +162,12 @@ function normalizeLivePreset(preset: ProcessingPreset | null | undefined): Proce
     };
   }
   return liveProcessingPreset({});
+}
+
+function normalizeSelectedPreset(preset: ProcessingPreset | null | undefined): ProcessingPreset | null {
+  if (!preset || preset.source === 'live' || !preset.settings) return null;
+  return {
+    ...preset,
+    settings: pruneProcessingSettings(preset.settings)
+  };
 }

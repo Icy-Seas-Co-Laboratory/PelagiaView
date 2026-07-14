@@ -313,6 +313,7 @@ export type WorkerSession = {
 
 export type RawAsset = {
   id: string;
+  project_id?: string | null;
   run_id?: string | null;
   filename?: string;
   path?: string;
@@ -324,6 +325,23 @@ export type RawAsset = {
   frame_count?: number;
   created_at?: string;
   metadata?: Record<string, unknown>;
+};
+
+export type AssetUpdateRequest = {
+  collections?: string[] | string | null;
+};
+
+export type AssetDeleteResponse = {
+  status?: string;
+  asset_id?: string;
+  asset?: RawAsset;
+  frame_count?: number | string | null;
+  generated_kvstore_keys?: string[];
+  deleted_kvstore_keys?: Array<{
+    key?: string;
+    deleted?: boolean;
+    missing?: boolean;
+  }>;
 };
 
 export type AnalyzedIngestionAsset = {
@@ -607,16 +625,10 @@ export type ProcessingQueueFilters = {
   end_frame?: number | null;
 };
 
-export type ProcessingQueueBatch = {
-  max_units?: number;
-  ordering?: 'optimized' | 'input';
-};
-
 export type ProcessingQueueRequest = {
   stage: ProcessingQueueStage;
   filters?: ProcessingQueueFilters;
   options?: Record<string, unknown>;
-  batch?: ProcessingQueueBatch;
   priority?: number | null;
   dry_run?: boolean;
 };
@@ -628,6 +640,7 @@ export type ProcessingQueueResponse = {
   job_count?: number | string;
   batch_sizes?: Array<number | string>;
   ordering?: string;
+  max_units_per_job?: number | string;
   job_ids?: string[];
   dry_run?: boolean;
   sample_frame_ids?: string[];

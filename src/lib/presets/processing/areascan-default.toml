@@ -1,13 +1,10 @@
-null_settings = [ "minPerimeter", "refinementExpansionPixels", "refinementModelBatchSize", "zstdMinBytes" ]
+null_settings = [ "minPerimeter", "refinementExpansionPixels", "refinementModelBatchSize" ]
 
 [preset]
 id = "areascan-default"
 name = "Areascan (default)"
 description = ""
 updated_at = "2026-06-23T21:48:14.751Z"
-
-[settings.ingestion]
-ingestionTileCount = 2
 
 [settings.preprocessing]
 backgroundCorrection = true
@@ -23,16 +20,9 @@ invertIntensity = true
 thresholdMethod = "manual"
 manualThreshold = 100
 
-[settings.mask_augmentation]
-maskAugmentationEnabled = false
-
 [settings.candidate_detection]
 roiAssemblyMethod = "connected_components"
 roiAssemblyConnectivity = 8
-minWidth = 20
-minHeight = 20
+minWidth = 12
+minHeight = 12
 padding = 50
-
-[settings.roi_storage]
-roiEncoding = "zstd"
-alwaysStoreMask = true

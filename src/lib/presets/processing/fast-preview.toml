@@ -3,9 +3,6 @@ id = "fast-preview"
 name = "Fast preview"
 description = "Minimal threshold and mask work for quick interactive passes while tuning frames."
 
-[settings.ingestion]
-ingestionTileCount = 2
-
 [settings.threshold]
 thresholdMethod = "bounded_otsu"
 thresholdingMaximumValue = 100
@@ -18,14 +15,6 @@ maskAugmentationEnabled = false
 [settings.candidate_detection]
 roiAssemblyMethod = "connected_components"
 roiAssemblyConnectivity = 8
-minPerimeter = 120
-padding = 80
-
-[settings.roi_storage]
-roiEncoding = "png"
-alwaysStoreMask = false
-
-[settings.refinement]
-refinementOverlapFraction = 0.2
-refinementAllowFrameExpansion = true
-refinementMaxIterations = 2
+minWidth = 30
+minHeight = 30
+padding = 50
