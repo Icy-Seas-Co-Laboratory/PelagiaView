@@ -25,6 +25,15 @@ export type ConnectSessionInput = {
   password: string;
   projectId?: string | null;
   projectKey?: string | null;
+  createProject?: {
+    project_key: string;
+    project_name?: string | null;
+    description?: string | null;
+    kvstore_directory: string;
+    kvstore_name: string;
+    is_active?: boolean;
+    metadata?: Record<string, unknown>;
+  } | null;
 };
 
 export type ProjectSelectionLogin = {
@@ -100,6 +109,7 @@ export async function beginProjectSelectionLogin(input: ConnectSessionInput): Pr
     const login = await loginClient.login({
       username: input.username,
       password: input.password,
+      create_project: input.createProject ?? undefined,
       metadata: { client: 'PelagiaView' }
     });
     const temporaryClient = new PelagiaApiClient(normalized, { token: login.token });
@@ -108,10 +118,6 @@ export async function beginProjectSelectionLogin(input: ConnectSessionInput): Pr
       temporaryClient.listProjects().catch(() => [])
     ]);
     const projects = me?.projects?.length ? me.projects : listedProjects.length ? listedProjects : login.project ? [login.project] : [];
-    if (projects.length < 1) {
-      await temporaryClient.logout().catch(() => undefined);
-      throw new Error('No projects are available for this login.');
-    }
     session.update((state) => ({ ...state, connecting: false, error: null }));
     return {
       baseUrl: normalized,
@@ -245,6 +251,7 @@ async function establishSession(
       password: input.password,
       project_id: input.projectId,
       project_key: input.projectKey,
+      create_project: input.createProject ?? undefined,
       metadata: { client: 'PelagiaView' }
     });
     await finishAuthenticatedSession(normalized, login, health, { persistActive: options.persistActive, restoring: Boolean(options.restoring) });

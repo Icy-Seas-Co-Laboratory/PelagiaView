@@ -127,6 +127,15 @@ type LoginRequest = {
   password: string;
   project_id?: string | null;
   project_key?: string | null;
+  create_project?: {
+    project_key: string;
+    project_name?: string | null;
+    description?: string | null;
+    kvstore_directory: string;
+    kvstore_name: string;
+    is_active?: boolean;
+    metadata?: Record<string, unknown>;
+  } | null;
   ttl_seconds?: number | null;
   metadata?: Record<string, unknown>;
 };
@@ -142,6 +151,8 @@ type CreateProjectRequest = {
   project_key: string;
   project_name?: string | null;
   description?: string | null;
+  kvstore_directory?: string | null;
+  kvstore_name?: string | null;
   kvstore_root_path?: string | null;
   is_active?: boolean;
   metadata?: Record<string, unknown>;

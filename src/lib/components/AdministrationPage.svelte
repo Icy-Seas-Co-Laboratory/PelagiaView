@@ -142,11 +142,13 @@
     projectMessage = null;
     projectError = null;
     try {
+      const kvstoreTarget = kvstorePartsFromRootPath(kvstoreRootPath, projectKey);
       const response = await client.createProject({
         project_key: projectKey.trim(),
         project_name: projectName.trim() || undefined,
         description: projectDescription.trim() || undefined,
-        kvstore_root_path: kvstoreRootPath.trim() || undefined
+        kvstore_directory: kvstoreTarget.directory,
+        kvstore_name: kvstoreTarget.name
       });
       const projectId = response.project.id || response.project.project_key;
       if (projectId) {
@@ -416,6 +418,24 @@
     return Math.max(0, Math.min(100, next));
   }
 
+  function kvstorePartsFromRootPath(rootPath: string, fallbackKey: string): { directory: string; name: string } {
+    const fallbackName = suggestedKvstoreName(fallbackKey);
+    const trimmed = rootPath.trim().replace(/\/+$/, '');
+    if (!trimmed) return { directory: '.', name: fallbackName };
+    const slashIndex = trimmed.lastIndexOf('/');
+    if (slashIndex < 0) return { directory: '.', name: trimmed };
+    if (slashIndex === 0) return { directory: '/', name: trimmed.slice(1) || fallbackName };
+    return {
+      directory: trimmed.slice(0, slashIndex),
+      name: trimmed.slice(slashIndex + 1) || fallbackName
+    };
+  }
+
+  function suggestedKvstoreName(value: string): string {
+    const next = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    return next ? `${next}-kvstore` : 'project-kvstore';
+  }
+
   function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   }
@@ -512,7 +532,7 @@
         </label>
         <label class="span-2">
           KV store root path
-          <input bind:value={kvstoreRootPath} placeholder="Server default" disabled={!canCreateProject || creatingProject} />
+          <input bind:value={kvstoreRootPath} placeholder="./project-kvstore" disabled={!canCreateProject || creatingProject} />
         </label>
         <label>
           Frame encoding
