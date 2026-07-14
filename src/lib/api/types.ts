@@ -593,6 +593,46 @@ export type ProcessingStatusFilters = {
   offset?: number | null;
 };
 
+export type ProcessingQueueStage = 'preprocess_frames' | 'segment' | 'roi_refinement';
+
+export type ProcessingQueueFilters = {
+  run_id?: string | null;
+  asset_ids?: string[];
+  collection?: string[];
+  preprocessing_status?: string[];
+  candidate_detection_status?: string[];
+  roi_refinement_status?: string[];
+  refinement_state?: Array<'refined' | 'unrefined'>;
+  start_frame?: number | null;
+  end_frame?: number | null;
+};
+
+export type ProcessingQueueBatch = {
+  max_units?: number;
+  ordering?: 'optimized' | 'input';
+};
+
+export type ProcessingQueueRequest = {
+  stage: ProcessingQueueStage;
+  filters?: ProcessingQueueFilters;
+  options?: Record<string, unknown>;
+  batch?: ProcessingQueueBatch;
+  priority?: number | null;
+  dry_run?: boolean;
+};
+
+export type ProcessingQueueResponse = {
+  stage?: ProcessingQueueStage | string;
+  unit?: string;
+  matched_count?: number | string;
+  job_count?: number | string;
+  batch_sizes?: Array<number | string>;
+  ordering?: string;
+  job_ids?: string[];
+  dry_run?: boolean;
+  sample_frame_ids?: string[];
+};
+
 export type PageMetadata = {
   limit?: number | null;
   offset?: number;
