@@ -138,7 +138,10 @@ export type AuthLoginResponse = {
   token: string;
   session?: AuthSessionSummary;
   user?: AuthUserSummary;
-  project?: ProjectSummary;
+  project?: ProjectSummary | null;
+  project_creation_required?: boolean;
+  project_created?: boolean;
+  kvstore?: Record<string, unknown> | null;
 };
 
 export type AuthMeResponse = {

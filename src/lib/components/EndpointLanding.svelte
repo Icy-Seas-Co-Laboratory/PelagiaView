@@ -63,12 +63,11 @@
       });
       selectedProjectId = pendingLogin.projects[0]?.id ?? '';
       selectingProject = false;
-      if (pendingLogin.projects.length < 1) {
+      if (pendingLogin.projectCreationRequired || pendingLogin.projects.length < 1) {
         projectSetupOpen = true;
         await loadProjectSetupCapabilities();
-      } else {
-        password = '';
       }
+      password = '';
     } catch (error) {
       if (isProjectCreationRequired(error)) {
         localError = null;
@@ -156,28 +155,53 @@
     creatingProject = true;
     localError = null;
     try {
-      await connectSession({
-        baseUrl: endpoint,
-        username,
-        password,
-        createProject: {
+      const storageSettings = {
+        frame_encoding: availableFrameStorageEncoding(projectFrameStorageEncoding),
+        frame_quality: normalizeFrameStorageQuality(projectFrameStorageQuality),
+        roi_encoding: availableRoiStorageEncoding(projectRoiStorageEncoding)
+      };
+      if (pendingLogin?.token) {
+        const bootstrapClient = new PelagiaApiClient(pendingLogin.baseUrl, { token: pendingLogin.token });
+        const response = await bootstrapClient.createProject({
           project_key: projectKey.trim(),
           project_name: projectName.trim() || undefined,
           description: projectDescription.trim() || undefined,
           kvstore_directory: kvstoreDirectory.trim(),
           kvstore_name: kvstoreName.trim(),
           is_active: true
-        }
-      });
-      const activeClient = getClient();
-      const activeProject = get(session).project;
-      const projectId = activeProject?.id ?? activeProject?.project_key;
-      if (activeClient && projectId) {
-        await activeClient.updateProjectStorageSettings(projectId, {
-          frame_encoding: availableFrameStorageEncoding(projectFrameStorageEncoding),
-          frame_quality: normalizeFrameStorageQuality(projectFrameStorageQuality),
-          roi_encoding: availableRoiStorageEncoding(projectRoiStorageEncoding)
         });
+        const projectId = response.project.id || response.project.project_key;
+        if (projectId) {
+          await bootstrapClient.updateProjectStorageSettings(projectId, storageSettings);
+          await completeProjectSelectionLogin(
+            {
+              ...pendingLogin,
+              projects: [response.project],
+              loginProject: null
+            },
+            response.project.id
+          );
+        }
+      } else {
+        await connectSession({
+          baseUrl: endpoint,
+          username,
+          password,
+          createProject: {
+            project_key: projectKey.trim(),
+            project_name: projectName.trim() || undefined,
+            description: projectDescription.trim() || undefined,
+            kvstore_directory: kvstoreDirectory.trim(),
+            kvstore_name: kvstoreName.trim(),
+            is_active: true
+          }
+        });
+        const activeClient = getClient();
+        const activeProject = get(session).project;
+        const projectId = activeProject?.id ?? activeProject?.project_key;
+        if (activeClient && projectId) {
+          await activeClient.updateProjectStorageSettings(projectId, storageSettings);
+        }
       }
       pendingLogin = null;
       selectedProjectId = '';
@@ -196,11 +220,17 @@
   }
 
   function isProjectCreationRequired(error: unknown): boolean {
-    if (error instanceof ApiError && error.status === 409) {
+    if (error instanceof ApiError && (error.status === 403 || error.status === 409)) {
       const outerDetail = error.detail;
       const detail = objectValue(outerDetail).detail ?? outerDetail;
       if (objectValue(detail).code === 'project_creation_required') return true;
-      return String(error.message).includes('project_creation_required') || String(error.message).includes('No project exists');
+      const message = `${String(error.message)} ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`.toLowerCase();
+      return (
+        message.includes('project_creation_required') ||
+        message.includes('no project exists') ||
+        message.includes('does not belong to any active project') ||
+        message.includes("doesn't belong to any active project")
+      );
     }
     return false;
   }

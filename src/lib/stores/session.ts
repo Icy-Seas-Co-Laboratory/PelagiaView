@@ -44,6 +44,7 @@ export type ProjectSelectionLogin = {
   health: HealthResponse;
   loginProject: ProjectSummary | null;
   expiresAt: string;
+  projectCreationRequired?: boolean;
 };
 
 export type SessionState = {
@@ -126,7 +127,8 @@ export async function beginProjectSelectionLogin(input: ConnectSessionInput): Pr
       projects,
       health,
       loginProject: me?.project ?? login.project ?? null,
-      expiresAt: login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      expiresAt: login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString(),
+      projectCreationRequired: Boolean(login.project_creation_required)
     };
   } catch (error) {
     session.update((state) => ({
