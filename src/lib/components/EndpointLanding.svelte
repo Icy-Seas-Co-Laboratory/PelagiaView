@@ -12,7 +12,7 @@
     session,
     type ProjectSelectionLogin
   } from '$lib/stores/session';
-  import type { DirectoryListing, ProjectSummary } from '$lib/api/types';
+  import type { DirectoryListing, ProjectSummary, SystemConfigResponse } from '$lib/api/types';
   import {
     codecAvailable,
     codecUnavailableTitle,
@@ -33,7 +33,10 @@
   let projectKey = '';
   let projectName = '';
   let projectDescription = '';
-  let kvstoreDirectory = '.';
+  let kvstoreDirectory = '';
+  let kvstoreDirectoryTouched = false;
+  let kvstoreBrowserPath = '';
+  let kvstorePathSuggestions: string[] = [];
   let kvstoreName = '';
   let kvstoreNameTouched = false;
   let kvstoreBrowserError: string | null = null;
@@ -118,20 +121,35 @@
   async function loadProjectSetupCapabilities() {
     try {
       const client = new PelagiaApiClient(endpoint);
-      const capabilities = await client.systemCapabilities().catch(() => null);
+      const [capabilities, config, roots] = await Promise.all([
+        client.systemCapabilities().catch(() => null),
+        client.systemConfig().catch(() => null),
+        client.listRawDirectory('.').catch(() => null)
+      ]);
       imageCodecAvailability = capabilities?.supported?.image_codec_availability ?? {};
       projectFrameStorageEncoding = availableFrameStorageEncoding(projectFrameStorageEncoding);
       projectRoiStorageEncoding = availableRoiStorageEncoding(projectRoiStorageEncoding);
+      const defaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
+      if (!kvstoreDirectoryTouched || !kvstoreDirectory.trim() || kvstoreDirectory === '.') {
+        kvstoreDirectory = defaultDirectory;
+      }
+      if (!kvstoreBrowserPath || kvstoreBrowserPath === '.') kvstoreBrowserPath = kvstoreDirectory || defaultDirectory;
+      rememberKvstoreSuggestions([
+        defaultDirectory,
+        kvstoreDirectory,
+        ...(roots?.entries ?? []).map((entry) => entry.path)
+      ]);
     } catch {
       imageCodecAvailability = {};
     }
   }
 
-  async function loadKvstoreDirectory(path = kvstoreDirectory): Promise<DirectoryListing> {
+  async function loadKvstoreDirectory(path = kvstoreBrowserPath || kvstoreDirectory || '.'): Promise<DirectoryListing> {
     const client = new PelagiaApiClient(endpoint);
     kvstoreBrowserError = null;
     const listing = await client.listRawDirectory(path);
-    kvstoreDirectory = listing.path;
+    kvstoreBrowserPath = listing.path;
+    rememberKvstoreSuggestions([listing.path, ...listing.entries.map((entry) => entry.path)]);
     if (listing.source !== 'live-files') {
       kvstoreBrowserError = 'Live file browsing is not available from this server.';
       return { ...listing, entries: [] };
@@ -143,11 +161,22 @@
   }
 
   function updateKvstoreDirectorySelection(paths: string[]) {
-    if (paths[0]) kvstoreDirectory = paths[0];
+    if (paths[0]) {
+      kvstoreDirectory = paths[0];
+      kvstoreBrowserPath = paths[0];
+      kvstoreDirectoryTouched = true;
+      rememberKvstoreSuggestions(paths);
+    }
   }
 
   function updateKvstoreDirectoryPath(path: string) {
-    kvstoreDirectory = path;
+    kvstoreBrowserPath = path;
+    rememberKvstoreSuggestions([path]);
+  }
+
+  function updateTypedKvstoreDirectory() {
+    kvstoreDirectoryTouched = true;
+    rememberKvstoreSuggestions([kvstoreDirectory]);
   }
 
   async function startNewProject() {
@@ -262,8 +291,32 @@
     return Math.max(0, Math.min(100, next));
   }
 
+  function systemKvstoreDirectory(config: SystemConfigResponse | null): string | null {
+    const effective = objectValue(config?.effective);
+    const kvstore = objectValue(effective.kvstore);
+    return stringValue(kvstore.directory);
+  }
+
+  function kvstoreRootFromListing(listing: DirectoryListing | null): string | null {
+    const entry = (listing?.entries ?? []).find((candidate) => candidate.key === 'kvstore');
+    return entry?.path ?? null;
+  }
+
+  function rememberKvstoreSuggestions(paths: Array<string | null | undefined>) {
+    const next = new Set(kvstorePathSuggestions);
+    for (const path of paths) {
+      const trimmed = path?.trim();
+      if (trimmed) next.add(trimmed);
+    }
+    kvstorePathSuggestions = Array.from(next).sort((a, b) => a.localeCompare(b));
+  }
+
   function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  }
+
+  function stringValue(value: unknown): string | null {
+    return typeof value === 'string' && value ? value : null;
   }
 </script>
 
@@ -410,7 +463,20 @@
         </label>
         <label>
           KVStore directory
-          <input bind:value={kvstoreDirectory} placeholder="/path/to/storage" disabled={creatingProject || $session.connecting} required />
+          <input
+            bind:value={kvstoreDirectory}
+            list="login-kvstore-directory-suggestions"
+            placeholder="/path/to/kvstores"
+            autocomplete="off"
+            disabled={creatingProject || $session.connecting}
+            required
+            on:input={updateTypedKvstoreDirectory}
+          />
+          <datalist id="login-kvstore-directory-suggestions">
+            {#each kvstorePathSuggestions as path}
+              <option value={path}></option>
+            {/each}
+          </datalist>
         </label>
         <label>
           KVStore name
@@ -461,7 +527,7 @@
           mode="wizard"
           multiSelect={false}
           selectableKinds={['directory']}
-          initialPath={kvstoreDirectory}
+          initialPath={kvstoreBrowserPath || kvstoreDirectory || '.'}
           selectedPaths={kvstoreDirectory ? [kvstoreDirectory] : []}
           loadDirectory={loadKvstoreDirectory}
           onSelectionChange={updateKvstoreDirectorySelection}

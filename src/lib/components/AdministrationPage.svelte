@@ -2,7 +2,13 @@
   import { onMount } from 'svelte';
   import { ApiError } from '$lib/api/client';
   import FileSelector from '$lib/components/FileSelector.svelte';
-  import type { AuthUserSummary, DirectoryListing, ProjectStorageSettingsResponse, ProjectSummary } from '$lib/api/types';
+  import type {
+    AuthUserSummary,
+    DirectoryListing,
+    ProjectStorageSettingsResponse,
+    ProjectSummary,
+    SystemConfigResponse
+  } from '$lib/api/types';
   import { getClient } from '$lib/stores/session';
   import { refreshSessionProjects, session } from '$lib/stores/session';
   import {
@@ -32,6 +38,9 @@
   let projectName = '';
   let projectDescription = '';
   let kvstoreRootPath = '';
+  let kvstoreRootPathTouched = false;
+  let kvstoreDefaultDirectory = '.';
+  let kvstorePathSuggestions: string[] = [];
   let projectFrameStorageEncoding = 'zstd';
   let projectFrameStorageQuality = 90;
   let projectRoiStorageEncoding = 'auto';
@@ -66,6 +75,9 @@
   $: if (!canListAllProjectUsers && usersIncludeAllProjects) usersIncludeAllProjects = false;
   $: frameStorageOptions = ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
   $: roiStorageOptions = ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
+  $: if (!kvstoreRootPathTouched && projectKey.trim()) {
+    kvstoreRootPath = joinKvstorePath(kvstoreDefaultDirectory, suggestedKvstoreName(projectKey));
+  }
 
   onMount(() => {
     void loadAdministrationData();
@@ -80,8 +92,18 @@
   async function loadSystemCapabilities() {
     const client = getClient();
     if (!client) return;
-    const capabilities = await client.systemCapabilities().catch(() => null);
+    const [capabilities, config, roots] = await Promise.all([
+      client.systemCapabilities().catch(() => null),
+      client.systemConfig().catch(() => null),
+      client.listRawDirectory('.').catch(() => null)
+    ]);
     imageCodecAvailability = capabilities?.supported?.image_codec_availability ?? {};
+    kvstoreDefaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
+    kvstoreDirectoryPath = kvstoreDefaultDirectory;
+    rememberKvstoreSuggestions([
+      kvstoreDefaultDirectory,
+      ...(roots?.entries ?? []).map((entry) => entry.path)
+    ]);
   }
 
   async function loadKvstoreDirectory(path = kvstoreDirectoryPath): Promise<DirectoryListing> {
@@ -90,6 +112,7 @@
     kvstoreBrowserError = null;
     const listing = await client.listRawDirectory(path);
     kvstoreDirectoryPath = listing.path;
+    rememberKvstoreSuggestions([listing.path, ...listing.entries.map((entry) => entry.path)]);
     if (listing.source !== 'live-files') {
       kvstoreBrowserError = 'Live file browsing is not available from this server.';
       return { ...listing, entries: [] };
@@ -163,6 +186,7 @@
       projectName = '';
       projectDescription = '';
       kvstoreRootPath = '';
+      kvstoreRootPathTouched = false;
       projectFrameStorageEncoding = 'zstd';
       projectFrameStorageQuality = 90;
       projectRoiStorageEncoding = 'auto';
@@ -421,7 +445,7 @@
   function kvstorePartsFromRootPath(rootPath: string, fallbackKey: string): { directory: string; name: string } {
     const fallbackName = suggestedKvstoreName(fallbackKey);
     const trimmed = rootPath.trim().replace(/\/+$/, '');
-    if (!trimmed) return { directory: '.', name: fallbackName };
+    if (!trimmed) return { directory: kvstoreDefaultDirectory || '.', name: fallbackName };
     const slashIndex = trimmed.lastIndexOf('/');
     if (slashIndex < 0) return { directory: '.', name: trimmed };
     if (slashIndex === 0) return { directory: '/', name: trimmed.slice(1) || fallbackName };
@@ -434,6 +458,32 @@
   function suggestedKvstoreName(value: string): string {
     const next = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
     return next ? `${next}-kvstore` : 'project-kvstore';
+  }
+
+  function joinKvstorePath(directory: string, name: string): string {
+    const root = directory.trim().replace(/\/+$/, '') || '.';
+    if (root === '/') return `/${name}`;
+    return `${root}/${name}`;
+  }
+
+  function systemKvstoreDirectory(config: SystemConfigResponse | null): string | null {
+    const effective = objectValue(config?.effective);
+    const kvstore = objectValue(effective.kvstore);
+    return stringValue(kvstore.directory);
+  }
+
+  function kvstoreRootFromListing(listing: DirectoryListing | null): string | null {
+    const entry = (listing?.entries ?? []).find((candidate) => candidate.key === 'kvstore');
+    return entry?.path ?? null;
+  }
+
+  function rememberKvstoreSuggestions(paths: Array<string | null | undefined>) {
+    const next = new Set(kvstorePathSuggestions);
+    for (const path of paths) {
+      const trimmed = path?.trim();
+      if (trimmed) next.add(trimmed);
+    }
+    kvstorePathSuggestions = Array.from(next).sort((a, b) => a.localeCompare(b));
   }
 
   function objectValue(value: unknown): Record<string, unknown> {
@@ -495,10 +545,21 @@
 
   function updateKvstoreRootSelection(paths: string[]) {
     kvstoreRootPath = paths[0] ?? '';
+    kvstoreRootPathTouched = true;
+    if (paths[0]) {
+      kvstoreDirectoryPath = paths[0];
+      rememberKvstoreSuggestions(paths);
+    }
   }
 
   function updateKvstoreDirectoryPath(path: string) {
     kvstoreDirectoryPath = path;
+    rememberKvstoreSuggestions([path]);
+  }
+
+  function updateTypedKvstoreRootPath() {
+    kvstoreRootPathTouched = true;
+    rememberKvstoreSuggestions([kvstoreRootPath]);
   }
 </script>
 
@@ -532,7 +593,19 @@
         </label>
         <label class="span-2">
           KV store root path
-          <input bind:value={kvstoreRootPath} placeholder="./project-kvstore" disabled={!canCreateProject || creatingProject} />
+          <input
+            bind:value={kvstoreRootPath}
+            list="admin-kvstore-path-suggestions"
+            placeholder={joinKvstorePath(kvstoreDefaultDirectory, suggestedKvstoreName(projectKey))}
+            autocomplete="off"
+            disabled={!canCreateProject || creatingProject}
+            on:input={updateTypedKvstoreRootPath}
+          />
+          <datalist id="admin-kvstore-path-suggestions">
+            {#each kvstorePathSuggestions as path}
+              <option value={path}></option>
+            {/each}
+          </datalist>
         </label>
         <label>
           Frame encoding
