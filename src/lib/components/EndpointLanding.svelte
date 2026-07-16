@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { ApiError, PelagiaApiClient } from '$lib/api/client';
-  import FileSelector from '$lib/components/FileSelector.svelte';
   import {
     beginProjectSelectionLogin,
     cancelProjectSelectionLogin,
@@ -35,11 +34,9 @@
   let projectDescription = '';
   let kvstoreDirectory = '';
   let kvstoreDirectoryTouched = false;
-  let kvstoreBrowserPath = '';
   let kvstorePathSuggestions: string[] = [];
   let kvstoreName = '';
   let kvstoreNameTouched = false;
-  let kvstoreBrowserError: string | null = null;
   let projectFrameStorageEncoding = 'zstd';
   let projectFrameStorageQuality = 90;
   let projectRoiStorageEncoding = 'auto';
@@ -133,7 +130,6 @@
       if (!kvstoreDirectoryTouched || !kvstoreDirectory.trim() || kvstoreDirectory === '.') {
         kvstoreDirectory = defaultDirectory;
       }
-      if (!kvstoreBrowserPath || kvstoreBrowserPath === '.') kvstoreBrowserPath = kvstoreDirectory || defaultDirectory;
       rememberKvstoreSuggestions([
         defaultDirectory,
         kvstoreDirectory,
@@ -142,36 +138,6 @@
     } catch {
       imageCodecAvailability = {};
     }
-  }
-
-  async function loadKvstoreDirectory(path = kvstoreBrowserPath || kvstoreDirectory || '.'): Promise<DirectoryListing> {
-    const client = new PelagiaApiClient(endpoint);
-    kvstoreBrowserError = null;
-    const listing = await client.listRawDirectory(path);
-    kvstoreBrowserPath = listing.path;
-    rememberKvstoreSuggestions([listing.path, ...listing.entries.map((entry) => entry.path)]);
-    if (listing.source !== 'live-files') {
-      kvstoreBrowserError = 'Live file browsing is not available from this server.';
-      return { ...listing, entries: [] };
-    }
-    return {
-      ...listing,
-      entries: listing.entries.filter((entry) => entry.kind === 'directory')
-    };
-  }
-
-  function updateKvstoreDirectorySelection(paths: string[]) {
-    if (paths[0]) {
-      kvstoreDirectory = paths[0];
-      kvstoreBrowserPath = paths[0];
-      kvstoreDirectoryTouched = true;
-      rememberKvstoreSuggestions(paths);
-    }
-  }
-
-  function updateKvstoreDirectoryPath(path: string) {
-    kvstoreBrowserPath = path;
-    rememberKvstoreSuggestions([path]);
   }
 
   function updateTypedKvstoreDirectory() {
@@ -517,25 +483,6 @@
           </select>
         </label>
       </div>
-
-      <details class="control-details">
-        <summary>Browse server folders</summary>
-        {#if kvstoreBrowserError}
-          <p class="form-error">{kvstoreBrowserError}</p>
-        {/if}
-        <FileSelector
-          mode="wizard"
-          multiSelect={false}
-          selectableKinds={['directory']}
-          initialPath={kvstoreBrowserPath || kvstoreDirectory || '.'}
-          selectedPaths={kvstoreDirectory ? [kvstoreDirectory] : []}
-          loadDirectory={loadKvstoreDirectory}
-          onSelectionChange={updateKvstoreDirectorySelection}
-          onPathChange={updateKvstoreDirectoryPath}
-          disabled={creatingProject || $session.connecting}
-          label="KVStore directory"
-        />
-      </details>
 
       {#if localError}
         <p class="form-error">{localError}</p>

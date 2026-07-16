@@ -119,6 +119,8 @@
   let flatfieldMinFieldValue = 1;
   let flatfieldMaxFieldValue: number | null = 255;
   let backgroundCorrection = false;
+  let backgroundWindowWidth = 51;
+  let backgroundWindowStride = 51;
   let backgroundMinFieldValue = 1;
   let backgroundMaxFieldValue: number | null = 255;
   let applyMask = false;
@@ -243,6 +245,8 @@
     flatfieldMinFieldValue: number;
     flatfieldMaxFieldValue: number | null;
     backgroundCorrection: boolean;
+    backgroundWindowWidth: number;
+    backgroundWindowStride: number;
     backgroundMinFieldValue: number;
     backgroundMaxFieldValue: number | null;
     applyMask: boolean;
@@ -400,7 +404,9 @@
           fieldChanged('flatfieldMaxFieldValue', flatfieldMaxFieldValue) ||
           fieldChanged('flatfieldAxis', flatfieldAxis))) ||
       (backgroundCorrection &&
-        (fieldChanged('backgroundMinFieldValue', backgroundMinFieldValue) ||
+        (fieldChanged('backgroundWindowWidth', backgroundWindowWidth) ||
+          fieldChanged('backgroundWindowStride', backgroundWindowStride) ||
+          fieldChanged('backgroundMinFieldValue', backgroundMinFieldValue) ||
           fieldChanged('backgroundMaxFieldValue', backgroundMaxFieldValue))) ||
       fieldChanged('applyMask', applyMask) ||
       fieldChanged('cropEnabled', cropEnabled) ||
@@ -504,6 +510,8 @@
       flatfieldMinFieldValue,
       flatfieldMaxFieldValue,
       backgroundCorrection,
+      backgroundWindowWidth,
+      backgroundWindowStride,
       backgroundMinFieldValue,
       backgroundMaxFieldValue,
       applyMask,
@@ -601,6 +609,8 @@
     flatfieldMinFieldValue = numberPreference(preferences.flatfieldMinFieldValue, flatfieldMinFieldValue);
     flatfieldMaxFieldValue = nullablePreferenceNumber(preferences.flatfieldMaxFieldValue, flatfieldMaxFieldValue);
     backgroundCorrection = booleanPreference(preferences.backgroundCorrection, backgroundCorrection);
+    backgroundWindowWidth = numberPreference(preferences.backgroundWindowWidth, backgroundWindowWidth);
+    backgroundWindowStride = numberPreference(preferences.backgroundWindowStride, backgroundWindowStride);
     backgroundMinFieldValue = numberPreference(preferences.backgroundMinFieldValue, backgroundMinFieldValue);
     backgroundMaxFieldValue = nullablePreferenceNumber(preferences.backgroundMaxFieldValue, backgroundMaxFieldValue);
     enforcePreprocessingCorrectionMode();
@@ -771,6 +781,8 @@
     if ('roiAssemblyMethod' in settings) roiAssemblyMethod = stringPreference(settings.roiAssemblyMethod, roiAssemblyMethod);
     if ('roiAssemblyConnectivity' in settings) roiAssemblyConnectivity = numberPreference(settings.roiAssemblyConnectivity, roiAssemblyConnectivity);
     if ('backgroundCorrection' in settings) backgroundCorrection = booleanPreference(settings.backgroundCorrection, backgroundCorrection);
+    if ('backgroundWindowWidth' in settings) backgroundWindowWidth = numberPreference(settings.backgroundWindowWidth, backgroundWindowWidth);
+    if ('backgroundWindowStride' in settings) backgroundWindowStride = numberPreference(settings.backgroundWindowStride, backgroundWindowStride);
     if ('backgroundMinFieldValue' in settings) backgroundMinFieldValue = numberPreference(settings.backgroundMinFieldValue, backgroundMinFieldValue);
     if ('backgroundMaxFieldValue' in settings) backgroundMaxFieldValue = nullablePreferenceNumber(settings.backgroundMaxFieldValue, backgroundMaxFieldValue);
     if ('flatfieldCorrection' in settings) flatfieldCorrection = booleanPreference(settings.flatfieldCorrection, flatfieldCorrection);
@@ -950,6 +962,8 @@
     flatfieldMinFieldValue = numberDefault(flatfield, 'flatfield_min_field_value', flatfieldMinFieldValue);
     flatfieldMaxFieldValue = nullableNumberDefault(flatfield, 'flatfield_max_field_value', flatfieldMaxFieldValue);
     backgroundCorrection = booleanDefault(preprocessing, 'background_correction', backgroundCorrection);
+    backgroundWindowWidth = numberDefault(preprocessing, 'background_window_width', backgroundWindowWidth);
+    backgroundWindowStride = numberDefault(preprocessing, 'background_window_stride', backgroundWindowStride);
     backgroundMinFieldValue = numberDefault(preprocessing, 'background_min_field_value', backgroundMinFieldValue);
     backgroundMaxFieldValue = nullableNumberDefault(preprocessing, 'background_max_field_value', backgroundMaxFieldValue);
     enforcePreprocessingCorrectionMode();
@@ -1191,6 +1205,8 @@
       flatfield_min_field_value: !backgroundCorrection && flatfieldCorrection ? flatfieldMinFieldValue : undefined,
       flatfield_max_field_value: !backgroundCorrection && flatfieldCorrection ? flatfieldMaxFieldValue : undefined,
       background_correction: backgroundCorrection,
+      background_window_width: backgroundCorrection ? backgroundWindowWidth : undefined,
+      background_window_stride: backgroundCorrection ? backgroundWindowStride : undefined,
       background_min_field_value: backgroundCorrection ? backgroundMinFieldValue : undefined,
       background_max_field_value: backgroundCorrection ? backgroundMaxFieldValue : undefined,
       apply_mask: applyMask,
@@ -1967,6 +1983,14 @@
           </div>
         {:else if backgroundCorrection}
           <div class="form-grid compact-grid">
+            <label class:has-field-override={fieldChanged('backgroundWindowWidth', backgroundWindowWidth)}>
+              Background window
+              <input type="number" min="1" step="2" bind:value={backgroundWindowWidth} />
+            </label>
+            <label class:has-field-override={fieldChanged('backgroundWindowStride', backgroundWindowStride)}>
+              Background stride
+              <input type="number" min="1" step="2" bind:value={backgroundWindowStride} />
+            </label>
             <label class:has-field-override={fieldChanged('backgroundMinFieldValue', backgroundMinFieldValue)}>
               Min background field value
               <input type="range" min="0" max="255" step="1" bind:value={backgroundMinFieldValue} />

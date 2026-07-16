@@ -57,6 +57,7 @@ import type {
   SegmentationResolvedOptions,
   SystemCapabilitiesResponse,
   SystemConfigResponse,
+  SystemUsageResponse,
   SystemStatus,
   WorkerSession
 } from './types';
@@ -84,6 +85,8 @@ type FrameImageOptions = {
   background_start_frame?: number | null;
   background_end_frame?: number | null;
   background_limit?: number | null;
+  background_window_stride?: number | null;
+  background_window_width?: number | null;
   preview_max_dim?: number | null;
 };
 
@@ -287,6 +290,10 @@ export class PelagiaApiClient {
 
   async systemUse(): Promise<Record<string, unknown>> {
     return this.get<Record<string, unknown>>('/system/use', undefined, 15000, { auth: 'none' });
+  }
+
+  async systemUsage(): Promise<SystemUsageResponse> {
+    return this.get<SystemUsageResponse>('/system/usage', undefined, 0, { cache: 'no-store' });
   }
 
   async systemConfig(): Promise<SystemConfigResponse> {
@@ -580,6 +587,19 @@ export class PelagiaApiClient {
   detectionImageUrl(detectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
     return this.url(
       `/detections/${encodeURIComponent(detectionId)}/framedata`,
+      compact({
+        format,
+        apply_mask: options.applyMask || undefined,
+        width: options.width,
+        height: options.height,
+        scale: options.scale
+      })
+    );
+  }
+
+  detectionRoiUrl(detectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
+    return this.url(
+      `/detections/${encodeURIComponent(detectionId)}/roi`,
       compact({
         format,
         apply_mask: options.applyMask || undefined,

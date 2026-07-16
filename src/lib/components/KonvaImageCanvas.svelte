@@ -74,8 +74,13 @@
     spec?.key ?? '',
     spec?.image?.url ?? '',
     spec?.image?.invert ? 'invert' : 'normal',
+    spec?.image?.sourceWidth ?? '',
+    spec?.image?.sourceHeight ?? '',
     spec?.baseMask?.enabled ? 'mask-on' : 'mask-off',
     spec?.baseMask?.url ?? '',
+    spec?.display?.maxWidth ?? '',
+    spec?.display?.maxHeight ?? '',
+    spec?.display?.allowUpscale ? 'upscale' : '',
     layerSignature(spec?.layers ?? []),
     mode === 'viewer' ? availableWidth : ''
   ].join('|');
@@ -163,7 +168,6 @@
         signal: controller.signal
       });
       if (serial !== renderSerial || controller.signal.aborted) return;
-      onImageLoad?.({ width: composed.width, height: composed.height });
 
       const sourceWidth = positiveNumber(composed.sourceWidth) ?? positiveNumber(_spec.image.sourceWidth) ?? composed.width;
       const sourceHeight = positiveNumber(composed.sourceHeight) ?? positiveNumber(_spec.image.sourceHeight) ?? composed.height;
@@ -175,7 +179,7 @@
           ? Math.min(requestedMaxWidth, availableWidth)
           : requestedMaxWidth;
       const maxHeight = _spec.display?.maxHeight ?? sourceHeight;
-      const imageScale = displayScale(sourceWidth, sourceHeight, maxWidth, maxHeight);
+      const imageScale = displayScale(sourceWidth, sourceHeight, maxWidth, maxHeight, Boolean(_spec.display?.allowUpscale));
       const imageWidth = Math.max(1, Math.round(sourceWidth * imageScale));
       const imageHeight = Math.max(1, Math.round(sourceHeight * imageScale));
       const scaleBarPlacement = _spec.scaleBar?.placement ?? 'inside';
@@ -249,6 +253,7 @@
       contentLayer.draw();
       uiLayer.draw();
       stageReady = true;
+      onImageLoad?.({ width: composed.width, height: composed.height });
     } catch (err) {
       if (controller.signal.aborted || serial !== renderSerial) return;
       error = err instanceof Error ? err.message : String(err);
@@ -851,124 +856,127 @@
   class:konva-viewer={mode === 'viewer'}
   bind:this={root}
 >
-  <div class="konva-image-stage" bind:this={container} style={`width: ${canvasWidth || 'auto'}px; min-height: ${canvasHeight || 0}px;`}></div>
-  {#if metadataText}
-    <div class="konva-image-meta" aria-label="Image metadata">
-      {metadataText}
-    </div>
-  {/if}
+  <div class="konva-stage-shell" style={`width: ${canvasWidth || 'auto'}px; min-height: ${canvasHeight || 0}px;`}>
+    <div class="konva-image-stage" bind:this={container} style={`width: 100%; min-height: ${canvasHeight || 0}px;`}></div>
+    {#if metadataText}
+      <div class="konva-image-meta" aria-label="Image metadata">
+        {metadataText}
+      </div>
+    {/if}
+
+    {#if toolbarEnabled}
+      <div class="konva-image-toolbar" role="toolbar" tabindex="-1" aria-label="Image tools" on:mouseleave={closePanelSoon}>
+        <button
+          class="konva-tool-button"
+          type="button"
+          disabled={busy || !stageReady}
+          aria-label="Download image options"
+          aria-expanded={activePanel === 'download'}
+          on:click|stopPropagation={() => togglePanel('download')}
+        >
+          <span aria-hidden="true">↓</span>
+        </button>
+
+        <button
+          class="konva-tool-button"
+          type="button"
+          disabled={!stageReady}
+          aria-label="Show magnified preview"
+          aria-expanded={activePanel === 'zoom'}
+          on:click|stopPropagation={() => togglePanel('zoom')}
+        >
+          <span aria-hidden="true">⌕</span>
+        </button>
+
+        {#if hasToolbarInfo()}
+          <button
+            class="konva-tool-button"
+            type="button"
+            aria-label="Show image information"
+            aria-expanded={activePanel === 'info'}
+            on:click|stopPropagation={() => togglePanel('info')}
+          >
+            <span aria-hidden="true">i</span>
+          </button>
+        {/if}
+
+        {#if onMoreAction}
+          <button
+            class="konva-tool-button"
+            type="button"
+            aria-label="Open image details"
+            on:click|stopPropagation={runMoreAction}
+          >
+            <span aria-hidden="true">•••</span>
+          </button>
+        {/if}
+
+        {#if mode === 'viewer'}
+          <span class="konva-toolbar-divider" aria-hidden="true"></span>
+          <button class="konva-tool-button" type="button" disabled={!stageReady} aria-label="Zoom in" on:click|stopPropagation={() => zoomStage(1.25)}>+</button>
+          <button class="konva-tool-button" type="button" disabled={!stageReady} aria-label="Zoom out" on:click|stopPropagation={() => zoomStage(0.8)}>−</button>
+          <button class="konva-tool-button" type="button" disabled={!stageReady} aria-label="Reset zoom" on:click|stopPropagation={resetStageView}>1:1</button>
+          <button
+            class="konva-tool-button"
+            class:active={measuring}
+            type="button"
+            disabled={!stageReady}
+            aria-label="Measure pixels"
+            on:click|stopPropagation={() => (measuring = !measuring)}
+          >
+            px
+          </button>
+        {/if}
+
+        {#if activePanel === 'download'}
+          <div class="konva-tool-popover konva-download-menu" role="menu" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
+            {#each downloadOptions as option}
+              <button
+                type="button"
+                disabled={busy || !stageReady || downloadOptionDisabled(option)}
+                on:click={() => runToolbarDownload(option.variant, option.filename)}
+              >
+                {option.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        {#if activePanel === 'zoom'}
+          <div
+            class="konva-tool-popover konva-zoom-popover"
+            role="dialog"
+            tabindex="-1"
+            aria-label="Magnified image preview"
+            style={`width: ${zoomPreviewWidth}px; height: ${zoomPreviewHeight}px;`}
+            on:click|stopPropagation
+            on:keydown|stopPropagation
+          >
+            {#if zoomPreviewUrl}
+              <img src={zoomPreviewUrl} alt={spec.image.alt ?? 'Magnified image preview'} class:inverted-preview={spec.image.invert} />
+            {/if}
+          </div>
+        {/if}
+
+        {#if activePanel === 'info' && toolbarInfo}
+          <div class="konva-tool-popover konva-info-popover" role="dialog" tabindex="-1" aria-label="Image information" on:click|stopPropagation on:keydown|stopPropagation>
+            <dl>
+              <div><dt>Asset</dt><dd>{infoValue(toolbarInfo.assetFilename)}</dd></div>
+              <div><dt>Frame</dt><dd>{infoValue(toolbarInfo.frameNumber)}</dd></div>
+              <div><dt>Timestamp</dt><dd>{infoValue(toolbarInfo.timestamp)}</dd></div>
+              <div><dt>Collections</dt><dd>{infoValue(toolbarInfo.collections)}</dd></div>
+            </dl>
+          </div>
+        {/if}
+      </div>
+      {#if status}<span class="konva-image-status">{status}</span>{/if}
+    {/if}
+  </div>
+
   {#if error}
     <div class="konva-image-error" role="status">
       <strong>Image unavailable</strong>
       <span>{error}</span>
     </div>
-  {/if}
-
-  {#if toolbarEnabled}
-    <div class="konva-image-toolbar" role="toolbar" tabindex="-1" aria-label="Image tools" on:mouseleave={closePanelSoon}>
-      <button
-        class="konva-tool-button"
-        type="button"
-        disabled={busy || !stageReady}
-        aria-label="Download image options"
-        aria-expanded={activePanel === 'download'}
-        on:click|stopPropagation={() => togglePanel('download')}
-      >
-        <span aria-hidden="true">↓</span>
-      </button>
-
-      <button
-        class="konva-tool-button"
-        type="button"
-        disabled={!stageReady}
-        aria-label="Show magnified preview"
-        aria-expanded={activePanel === 'zoom'}
-        on:click|stopPropagation={() => togglePanel('zoom')}
-      >
-        <span aria-hidden="true">⌕</span>
-      </button>
-
-      {#if hasToolbarInfo()}
-        <button
-          class="konva-tool-button"
-          type="button"
-          aria-label="Show image information"
-          aria-expanded={activePanel === 'info'}
-          on:click|stopPropagation={() => togglePanel('info')}
-        >
-          <span aria-hidden="true">i</span>
-        </button>
-      {/if}
-
-      {#if onMoreAction}
-        <button
-          class="konva-tool-button"
-          type="button"
-          aria-label="Open image details"
-          on:click|stopPropagation={runMoreAction}
-        >
-          <span aria-hidden="true">•••</span>
-        </button>
-      {/if}
-
-      {#if mode === 'viewer'}
-        <span class="konva-toolbar-divider" aria-hidden="true"></span>
-        <button class="konva-tool-button" type="button" disabled={!stageReady} aria-label="Zoom in" on:click|stopPropagation={() => zoomStage(1.25)}>+</button>
-        <button class="konva-tool-button" type="button" disabled={!stageReady} aria-label="Zoom out" on:click|stopPropagation={() => zoomStage(0.8)}>−</button>
-        <button class="konva-tool-button" type="button" disabled={!stageReady} aria-label="Reset zoom" on:click|stopPropagation={resetStageView}>1:1</button>
-        <button
-          class="konva-tool-button"
-          class:active={measuring}
-          type="button"
-          disabled={!stageReady}
-          aria-label="Measure pixels"
-          on:click|stopPropagation={() => (measuring = !measuring)}
-        >
-          px
-        </button>
-      {/if}
-
-      {#if activePanel === 'download'}
-        <div class="konva-tool-popover konva-download-menu" role="menu" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
-          {#each downloadOptions as option}
-            <button
-              type="button"
-              disabled={busy || !stageReady || downloadOptionDisabled(option)}
-              on:click={() => runToolbarDownload(option.variant, option.filename)}
-            >
-              {option.label}
-            </button>
-          {/each}
-        </div>
-      {/if}
-
-      {#if activePanel === 'zoom'}
-        <div
-          class="konva-tool-popover konva-zoom-popover"
-          role="dialog"
-          tabindex="-1"
-          aria-label="Magnified image preview"
-          style={`width: ${zoomPreviewWidth}px; height: ${zoomPreviewHeight}px;`}
-          on:click|stopPropagation
-          on:keydown|stopPropagation
-        >
-          {#if zoomPreviewUrl}
-            <img src={zoomPreviewUrl} alt={spec.image.alt ?? 'Magnified image preview'} class:inverted-preview={spec.image.invert} />
-          {/if}
-        </div>
-      {/if}
-
-      {#if activePanel === 'info' && toolbarInfo}
-        <div class="konva-tool-popover konva-info-popover" role="dialog" tabindex="-1" aria-label="Image information" on:click|stopPropagation on:keydown|stopPropagation>
-          <dl>
-            <div><dt>Asset</dt><dd>{infoValue(toolbarInfo.assetFilename)}</dd></div>
-            <div><dt>Frame</dt><dd>{infoValue(toolbarInfo.frameNumber)}</dd></div>
-            <div><dt>Timestamp</dt><dd>{infoValue(toolbarInfo.timestamp)}</dd></div>
-            <div><dt>Collections</dt><dd>{infoValue(toolbarInfo.collections)}</dd></div>
-          </dl>
-        </div>
-      {/if}
-    </div>
-    {#if status}<span class="konva-image-status">{status}</span>{/if}
   {/if}
 </div>

@@ -36,6 +36,8 @@
         'applyPreprocessing',
         'backgroundCorrection',
         'backgroundFrameLimit',
+        'backgroundWindowWidth',
+        'backgroundWindowStride',
         'backgroundMinFieldValue',
         'backgroundMaxFieldValue',
         'flatfieldCorrection',

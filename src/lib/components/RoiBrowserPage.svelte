@@ -4,6 +4,7 @@
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
+  import { authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
   import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset } from '$lib/api/types';
@@ -16,6 +17,7 @@
   } from '$lib/utils/frameDisplay';
   import { formatBytes } from '$lib/utils/format';
   import { projectPreferenceKey } from '$lib/utils/preferences';
+  import { createZipBlob, downloadBlob } from '$lib/utils/zipDownload';
   import type { ImageInfoSpec, ImageLayer, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   type RoiViewMode = 'candidate' | 'refined';
@@ -61,7 +63,9 @@
   let frameImageNaturalHeight = 0;
   let detailFrameDisplayMode: FrameDisplayMode = 'preprocessed';
   let frameDetailOpen = false;
-  let frameModalDisplayMode: FrameDisplayMode = 'original';
+  let frameModalDisplayMode: FrameDisplayMode = 'preprocessed';
+  let selectedFrameRoiIds = new Set<string>();
+  let frameRoiDownloadBusy = false;
   let detailFrameFailedUrl = '';
   let frameModalFailedUrl = '';
   let lastDetailFrameUrl = '';
@@ -121,6 +125,9 @@
     frameImageNaturalHeight,
     frameModalSourceDimensions
   );
+  $: frameDetectionsWithImageData = frameDetections.filter(hasRoiImageData);
+  $: selectableFrameDetections = frameDetectionsWithImageData.filter((detection) => detection.id);
+  $: selectedFrameRoiCount = selectableFrameDetections.filter((detection) => detection.id && selectedFrameRoiIds.has(detection.id)).length;
   $: resetFrameContextImage(detailFrameUrl);
   $: resetFrameModalImage(frameModalUrl);
   $: syncPageScrollListener(tileScroller);
@@ -494,17 +501,19 @@
   function openFrameDetailModal() {
     if (!selectedDetection?.frame_id) return;
     frameDetailOpen = true;
-    frameModalDisplayMode = 'original';
+    frameModalDisplayMode = 'preprocessed';
     frameModalFailedUrl = '';
     lastFrameModalUrl = '';
     frameImageNaturalWidth = 0;
     frameImageNaturalHeight = 0;
+    selectedFrameRoiIds = new Set();
   }
 
   function closeFrameDetailModal() {
     frameDetailOpen = false;
     frameModalFailedUrl = '';
     lastFrameModalUrl = '';
+    selectedFrameRoiIds = new Set();
   }
 
   function withoutDuplicateDetections(page: DetectionSummary[]): DetectionSummary[] {
@@ -534,7 +543,7 @@
     if (!client || !detection.id) return '';
     const resizeOptions = roiProxyResizeOptions(detection, proxyMaxDimension);
     const options = { applyMask: maskEnabled, ...resizeOptions };
-    if (viewMode !== 'refined') return client.detectionImageUrl(detection.id, format, options);
+    if (viewMode !== 'refined') return client.detectionRoiUrl(detection.id, format, options);
     if (detection.refined_roi_url && !resizeOptions.width && !resizeOptions.height) return client.resolveApiUrl(detection.refined_roi_url);
     if (detection.refined_detection_id) {
       return client.refinedDetectionRecordImageUrl(detection.refined_detection_id, format, options);
@@ -591,6 +600,10 @@
 
   function roiImageSourceHeight(detection: DetectionSummary): number | null {
     return roiSourceHeight(detection);
+  }
+
+  function hasRoiImageData(detection: DetectionSummary): boolean {
+    return Boolean(detection.id && (numberValue(detection.roi_payload_bytes) ?? 0) > 0);
   }
 
   function roiRenderSpec(
@@ -667,9 +680,62 @@
       display: {
         maxWidth,
         maxHeight,
-        background: '#111916'
+        background: '#111916',
+        allowUpscale: true
       }
     };
+  }
+
+  function toggleFrameRoiSelection(detection: DetectionSummary, checked: boolean) {
+    if (!detection.id) return;
+    const next = new Set(selectedFrameRoiIds);
+    if (checked) next.add(detection.id);
+    else next.delete(detection.id);
+    selectedFrameRoiIds = next;
+  }
+
+  function selectAllFrameRois() {
+    selectedFrameRoiIds = new Set(selectableFrameDetections.map((detection) => detection.id).filter(Boolean) as string[]);
+  }
+
+  function clearFrameRoiSelection() {
+    selectedFrameRoiIds = new Set();
+  }
+
+  async function downloadSelectedFrameRois() {
+    const selected = selectableFrameDetections.filter((detection) => detection.id && selectedFrameRoiIds.has(detection.id));
+    if (!selected.length || frameRoiDownloadBusy) return;
+    frameRoiDownloadBusy = true;
+    try {
+      const entries = [];
+      for (const detection of selected) {
+        const url = imageUrl(detection, roiViewMode, 'png', applyRoiMask);
+        if (!url) continue;
+        entries.push({
+          filename: roiFilenameForDetection(detection, applyRoiMask ? 'masked' : 'roi', roiViewMode),
+          blob: await fetchRemoteBlob(url)
+        });
+      }
+      if (entries.length) downloadBlob(await createZipBlob(entries), frameRoisZipFilename());
+    } finally {
+      frameRoiDownloadBusy = false;
+    }
+  }
+
+  async function fetchRemoteBlob(url: string): Promise<Blob> {
+    const response = await authenticatedFetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Download failed (${response.status}).`);
+    return response.blob();
+  }
+
+  function frameRoisZipFilename(): string {
+    const assetName =
+      selectedParentAsset?.filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_filename?.replace(/\.[^.]+$/, '') ??
+      selectedDetection?.asset_id ??
+      'asset';
+    const suffix = applyRoiMask ? 'masked-rois' : 'rois';
+    return `${assetName}_frame_${frameNumberLabel()}_${suffix}.zip`;
   }
 
   function bboxLabel(detection: DetectionSummary): string {
@@ -718,7 +784,7 @@
     const width = roiImageSourceWidth(detection);
     const height = roiImageSourceHeight(detection);
     if (!width || !height) return { width: maxWidth, height: 112 };
-    const scale = Math.min(1, maxWidth / width, maxHeight / height);
+    const scale = Math.min(maxWidth / width, maxHeight / height);
     return {
       width: Math.max(24, Math.round(width * scale)),
       height: Math.max(24, Math.round(height * scale))
@@ -830,6 +896,32 @@
     }
     const prefix = kind === 'bbox' ? 'bbox' : 'crop_bbox';
     return numberValue(detection[`${prefix}_${field}` as keyof DetectionSummary]);
+  }
+
+  function readTargetTuple(detection: DetectionSummary): [number, number, number, number] | null {
+    return (
+      tupleFromBBoxLike(detection.bbox) ??
+      tupleFromValues(detection.bbox_x, detection.bbox_y, detection.bbox_w, detection.bbox_h) ??
+      tupleFromBBoxLike(detection.metadata?.object_bbox) ??
+      tupleFromBBoxLike(detection.metadata?.bbox) ??
+      tupleFromBBoxLike(detection.metadata?.bounding_box) ??
+      tupleFromBBoxLike(detection.metadata?.object_bounds)
+    );
+  }
+
+  function readCropTuple(detection: DetectionSummary): [number, number, number, number] | null {
+    return (
+      tupleFromBBoxLike(detection.crop_bbox) ??
+      tupleFromValues(
+        detection.crop_bbox_x,
+        detection.crop_bbox_y,
+        detection.crop_bbox_w,
+        detection.crop_bbox_h
+      ) ??
+      tupleFromBBoxLike(detection.metadata?.roi_bbox) ??
+      tupleFromBBoxLike(detection.metadata?.crop_bbox) ??
+      tupleFromBBoxLike(detection.metadata?.crop_bounds)
+    );
   }
 
   function frameContextUrl(detection: DetectionSummary, mode: FrameDisplayMode): string {
@@ -1010,26 +1102,26 @@
     _displayHeight: number,
     sourceDimensions: { width: number; height: number } | null
   ): ImageOverlayRect[] {
-    if (!sourceDimensions) return [];
     const others: ImageOverlayRect[] = [];
     const selectedOverlays: ImageOverlayRect[] = [];
     for (const detection of detectionsForFrame) {
       const rect = frameContextOverlayRect(detection, sourceDimensions, payloadKind);
       if (!rect) continue;
+      const hasPayload = hasRoiImageData(detection);
       if (selected?.id && detection.id === selected.id) {
         selectedOverlays.push({
           ...rect,
-          stroke: '#e2322e',
+          stroke: hasPayload ? '#e2322e' : '#2f6b4f',
           lineWidth: 3,
-          halo: 'rgba(255, 255, 255, 0.8)',
+          halo: hasPayload ? 'rgba(255, 255, 255, 0.8)' : undefined,
           selected: true
         });
       } else {
         others.push({
           ...rect,
-          stroke: '#f5e642',
+          stroke: hasPayload ? '#f5e642' : '#2f6b4f',
           lineWidth: 2,
-          halo: 'rgba(17, 25, 22, 0.7)'
+          halo: hasPayload ? 'rgba(17, 25, 22, 0.7)' : undefined
         });
       }
     }
@@ -1041,20 +1133,52 @@
     sourceDimensions: { width: number; height: number } | null,
     payloadKind: string
   ): Omit<ImageOverlayRect, 'stroke'> | null {
-    const bboxX = bboxValue(detection, 'bbox', 'x');
-    const bboxY = bboxValue(detection, 'bbox', 'y');
-    const bboxW = bboxValue(detection, 'bbox', 'w');
-    const bboxH = bboxValue(detection, 'bbox', 'h');
-    if (bboxX === null || bboxY === null || bboxW === null || bboxH === null) return null;
-    if (!sourceDimensions) return null;
-    const origin = frameContextOrigin(payloadKind);
-    return {
-      x: bboxX - origin.x,
-      y: bboxY - origin.y,
-      w: bboxW,
-      h: bboxH,
-      coordinateSpace: 'source'
-    };
+    const tuples = [readTargetTuple(detection), readCropTuple(detection)].filter(Boolean) as Array<
+      [number, number, number, number]
+    >;
+    if (!tuples.length) return null;
+    const origins = uniqueOrigins([frameContextOrigin(payloadKind), { x: 0, y: 0 }]);
+    let best: Omit<ImageOverlayRect, 'stroke'> | null = null;
+    let bestScore = -1;
+    for (const tuple of tuples) {
+      for (const origin of origins) {
+        const rect = {
+          x: tuple[0] - origin.x,
+          y: tuple[1] - origin.y,
+          w: tuple[2],
+          h: tuple[3],
+          coordinateSpace: 'source' as const
+        };
+        if (rect.w <= 0 || rect.h <= 0) continue;
+        const score = sourceDimensions ? rectIntersectionArea(rect, sourceDimensions) : 1;
+        if (score > bestScore) {
+          best = rect;
+          bestScore = score;
+        }
+      }
+    }
+    return bestScore > 0 ? best : null;
+  }
+
+  function uniqueOrigins(origins: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+    const seen = new Set<string>();
+    return origins.filter((origin) => {
+      const key = `${origin.x}:${origin.y}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function rectIntersectionArea(
+    rect: { x: number; y: number; w: number; h: number },
+    bounds: { width: number; height: number }
+  ): number {
+    const x0 = Math.max(0, rect.x);
+    const y0 = Math.max(0, rect.y);
+    const x1 = Math.min(bounds.width, rect.x + rect.w);
+    const y1 = Math.min(bounds.height, rect.y + rect.h);
+    return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
   }
 
   function fallbackSourceDimensions(displayWidth: number, displayHeight: number): { width: number; height: number } | null {
@@ -1079,19 +1203,72 @@
   }
 
   function tupleFromBBoxLike(value: unknown): [number, number, number, number] | null {
-    if (Array.isArray(value) && value.length >= 4) {
-      return tupleFromValues(value[0], value[1], value[2], value[3]);
-    }
+    if (Array.isArray(value)) return tupleFromArray(value);
     if (!value || typeof value !== 'object') return null;
     const box = value as {
+      bbox?: unknown;
+      box?: unknown;
+      bounds?: unknown;
+      rect?: unknown;
+      xywh?: unknown;
+      xyxy?: unknown;
+      coordinates?: unknown;
       x?: number | string;
       y?: number | string;
       w?: number | string;
       h?: number | string;
       width?: number | string;
       height?: number | string;
+      left?: number | string;
+      top?: number | string;
+      right?: number | string;
+      bottom?: number | string;
+      x0?: number | string;
+      y0?: number | string;
+      x1?: number | string;
+      y1?: number | string;
+      xmin?: number | string;
+      ymin?: number | string;
+      xmax?: number | string;
+      ymax?: number | string;
     };
-    return tupleFromValues(box.x, box.y, box.w ?? box.width, box.h ?? box.height);
+    const nested =
+      tupleFromArray(box.xywh) ??
+      tupleFromXYXY(box.xyxy) ??
+      tupleFromBBoxLike(box.bbox) ??
+      tupleFromBBoxLike(box.box) ??
+      tupleFromBBoxLike(box.bounds) ??
+      tupleFromBBoxLike(box.rect) ??
+      tupleFromBBoxLike(box.coordinates);
+    if (nested) return nested;
+
+    const x = numberValue(box.x ?? box.left ?? box.x0 ?? box.xmin);
+    const y = numberValue(box.y ?? box.top ?? box.y0 ?? box.ymin);
+    const w = numberValue(box.w ?? box.width);
+    const h = numberValue(box.h ?? box.height);
+    if (x !== null && y !== null && w !== null && h !== null) return [x, y, w, h];
+
+    const right = numberValue(box.right ?? box.x1 ?? box.xmax);
+    const bottom = numberValue(box.bottom ?? box.y1 ?? box.ymax);
+    if (x !== null && y !== null && right !== null && bottom !== null) {
+      return [x, y, right - x, bottom - y];
+    }
+    return null;
+  }
+
+  function tupleFromXYXY(value: unknown): [number, number, number, number] | null {
+    if (!Array.isArray(value) || value.length < 4) return null;
+    const x0 = numberValue(value[0]);
+    const y0 = numberValue(value[1]);
+    const x1 = numberValue(value[2]);
+    const y1 = numberValue(value[3]);
+    if (x0 === null || y0 === null || x1 === null || y1 === null) return null;
+    return [x0, y0, x1 - x0, y1 - y0];
+  }
+
+  function tupleFromArray(value: unknown): [number, number, number, number] | null {
+    if (!Array.isArray(value) || value.length < 4) return null;
+    return tupleFromValues(value[0], value[1], value[2], value[3]);
   }
 
   function tupleFromValues(
@@ -1154,7 +1331,8 @@
       display: {
         maxWidth: frameContextImageWidth,
         maxHeight: 360,
-        background: '#050807'
+        background: '#050807',
+        allowUpscale: true
       }
     };
   }
@@ -1189,7 +1367,8 @@
       display: {
         maxWidth: frameModalImageWidth,
         maxHeight: frameModalImageMaxHeight,
-        background: '#050807'
+        background: '#050807',
+        allowUpscale: true
       }
     };
   }
@@ -1639,26 +1818,62 @@
       <section class="frame-roi-section">
         <div class="section-heading">
           <p class="eyebrow">ROIs from frame</p>
-          <strong>{frameDetections.length} ROI{frameDetections.length === 1 ? '' : 's'}</strong>
+          <strong>{frameDetectionsWithImageData.length} ROI{frameDetectionsWithImageData.length === 1 ? '' : 's'} with image data</strong>
         </div>
-        {#if frameDetections.length}
+        {#if frameDetectionsWithImageData.length}
+          <div class="frame-roi-selection-bar">
+            <div class="frame-roi-selection-status">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selectableFrameDetections.length > 0 && selectedFrameRoiCount === selectableFrameDetections.length}
+                  indeterminate={selectedFrameRoiCount > 0 && selectedFrameRoiCount < selectableFrameDetections.length}
+                  on:change={(event) => event.currentTarget.checked ? selectAllFrameRois() : clearFrameRoiSelection()}
+                />
+                Select all
+              </label>
+              <span>{selectedFrameRoiCount} selected</span>
+            </div>
+            <div class="frame-roi-download-actions">
+              <button type="button" on:click={downloadSelectedFrameRois} disabled={!selectedFrameRoiCount || frameRoiDownloadBusy}>
+                {frameRoiDownloadBusy ? 'Preparing zip...' : 'Download selected ROIs'}
+              </button>
+            </div>
+          </div>
           <div class="frame-roi-thumbnail-grid">
-            {#each frameDetections as detection}
-              {#if detection.id && detection.roi_payload_bytes}
-                <button
+            {#each frameDetectionsWithImageData as detection}
+              {#if detection.id}
+                <div
                   class:selected={isSelectedDetection(detection)}
+                  class:download-selected={selectedFrameRoiIds.has(detection.id)}
                   class="frame-roi-thumbnail"
-                  type="button"
-                  on:click={() => (selectedDetection = detection)}
                 >
-                  <div class="frame-roi-thumbnail-image" style={frameRoiThumbnailStyle(detection)}>
-                    <KonvaImageCanvas
-                      spec={roiRenderSpec(detection, 132, 180, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
-                      mode="thumbnail"
+                  <label class="frame-roi-select">
+                    <input
+                      type="checkbox"
+                      checked={selectedFrameRoiIds.has(detection.id)}
+                      on:change={(event) => toggleFrameRoiSelection(detection, event.currentTarget.checked)}
                     />
-                  </div>
-                  <span>ROI {detection.roi_index ?? detection.id}</span>
-                </button>
+                    <span>Select</span>
+                  </label>
+                  <button
+                    class="frame-roi-thumbnail-inner"
+                    type="button"
+                    on:click={() => (selectedDetection = detection)}
+                    on:dblclick={() => {
+                      selectedDetection = detection;
+                      closeFrameDetailModal();
+                    }}
+                  >
+                    <div class="frame-roi-thumbnail-image" style={frameRoiThumbnailStyle(detection)}>
+                      <KonvaImageCanvas
+                        spec={roiRenderSpec(detection, 132, 180, 'none', roiViewMode, imageFormat, applyRoiMask, invertImages, roiProxyMaxDimensionPx)}
+                        mode="thumbnail"
+                      />
+                    </div>
+                    <span>ROI {detection.roi_index ?? detection.id}</span>
+                  </button>
+                </div>
               {/if}
             {/each}
           </div>
@@ -1666,7 +1881,7 @@
         {:else if frameDetectionsLoading}
           <p class="empty">Loading ROIs from this frame.</p>
         {:else}
-          <p class="empty">No stored ROIs were found for this frame.</p>
+          <p class="empty">{frameDetections.length} ROI{frameDetections.length === 1 ? '' : 's'} detected, but none have stored image data.</p>
         {/if}
       </section>
     </div>

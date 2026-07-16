@@ -43,6 +43,8 @@ export type ProcessingSettings = {
   roiAssemblyConnectivity?: number;
   backgroundCorrection?: boolean;
   backgroundFrameLimit?: number;
+  backgroundWindowWidth?: number;
+  backgroundWindowStride?: number;
   backgroundMinFieldValue?: number;
   backgroundMaxFieldValue?: number | null;
   flatfieldCorrection?: boolean;
@@ -156,6 +158,8 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   copy('backgroundCorrection');
   if (settings.backgroundCorrection) {
     copy('backgroundFrameLimit');
+    copy('backgroundWindowWidth');
+    copy('backgroundWindowStride');
     copy('backgroundMinFieldValue');
     copy('backgroundMaxFieldValue');
   }

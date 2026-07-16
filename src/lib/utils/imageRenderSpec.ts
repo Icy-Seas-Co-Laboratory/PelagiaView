@@ -128,6 +128,7 @@ export type ImageRenderSpec = {
     maxWidth?: number;
     maxHeight?: number;
     background?: string;
+    allowUpscale?: boolean;
   };
 };
 

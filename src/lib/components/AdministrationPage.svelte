@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { ApiError } from '$lib/api/client';
-  import FileSelector from '$lib/components/FileSelector.svelte';
   import type {
     AuthUserSummary,
     DirectoryListing,
@@ -11,6 +10,8 @@
   } from '$lib/api/types';
   import { getClient } from '$lib/stores/session';
   import { refreshSessionProjects, session } from '$lib/stores/session';
+  import { startSystemUsagePolling, systemUsageState } from '$lib/stores/systemUsage';
+  import { formatBytes } from '$lib/utils/format';
   import {
     codecAvailable,
     codecUnavailableTitle,
@@ -45,8 +46,6 @@
   let projectFrameStorageQuality = 90;
   let projectRoiStorageEncoding = 'auto';
   let imageCodecAvailability: CodecAvailability = {};
-  let kvstoreDirectoryPath = '.';
-  let kvstoreBrowserError: string | null = null;
   let creatingProject = false;
   let deletingProjectId = '';
   let projectStorageDrafts: Record<string, ProjectStorageDraft> = {};
@@ -80,7 +79,9 @@
   }
 
   onMount(() => {
+    const stopUsagePolling = startSystemUsagePolling();
     void loadAdministrationData();
+    return () => stopUsagePolling();
   });
 
   async function loadAdministrationData() {
@@ -99,28 +100,10 @@
     ]);
     imageCodecAvailability = capabilities?.supported?.image_codec_availability ?? {};
     kvstoreDefaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
-    kvstoreDirectoryPath = kvstoreDefaultDirectory;
     rememberKvstoreSuggestions([
       kvstoreDefaultDirectory,
       ...(roots?.entries ?? []).map((entry) => entry.path)
     ]);
-  }
-
-  async function loadKvstoreDirectory(path = kvstoreDirectoryPath): Promise<DirectoryListing> {
-    const client = getClient();
-    if (!client) throw new Error('Connect to a Pelagia server before browsing files.');
-    kvstoreBrowserError = null;
-    const listing = await client.listRawDirectory(path);
-    kvstoreDirectoryPath = listing.path;
-    rememberKvstoreSuggestions([listing.path, ...listing.entries.map((entry) => entry.path)]);
-    if (listing.source !== 'live-files') {
-      kvstoreBrowserError = 'Live file browsing is not available from this server.';
-      return { ...listing, entries: [] };
-    }
-    return {
-      ...listing,
-      entries: listing.entries.filter((entry) => entry.kind === 'directory')
-    };
   }
 
   async function refreshProjects() {
@@ -486,6 +469,17 @@
     kvstorePathSuggestions = Array.from(next).sort((a, b) => a.localeCompare(b));
   }
 
+  function kvstoreDiskHint(): string | null {
+    const filesystem = $systemUsageState.usage?.storage?.kvstore_directory;
+    if (!filesystem?.available) return null;
+    const freeBytes = numberValue(filesystem.free_bytes);
+    const freePercent = numberValue(filesystem.free_percent);
+    if (freeBytes === null && freePercent === null) return null;
+    const free = freeBytes === null ? 'Free space unknown' : `${formatBytes(freeBytes)} free`;
+    const percent = freePercent === null ? '' : ` (${Math.round(freePercent)}%)`;
+    return `${free}${percent}`;
+  }
+
   function objectValue(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   }
@@ -543,20 +537,6 @@
     roleDrafts = { ...roleDrafts, [userKey(user)]: value };
   }
 
-  function updateKvstoreRootSelection(paths: string[]) {
-    kvstoreRootPath = paths[0] ?? '';
-    kvstoreRootPathTouched = true;
-    if (paths[0]) {
-      kvstoreDirectoryPath = paths[0];
-      rememberKvstoreSuggestions(paths);
-    }
-  }
-
-  function updateKvstoreDirectoryPath(path: string) {
-    kvstoreDirectoryPath = path;
-    rememberKvstoreSuggestions([path]);
-  }
-
   function updateTypedKvstoreRootPath() {
     kvstoreRootPathTouched = true;
     rememberKvstoreSuggestions([kvstoreRootPath]);
@@ -606,6 +586,9 @@
               <option value={path}></option>
             {/each}
           </datalist>
+          {#if kvstoreDiskHint()}
+            <span class="soft">KVStore disk: {kvstoreDiskHint()}</span>
+          {/if}
         </label>
         <label>
           Frame encoding
@@ -636,25 +619,6 @@
           </select>
         </label>
       </div>
-      <details class="control-details span-2">
-        <summary>Browse server folders</summary>
-        {#if kvstoreBrowserError}
-          <p class="form-error">{kvstoreBrowserError}</p>
-        {/if}
-        <FileSelector
-          mode="wizard"
-          multiSelect={false}
-          selectableKinds={['directory']}
-          initialPath={kvstoreDirectoryPath}
-          selectedPaths={kvstoreRootPath ? [kvstoreRootPath] : []}
-          loadDirectory={loadKvstoreDirectory}
-          onSelectionChange={updateKvstoreRootSelection}
-          onPathChange={updateKvstoreDirectoryPath}
-          disabled={!canCreateProject}
-          label="KVStore root path folders"
-        />
-        <p class="soft">Select a folder to use it as the KVStore root path.</p>
-      </details>
       <div class="button-row">
         <button type="button" on:click={createProject} disabled={!canCreateProject || creatingProject || !projectKey.trim()}>
           {creatingProject ? 'Creating' : 'Create project'}

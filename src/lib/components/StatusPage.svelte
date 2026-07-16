@@ -6,7 +6,8 @@
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import StageStatusCard from '$lib/components/StageStatusCard.svelte';
   import { getClient, session } from '$lib/stores/session';
-  import type { Job, JobsSummaryResponse, KvStoreOverview, SystemStatus, WorkerSession } from '$lib/api/types';
+  import { startSystemUsagePolling, systemUsageState } from '$lib/stores/systemUsage';
+  import type { Job, JobsSummaryResponse, KvStoreOverview, SystemStatus, SystemUsageFilesystem, WorkerSession } from '$lib/api/types';
   import { formatBytes, formatCount, formatDate, numericValue, statusTone } from '$lib/utils/format';
   import { dashboardViewHref, type DashboardView } from '$lib/utils/dashboardNavigation';
   import { projectPreferenceKey } from '$lib/utils/preferences';
@@ -98,6 +99,7 @@
 
   onMount(() => {
     let cancelled = false;
+    const stopUsagePolling = startSystemUsagePolling();
     restoreWorkerPreferences();
     workerPreferencesReady = true;
     void refreshStatus({ showLoading: true, isCancelled: () => cancelled });
@@ -108,6 +110,7 @@
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      stopUsagePolling();
     };
   });
 
@@ -289,6 +292,53 @@
 
   function formatByteMetric(value: number | null): string {
     return value === null ? 'Unknown' : formatBytes(value);
+  }
+
+  function formatPercentMetric(value: number | null): string {
+    return value === null ? 'Unknown' : `${Math.round(value)}%`;
+  }
+
+  function cpuPressurePercent(): number | null {
+    const usage = $systemUsageState.usage;
+    const utilization = firstFiniteNumber(usage?.cpu?.utilization_percent);
+    if (utilization !== null) return utilization;
+    const load = firstFiniteNumber(usage?.cpu?.load_average?.one_minute);
+    const cpus = firstFiniteNumber(usage?.cpu?.logical_cpus);
+    if (load === null || cpus === null || cpus <= 0) return null;
+    return (load * 100) / cpus;
+  }
+
+  function cpuLoadLabel(): string {
+    const usage = $systemUsageState.usage;
+    const load = firstFiniteNumber(usage?.cpu?.load_average?.one_minute);
+    const cpus = firstFiniteNumber(usage?.cpu?.logical_cpus);
+    if (load === null || cpus === null) return 'Load average unknown';
+    return `Load ${load.toFixed(2)} / ${formatCount(cpus)} CPU`;
+  }
+
+  function memoryUsedPercent(): number | null {
+    return firstFiniteNumber($systemUsageState.usage?.memory?.used_percent);
+  }
+
+  function memoryAvailableBytes(): number | null {
+    return firstFiniteNumber($systemUsageState.usage?.memory?.available_bytes);
+  }
+
+  function preferredDiskUsage(): SystemUsageFilesystem | null {
+    const storage = $systemUsageState.usage?.storage;
+    return storage?.kvstore_directory ?? storage?.raw_assets_default ?? storage?.database?.storage?.filesystem ?? null;
+  }
+
+  function diskFreeBytes(): number | null {
+    return firstFiniteNumber(preferredDiskUsage()?.free_bytes);
+  }
+
+  function diskFreeLabel(): string {
+    const filesystem = preferredDiskUsage();
+    const freePercent = firstFiniteNumber(filesystem?.free_percent);
+    const path = filesystem?.configured_path ?? filesystem?.probe_path;
+    const percent = freePercent === null ? 'free unknown' : `${Math.round(freePercent)}% free`;
+    return path ? `${percent} on ${path}` : percent;
   }
 
   function lastRefreshedLabel(): string {
@@ -496,6 +546,21 @@
         <span>KVStore size</span>
         <strong>{formatByteMetric(kvstoreTotalFileBytes())}</strong>
         <small>Largest blob {formatByteMetric(kvstoreLargestBlobFileBytes())}</small>
+      </div>
+      <div class="metric">
+        <span>CPU load</span>
+        <strong>{formatPercentMetric(cpuPressurePercent())}</strong>
+        <small>{cpuLoadLabel()}</small>
+      </div>
+      <div class="metric">
+        <span>Memory</span>
+        <strong>{formatPercentMetric(memoryUsedPercent())}</strong>
+        <small>Available {formatByteMetric(memoryAvailableBytes())}</small>
+      </div>
+      <div class="metric">
+        <span>Disk free</span>
+        <strong>{formatByteMetric(diskFreeBytes())}</strong>
+        <small>{diskFreeLabel()}</small>
       </div>
     </div>
 

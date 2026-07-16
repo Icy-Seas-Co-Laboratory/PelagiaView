@@ -13,10 +13,12 @@ export function displayScale(
   sourceWidth: number,
   sourceHeight: number,
   maxWidth: number,
-  maxHeight: number
+  maxHeight: number,
+  allowUpscale = false
 ): number {
   if (!sourceWidth || !sourceHeight) return 1;
-  return Math.min(1, maxWidth / sourceWidth, maxHeight / sourceHeight);
+  const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+  return allowUpscale ? scale : Math.min(1, scale);
 }
 
 export function projectRect(

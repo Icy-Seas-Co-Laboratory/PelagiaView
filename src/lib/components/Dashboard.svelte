@@ -14,6 +14,7 @@
   import RoiBrowserPage from './RoiBrowserPage.svelte';
   import ExplorerPage from './ExplorerPage.svelte';
   import StatusPage from './StatusPage.svelte';
+  import SystemPressureIndicator from './SystemPressureIndicator.svelte';
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
     dashboardViewDefinition,
@@ -91,6 +92,7 @@
             <strong>{nextDefinition.label}</strong>
           </a>
         {/if}
+        <SystemPressureIndicator />
         <HeaderProcessingPresetSelect />
         <HeaderImageInversionToggle />
       </div>

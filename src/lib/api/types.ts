@@ -26,6 +26,71 @@ export type SystemStatus = {
   workers?: Record<string, number>;
 };
 
+export type SystemUsageFilesystem = {
+  available?: boolean;
+  configured_path?: string;
+  resolved_path?: string;
+  probe_path?: string;
+  path_exists?: boolean;
+  total_bytes?: number | null;
+  used_bytes?: number | null;
+  free_bytes?: number | null;
+  used_percent?: number | null;
+  free_percent?: number | null;
+  reason?: string;
+};
+
+export type SystemUsageResponse = {
+  reported_at?: string;
+  host?: Record<string, unknown>;
+  cpu?: {
+    logical_cpus?: number | null;
+    physical_cpus?: number | null;
+    utilization_percent?: number | null;
+    load_average?: {
+      one_minute?: number | null;
+      five_minutes?: number | null;
+      fifteen_minutes?: number | null;
+    } | null;
+  };
+  memory?: {
+    total_bytes?: number | null;
+    used_bytes?: number | null;
+    available_bytes?: number | null;
+    used_percent?: number | null;
+    available_percent?: number | null;
+    swap_total_bytes?: number | null;
+    swap_used_bytes?: number | null;
+    swap_used_percent?: number | null;
+    source?: string;
+  };
+  process?: Record<string, unknown>;
+  storage?: {
+    kvstore_directory?: SystemUsageFilesystem;
+    raw_assets_default?: SystemUsageFilesystem;
+    database?: {
+      connection?: Record<string, unknown>;
+      storage?: {
+        available?: boolean;
+        database_name?: string | null;
+        database_bytes?: number | null;
+        data_directory?: string | null;
+        filesystem?: SystemUsageFilesystem;
+        reason?: string;
+      };
+    };
+    [key: string]: unknown;
+  };
+  stress?: {
+    status?: 'ok' | 'warning' | 'critical' | string;
+    alerts?: Array<{
+      level?: 'warning' | 'critical' | string;
+      metric?: string;
+      message?: string;
+    }>;
+  };
+};
+
 export type SystemConfigResponse = {
   effective?: {
     processing?: {
@@ -848,6 +913,8 @@ export type SegmentationOptions = {
   background_start_frame?: number | null;
   background_end_frame?: number | null;
   background_limit?: number | null;
+  background_window_stride?: number | null;
+  background_window_width?: number | null;
   flatfield_axis?: number | null;
   flatfield_min_field_value?: number | null;
   flatfield_max_field_value?: number | null;
@@ -1012,6 +1079,8 @@ export type FramePreprocessOptions = {
   background_start_frame?: number | null;
   background_end_frame?: number | null;
   background_limit?: number | null;
+  background_window_stride?: number | null;
+  background_window_width?: number | null;
   invert_intensity?: boolean | null;
   store?: boolean;
   encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | null;
