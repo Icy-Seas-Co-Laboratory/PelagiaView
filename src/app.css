@@ -8,6 +8,10 @@
   text-rendering: optimizeLegibility;
 }
 
+html {
+  overflow: hidden;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -16,6 +20,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 button,
@@ -263,6 +268,7 @@ label.field-disabled .field-help-icon {
 .field-help-icon::before,
 .field-help-icon::after {
   position: absolute;
+  display: none;
   z-index: 1001;
   opacity: 0;
   pointer-events: none;
@@ -304,6 +310,7 @@ label.field-disabled .field-help-icon {
 .field-help-icon:hover::after,
 .field-help-icon:focus-visible::before,
 .field-help-icon:focus-visible::after {
+  display: block;
   opacity: 1;
   transform: translate(0, -50%);
 }
@@ -692,6 +699,7 @@ h2 {
   display: grid;
   grid-template-columns: 17rem minmax(0, 1fr);
   width: 100%;
+  max-width: 100vw;
   height: 100dvh;
   overflow: hidden;
   background: #e8efec;
@@ -706,6 +714,7 @@ h2 {
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
+  max-width: 100%;
   overflow: hidden;
   padding: 0.75rem 0.9rem 0.9rem 0;
 }
@@ -1210,14 +1219,17 @@ h2 {
 .dashboard-surface {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   padding: 0;
 }
 
 .page-scroll-content {
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: clamp(0.25rem, 1vw, 0.5rem);
 }
 
@@ -1937,6 +1949,7 @@ button.job-action-muted:hover:not(:disabled) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 430px);
   gap: 0.25rem;
+  min-width: 0;
 }
 
 .ingestion-layout {
@@ -2500,6 +2513,7 @@ details[open] > summary.has-active-settings:not(.section-heading)::after {
   display: grid;
   align-content: start;
   gap: 0.25rem;
+  min-width: 0;
 }
 
 .compact-metrics {
@@ -3597,17 +3611,20 @@ details[open] > summary.has-active-settings:not(.section-heading)::after {
   display: grid;
   align-content: start;
   gap: 0.25rem;
+  min-width: 0;
 }
 
 .roi-filter-panel {
   display: grid;
   align-content: start;
   gap: 0.5rem;
+  min-width: 0;
 }
 
 .roi-results-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
 }
 
