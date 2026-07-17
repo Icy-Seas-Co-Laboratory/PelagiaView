@@ -353,7 +353,7 @@
       collections: asset.collectionsText || undefined,
       media_count: asset.media_count,
       metadata,
-      n_tile: Math.max(1, Math.round(Number(asset.nTile) || nTile))
+      n_tile: Math.max(1, Math.round(Number(nTile) || 1))
     };
   }
 
@@ -724,10 +724,6 @@
       <div class="ingestion-queue-controls">
         <div class="form-grid">
           <label>
-            Tile count
-            <input type="number" min="1" bind:value={nTile} />
-          </label>
-          <label>
             Collections
             <CollectionTokenInput
               value={collections}
@@ -737,6 +733,15 @@
             />
           </label>
         </div>
+        <details class="advanced-search-panel ingestion-advanced-panel">
+          <summary>Advanced options</summary>
+          <div class="advanced-search-grid">
+            <label>
+              Tile count
+              <input type="number" min="1" bind:value={nTile} />
+            </label>
+          </div>
+        </details>
 
         <div class="button-row">
           <button type="button" on:click={analyzeSelection} disabled={analyzing || selectedPathList.length === 0}>
@@ -800,7 +805,6 @@
                 <th>Asset</th>
                 <th>Type</th>
                 <th>Collections</th>
-                <th>Tiles</th>
                 <th>Source datetime</th>
                 <th>Facts</th>
                 <th>Status</th>
@@ -833,9 +837,6 @@
                       placeholder="Add collection"
                       onChange={(value) => updateAsset(index, { collectionsText: value })}
                     />
-                  </td>
-                  <td class="analysis-number-cell">
-                    <input type="number" min="1" value={asset.nTile} on:input={(event) => updateAsset(index, { nTile: Number(event.currentTarget.value) })} />
                   </td>
                   <td class="analysis-timestamp-cell">
                     <input

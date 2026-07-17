@@ -627,6 +627,21 @@ export type ProcessingStatusSummaryResponse = {
   snapshot?: ProcessingStatusSnapshot;
 };
 
+export type ProcessingStatusFacets = {
+  assets?: Record<string, number | string>;
+  collections?: Record<string, number | string>;
+  preprocessing_status?: Record<string, number | string>;
+  candidate_detection_status?: Record<string, number | string>;
+  roi_refinement_status?: Record<string, number | string>;
+  refinement_state?: Record<string, number | string>;
+};
+
+export type ProcessingStatusFacetsResponse = {
+  summary?: ProcessingStatusSummary;
+  facets?: ProcessingStatusFacets;
+  snapshot?: ProcessingStatusSnapshot;
+};
+
 export type ProcessingStatusFrame = {
   project_id?: string | null;
   frame_id: string;
@@ -665,8 +680,8 @@ export type ProcessingStatusFrameIdsResponse = {
 
 export type ProcessingStatusFilters = {
   run_id?: string | null;
-  asset_id?: string | null;
-  collection?: string | null;
+  asset_id?: string | string[] | null;
+  collection?: string | string[] | null;
   preprocessing_status?: string | string[] | null;
   candidate_detection_status?: string | string[] | null;
   roi_refinement_status?: string | string[] | null;

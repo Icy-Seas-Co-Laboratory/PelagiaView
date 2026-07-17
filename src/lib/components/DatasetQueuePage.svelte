@@ -7,9 +7,9 @@
     ProcessingQueueRequest,
     ProcessingQueueResponse,
     ProcessingQueueStage,
+    ProcessingStatusFacets,
     ProcessingStatusFilters,
     ProcessingStatusSummary,
-    ProcessingStatusSummaryResponse,
     RawAsset,
     RoiRefinementCapabilities,
     SegmentationCapabilities,
@@ -75,17 +75,6 @@
   };
 
   type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection' | 'refinement';
-
-  type ProcessingSummaryNumberKey =
-    | 'total_frame_count'
-    | 'preprocessing_succeeded_count'
-    | 'candidate_detection_succeeded_count'
-    | 'roi_refinement_succeeded_count'
-    | 'frames_with_candidates_count'
-    | 'frames_with_refined_rois_count'
-    | 'candidate_detection_count'
-    | 'refined_detection_count'
-    | 'unrefined_candidate_count';
 
   let datasets: Dataset[] = [];
   let collectionOptions: string[] = [];
@@ -1109,18 +1098,6 @@
     return numericStatusValue(summary?.total_frame_count);
   }
 
-  function statusCountMap(stage: 'preprocessing' | 'candidate_detection' | 'roi_refinement'): Map<string, number> {
-    const counts = activeStatusSummary?.by_status?.[stage] ?? {};
-    return new Map(Object.entries(counts).map(([status, count]) => [status, numericStatusValue(count)]));
-  }
-
-  function refinementCountMap(): Map<string, number> {
-    return new Map([
-      ['refined', numericStatusValue(activeStatusSummary?.refined_detection_count)],
-      ['unrefined', numericStatusValue(activeStatusSummary?.unrefined_candidate_count)]
-    ]);
-  }
-
   function numericStatusValue(value: unknown): number {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value === 'string') {
@@ -1130,8 +1107,10 @@
     return 0;
   }
 
-  function baseStatusFilters(): ProcessingStatusFilters {
+  function activeStatusFacetFilters(): ProcessingStatusFilters {
     const filters: ProcessingStatusFilters = {};
+    if (selectedAssetIds.size) filters.asset_id = [...selectedAssetIds];
+    if (selectedCollections.size) filters.collection = [...selectedCollections];
     if (mode === 'preprocessing' && selectedPreprocessStates.size) {
       filters.preprocessing_status = [...selectedPreprocessStates];
     }
@@ -1228,70 +1207,6 @@
     };
   }
 
-  function summaryScopes(): ProcessingStatusFilters[] {
-    return summaryScopesForOption();
-  }
-
-  function summaryScopesForOption(group?: FilterGroup, value?: string): ProcessingStatusFilters[] {
-    const base = baseStatusFiltersForOption(group, value);
-    const assets =
-      group === 'asset'
-        ? [value ?? null]
-        : selectedAssetIds.size
-          ? [...selectedAssetIds]
-          : [null];
-    const collections =
-      group === 'collection'
-        ? [value ?? null]
-        : selectedCollections.size
-          ? [...selectedCollections]
-          : [null];
-    const scopes: ProcessingStatusFilters[] = [];
-    for (const assetId of assets) {
-      for (const collection of collections) {
-        scopes.push({
-          ...base,
-          asset_id: assetId,
-          collection
-        });
-      }
-    }
-    return scopes;
-  }
-
-  function baseStatusFiltersForOption(group?: FilterGroup, value?: string): ProcessingStatusFilters {
-    const filters: ProcessingStatusFilters = {};
-    if (mode === 'preprocessing') {
-      if (group === 'preprocess' && value) {
-        filters.preprocessing_status = value;
-      } else if (group !== 'preprocess' && selectedPreprocessStates.size) {
-        filters.preprocessing_status = [...selectedPreprocessStates];
-      }
-    }
-    if (mode === 'segmentation') {
-      filters.preprocessing_status = 'succeeded';
-      if (group === 'detection' && value) {
-        filters.candidate_detection_status = value;
-      } else if (group !== 'detection' && selectedDetectionStates.size) {
-        filters.candidate_detection_status = [...selectedDetectionStates];
-      }
-    }
-    if (mode === 'roi_refinement') {
-      filters.candidate_detection_status = 'succeeded';
-      const state =
-        group === 'refinement'
-          ? value
-          : selectedRefinementStates.size === 0
-            ? 'unrefined'
-            : selectedRefinementStates.size === 1
-              ? [...selectedRefinementStates][0]
-              : null;
-      if (state === 'refined') filters.has_refined_rois = true;
-      if (state === 'unrefined') filters.has_refined_rois = false;
-    }
-    return filters;
-  }
-
   function scheduleStatusRefresh() {
     if (statusRefreshTimer !== null) window.clearTimeout(statusRefreshTimer);
     statusRefreshTimer = window.setTimeout(() => {
@@ -1305,35 +1220,19 @@
     if (!client) return;
     const sequence = ++statusRefreshSequence;
     try {
-      const [
-        active,
-        assetCounts,
-        collectionCounts,
-        preprocessCounts,
-        detectionCounts,
-        refinementCounts
-      ] = await Promise.all([
-        fetchMergedStatusSummary(client, summaryScopes()),
-        fetchOptionFrameCounts(client, 'asset', datasets.map((dataset) => dataset.asset.id).filter(Boolean)),
-        fetchOptionFrameCounts(client, 'collection', collectionOptions),
-        mode === 'preprocessing'
-          ? fetchOptionFrameCounts(client, 'preprocess', preprocessStateOptions.map((option) => option.id))
-          : Promise.resolve(new Map<string, number>()),
-        mode === 'segmentation'
-          ? fetchOptionFrameCounts(client, 'detection', detectionStateOptions.map((option) => option.id))
-          : Promise.resolve(new Map<string, number>()),
-        mode === 'roi_refinement'
-          ? fetchRefinementOptionCounts(client, refinementStateOptions.map((option) => option.id))
-          : Promise.resolve(new Map<string, number>())
-      ]);
+      const response = await client.processingStatusFacets(activeStatusFacetFilters());
       if (sequence !== statusRefreshSequence) return;
-      activeStatusSummary = active.summary;
-      statusSnapshotVersion = active.snapshotVersion;
-      assetOptionFrameCounts = assetCounts;
-      collectionOptionFrameCounts = collectionCounts;
-      preprocessOptionFrameCounts = preprocessCounts;
-      detectionOptionFrameCounts = detectionCounts;
-      refinementOptionRoiCounts = refinementCounts;
+      const facets = response.facets ?? {};
+      activeStatusSummary = response.summary ?? {};
+      statusSnapshotVersion = String(response.snapshot?.status_version ?? '') || null;
+      assetOptionFrameCounts = facetCountMap(facets.assets);
+      collectionOptionFrameCounts = facetCountMap(facets.collections);
+      preprocessOptionFrameCounts =
+        mode === 'preprocessing' ? facetCountMap(facets.preprocessing_status) : new Map<string, number>();
+      detectionOptionFrameCounts =
+        mode === 'segmentation' ? facetCountMap(facets.candidate_detection_status) : new Map<string, number>();
+      refinementOptionRoiCounts =
+        mode === 'roi_refinement' ? facetCountMap(facets.refinement_state) : new Map<string, number>();
     } catch (err) {
       if (sequence === statusRefreshSequence) {
         error = err instanceof Error ? err.message : String(err);
@@ -1341,84 +1240,8 @@
     }
   }
 
-  async function fetchMergedStatusSummary(
-    client: NonNullable<ReturnType<typeof getClient>>,
-    scopes: ProcessingStatusFilters[]
-  ): Promise<{ summary: ProcessingStatusSummary; snapshotVersion: string | null }> {
-    const summaries = await Promise.all(scopes.map((filters) => client.processingStatusSummary(filters)));
-    return mergeStatusSummaries(summaries);
-  }
-
-  async function fetchOptionFrameCounts(
-    client: NonNullable<ReturnType<typeof getClient>>,
-    group: Exclude<FilterGroup, 'refinement'>,
-    values: string[]
-  ): Promise<Map<string, number>> {
-    const entries = await Promise.all(
-      values.map(async (value) => {
-        const merged = await fetchMergedStatusSummary(client, summaryScopesForOption(group, value));
-        return [value, statusFrameCount(merged.summary)] as const;
-      })
-    );
-    return new Map(entries);
-  }
-
-  async function fetchRefinementOptionCounts(
-    client: NonNullable<ReturnType<typeof getClient>>,
-    values: string[]
-  ): Promise<Map<string, number>> {
-    const entries = await Promise.all(
-      values.map(async (value) => {
-        const merged = await fetchMergedStatusSummary(client, summaryScopesForOption('refinement', value));
-        const count =
-          value === 'refined'
-            ? numericStatusValue(merged.summary.refined_detection_count)
-            : numericStatusValue(merged.summary.unrefined_candidate_count);
-        return [value, count] as const;
-      })
-    );
-    return new Map(entries);
-  }
-
-  function mergeStatusSummaries(responses: ProcessingStatusSummaryResponse[]): {
-    summary: ProcessingStatusSummary;
-    snapshotVersion: string | null;
-  } {
-    const merged: ProcessingStatusSummary = { by_status: {} };
-    let snapshotVersion: string | null = null;
-    for (const response of responses) {
-      const summary = response.summary ?? {};
-      snapshotVersion = String(response.snapshot?.status_version ?? snapshotVersion ?? '');
-      addSummaryNumber(merged, 'total_frame_count', summary.total_frame_count);
-      addSummaryNumber(merged, 'preprocessing_succeeded_count', summary.preprocessing_succeeded_count);
-      addSummaryNumber(merged, 'candidate_detection_succeeded_count', summary.candidate_detection_succeeded_count);
-      addSummaryNumber(merged, 'roi_refinement_succeeded_count', summary.roi_refinement_succeeded_count);
-      addSummaryNumber(merged, 'frames_with_candidates_count', summary.frames_with_candidates_count);
-      addSummaryNumber(merged, 'frames_with_refined_rois_count', summary.frames_with_refined_rois_count);
-      addSummaryNumber(merged, 'candidate_detection_count', summary.candidate_detection_count);
-      addSummaryNumber(merged, 'refined_detection_count', summary.refined_detection_count);
-      addSummaryNumber(merged, 'unrefined_candidate_count', summary.unrefined_candidate_count);
-      mergeByStatus(merged, summary);
-      if (summary.updated_at && (!merged.updated_at || summary.updated_at > merged.updated_at)) merged.updated_at = summary.updated_at;
-    }
-    return { summary: merged, snapshotVersion: snapshotVersion || null };
-  }
-
-  function addSummaryNumber(summary: ProcessingStatusSummary, key: ProcessingSummaryNumberKey, value: unknown) {
-    const current = numericStatusValue(summary[key]);
-    summary[key] = current + numericStatusValue(value);
-  }
-
-  function mergeByStatus(target: ProcessingStatusSummary, source: ProcessingStatusSummary) {
-    const targetByStatus = target.by_status ?? {};
-    for (const [stage, counts] of Object.entries(source.by_status ?? {})) {
-      const stageCounts = targetByStatus[stage] ?? {};
-      for (const [status, count] of Object.entries(counts)) {
-        stageCounts[status] = numericStatusValue(stageCounts[status]) + numericStatusValue(count);
-      }
-      targetByStatus[stage] = stageCounts;
-    }
-    target.by_status = targetByStatus;
+  function facetCountMap(facet: ProcessingStatusFacets[keyof ProcessingStatusFacets] | undefined): Map<string, number> {
+    return new Map(Object.entries(facet ?? {}).map(([key, value]) => [key, numericStatusValue(value)]));
   }
 
   function stateLabel(state: string): string {
