@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
+  import InfoChip from '$lib/components/InfoChip.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type {
@@ -35,6 +36,12 @@
   let message: string | null = null;
   let error: string | null = null;
   let nTile = 2;
+  let ingestionScanMode: IngestionScanMode = 'area_scan';
+  let ingestionLineScanAxis = 0;
+  let ingestionBackgroundWindowWidth = 25;
+  let ingestionBackgroundWindowStride = 25;
+  let ingestionFlatfieldWindowWidth = 1;
+  let ingestionFlatfieldWindowStride = 1;
   let collections = '';
   let collectionOptions: string[] = [];
   let globalDefaultProcessingSettings: ProcessingSettings = {};
@@ -53,8 +60,16 @@
 
   type IngestionPreferences = {
     nTile: number;
+    ingestionScanMode: IngestionScanMode;
+    ingestionLineScanAxis: number;
+    ingestionBackgroundWindowWidth: number;
+    ingestionBackgroundWindowStride: number;
+    ingestionFlatfieldWindowWidth: number;
+    ingestionFlatfieldWindowStride: number;
     collections: string;
   };
+
+  type IngestionScanMode = 'area_scan' | 'line_scan';
 
   type EditableAnalyzedAsset = AnalyzedIngestionAsset & {
     enabled: boolean;
@@ -78,6 +93,12 @@
 
   $: ingestionPreferenceSnapshot = {
     nTile,
+    ingestionScanMode,
+    ingestionLineScanAxis,
+    ingestionBackgroundWindowWidth,
+    ingestionBackgroundWindowStride,
+    ingestionFlatfieldWindowWidth,
+    ingestionFlatfieldWindowStride,
     collections
   };
   $: collectionSuggestions = uniqueStrings([
@@ -126,13 +147,26 @@
 
   function applyConfigDefaults(config: SystemConfigResponse | null) {
     const videoIngest = processingSection(config, 'video_ingest');
+    const preprocessing = processingSection(config, 'preprocessing');
+    const flatfield = processingSection(config, 'flatfield');
     nTile = numberDefault(videoIngest, 'n_tile', nTile);
+    ingestionBackgroundWindowWidth = numberDefault(preprocessing, 'background_window_width', ingestionBackgroundWindowWidth);
+    ingestionBackgroundWindowStride = numberDefault(preprocessing, 'background_window_stride', ingestionBackgroundWindowStride);
+    ingestionLineScanAxis = numberDefault(flatfield, 'flatfield_axis', ingestionLineScanAxis);
+    ingestionFlatfieldWindowWidth = numberDefault(flatfield, 'background_window_width', ingestionFlatfieldWindowWidth);
+    ingestionFlatfieldWindowStride = numberDefault(flatfield, 'background_window_stride', ingestionFlatfieldWindowStride);
   }
 
   function restorePreferences() {
     const preferences = readPreferences<IngestionPreferences>(ingestionPreferenceKey());
     if (!preferences) return;
     nTile = numberPreference(preferences.nTile, nTile);
+    ingestionScanMode = normalizeIngestionScanMode(stringPreference(preferences.ingestionScanMode, ingestionScanMode));
+    ingestionLineScanAxis = normalizeLineScanAxis(numberPreference(preferences.ingestionLineScanAxis, ingestionLineScanAxis));
+    ingestionBackgroundWindowWidth = normalizeOddPositive(numberPreference(preferences.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
+    ingestionBackgroundWindowStride = normalizeOddPositive(numberPreference(preferences.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
+    ingestionFlatfieldWindowWidth = normalizeOddPositive(numberPreference(preferences.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
+    ingestionFlatfieldWindowStride = normalizeOddPositive(numberPreference(preferences.ingestionFlatfieldWindowStride, ingestionFlatfieldWindowStride));
     collections = stringPreference(preferences.collections, collections);
   }
 
@@ -145,7 +179,13 @@
 
   function currentPageProcessingSettings(): ProcessingSettings {
     return {
-      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1)))
+      ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1))),
+      ingestionScanMode,
+      ingestionLineScanAxis: normalizeLineScanAxis(ingestionLineScanAxis),
+      ingestionBackgroundWindowWidth: normalizeOddPositive(ingestionBackgroundWindowWidth),
+      ingestionBackgroundWindowStride: normalizeOddPositive(ingestionBackgroundWindowStride),
+      ingestionFlatfieldWindowWidth: normalizeOddPositive(ingestionFlatfieldWindowWidth),
+      ingestionFlatfieldWindowStride: normalizeOddPositive(ingestionFlatfieldWindowStride)
     };
   }
 
@@ -168,6 +208,24 @@
   function applyProcessingSettings(settings: ProcessingSettings) {
     if ('ingestionTileCount' in settings) {
       nTile = Math.max(1, Math.round(numberPreference(settings.ingestionTileCount, nTile)));
+    }
+    if ('ingestionScanMode' in settings) {
+      ingestionScanMode = normalizeIngestionScanMode(stringPreference(settings.ingestionScanMode, ingestionScanMode));
+    }
+    if ('ingestionLineScanAxis' in settings) {
+      ingestionLineScanAxis = normalizeLineScanAxis(numberPreference(settings.ingestionLineScanAxis, ingestionLineScanAxis));
+    }
+    if ('ingestionBackgroundWindowWidth' in settings) {
+      ingestionBackgroundWindowWidth = normalizeOddPositive(numberPreference(settings.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
+    }
+    if ('ingestionBackgroundWindowStride' in settings) {
+      ingestionBackgroundWindowStride = normalizeOddPositive(numberPreference(settings.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
+    }
+    if ('ingestionFlatfieldWindowWidth' in settings) {
+      ingestionFlatfieldWindowWidth = normalizeOddPositive(numberPreference(settings.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
+    }
+    if ('ingestionFlatfieldWindowStride' in settings) {
+      ingestionFlatfieldWindowStride = normalizeOddPositive(numberPreference(settings.ingestionFlatfieldWindowStride, ingestionFlatfieldWindowStride));
     }
   }
 
@@ -227,6 +285,11 @@
     }
     message = null;
     error = null;
+    const optionError = validateIngestionScanOptions();
+    if (optionError) {
+      error = optionError;
+      return;
+    }
     analyzing = true;
     const nextAssets: EditableAnalyzedAsset[] = [];
     for (const path of paths) {
@@ -234,7 +297,8 @@
         const response = await client.analyzeIngestionSource({
           source_path: path,
           n_tile: nTile,
-          collections: collections || undefined
+          collections: collections || undefined,
+          ...ingestionScanRequestOptions()
         });
         nextAssets.push(...(response.assets ?? []).map((asset) => editableAsset(asset, response.suggested_ingestion_request)));
       } catch (err) {
@@ -255,6 +319,11 @@
     if (!client) return;
     message = null;
     error = null;
+    const optionError = validateIngestionScanOptions();
+    if (optionError) {
+      error = optionError;
+      return;
+    }
     queueing = true;
     const enabledAssets = analyzedAssets.filter((asset) => asset.enabled);
     const timestampError = validateAnalyzedAssetTimestamps(enabledAssets);
@@ -281,7 +350,8 @@
         assets,
         source_path: commonSourcePath(assets),
         source_type: sourceType(assets),
-        n_tile: nTile
+        n_tile: nTile,
+        ...ingestionScanRequestOptions()
       });
       const nextJobIds = (response.jobs ?? []).map((job) => job.id).filter((id): id is string => Boolean(id));
       submittedJobIds = uniqueStrings([...nextJobIds, ...submittedJobIds]).slice(0, 100);
@@ -355,6 +425,77 @@
       metadata,
       n_tile: Math.max(1, Math.round(Number(nTile) || 1))
     };
+  }
+
+  function ingestionScanRequestOptions(): Pick<
+    QueueAssetsRequest,
+    | 'generate_backgrounds'
+    | 'generate_flatfield_profiles'
+    | 'flatfield_axis'
+    | 'background_window_width'
+    | 'background_window_stride'
+    | 'flatfield_window_width'
+    | 'flatfield_window_stride'
+  > {
+    if (ingestionScanMode === 'line_scan') {
+      return {
+        generate_backgrounds: false,
+        generate_flatfield_profiles: true,
+        flatfield_axis: normalizeLineScanAxis(ingestionLineScanAxis),
+        flatfield_window_width: normalizeOddPositive(ingestionFlatfieldWindowWidth),
+        flatfield_window_stride: normalizeOddPositive(ingestionFlatfieldWindowStride)
+      };
+    }
+    return {
+      generate_backgrounds: true,
+      generate_flatfield_profiles: false,
+      background_window_width: normalizeOddPositive(ingestionBackgroundWindowWidth),
+      background_window_stride: normalizeOddPositive(ingestionBackgroundWindowStride)
+    };
+  }
+
+  function validateIngestionScanOptions(): string | null {
+    if (ingestionScanMode === 'line_scan') {
+      const axis = Number(ingestionLineScanAxis);
+      if (axis !== 0 && axis !== 1) return 'Line scan axis must be 0 or 1.';
+      return validateWindowPair(
+        ingestionFlatfieldWindowWidth,
+        ingestionFlatfieldWindowStride,
+        'Flatfield Window Width',
+        'Flatfield Window Stride'
+      );
+    }
+    return validateWindowPair(
+      ingestionBackgroundWindowWidth,
+      ingestionBackgroundWindowStride,
+      'Background Window Width',
+      'Background Window Stride'
+    );
+  }
+
+  function normalizeIngestionScanMode(value: string | null | undefined): IngestionScanMode {
+    return value === 'line_scan' ? 'line_scan' : 'area_scan';
+  }
+
+  function normalizeLineScanAxis(value: unknown): number {
+    return Number(value) === 1 ? 1 : 0;
+  }
+
+  function normalizeOddPositive(value: unknown): number {
+    const rounded = Math.max(1, Math.round(Number(value) || 1));
+    return rounded % 2 === 1 ? rounded : rounded + 1;
+  }
+
+  function isPositiveOdd(value: unknown): boolean {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= 1 && number % 2 === 1;
+  }
+
+  function validateWindowPair(width: unknown, stride: unknown, widthLabel: string, strideLabel: string): string | null {
+    if (!isPositiveOdd(width)) return `${widthLabel} must be a positive odd integer.`;
+    if (!isPositiveOdd(stride)) return `${strideLabel} must be a positive odd integer.`;
+    if (Number(stride) > Number(width)) return `${strideLabel} must be within the range [1, ${widthLabel}].`;
+    return null;
   }
 
   function collectionValues(value: string): string[] {
@@ -724,6 +865,34 @@
       <div class="ingestion-queue-controls">
         <div class="form-grid">
           <label>
+            <span class="field-label-row">
+              Acquisition mode
+              <InfoChip
+                label="Acquisition mode help"
+                text="Choose the mode that best matches the imaging sensor and acquisition pattern. Area Scan prepares mean backgrounds; Line Scan prepares flatfield profiles."
+              />
+            </span>
+            <select bind:value={ingestionScanMode}>
+              <option value="area_scan">Area Scan</option>
+              <option value="line_scan">Line Scan</option>
+            </select>
+          </label>
+          {#if ingestionScanMode === 'line_scan'}
+            <label>
+              <span class="field-label-row">
+                Line scan axis
+                <InfoChip
+                  label="Line scan axis help"
+                  text="Axis 0 means profiles are generated across columns; axis 1 means profiles are generated across rows. Choose the sensor dimension that receives line-wise correction."
+                />
+              </span>
+              <select bind:value={ingestionLineScanAxis}>
+                <option value={0}>0</option>
+                <option value={1}>1</option>
+              </select>
+            </label>
+          {/if}
+          <label>
             Collections
             <CollectionTokenInput
               value={collections}
@@ -737,8 +906,54 @@
           <summary>Advanced options</summary>
           <div class="advanced-search-grid">
             <label>
-              Tile count
+              <span class="field-label-row">
+                Tile count
+                <InfoChip
+                  label="Tile count help"
+                  text="Splits large frames into this many processing tiles during ingestion. Increase only when memory pressure is high or frames are very large."
+                />
+              </span>
               <input type="number" min="1" bind:value={nTile} />
+            </label>
+            <label class:field-disabled={ingestionScanMode !== 'area_scan'}>
+              <span class="field-label-row">
+                Background Window Width
+                <InfoChip
+                  label="Background Window Width help"
+                  text="Number of frames used for each area-scan mean background. Must be a positive odd value."
+                />
+              </span>
+              <input type="number" min="1" step="2" bind:value={ingestionBackgroundWindowWidth} disabled={ingestionScanMode !== 'area_scan'} />
+            </label>
+            <label class:field-disabled={ingestionScanMode !== 'area_scan'}>
+              <span class="field-label-row">
+                Background Window Stride
+                <InfoChip
+                  label="Background Window Stride help"
+                  text="Number of frames to advance before calculating the next background. Must be at least 1 and no larger than the background window width."
+                />
+              </span>
+              <input type="number" min="1" step="2" bind:value={ingestionBackgroundWindowStride} disabled={ingestionScanMode !== 'area_scan'} />
+            </label>
+            <label class:field-disabled={ingestionScanMode !== 'line_scan'}>
+              <span class="field-label-row">
+                Flatfield Window Width
+                <InfoChip
+                  label="Flatfield Window Width help"
+                  text="Number of frames used for each line-scan flatfield profile. Must be a positive odd value."
+                />
+              </span>
+              <input type="number" min="1" step="2" bind:value={ingestionFlatfieldWindowWidth} disabled={ingestionScanMode !== 'line_scan'} />
+            </label>
+            <label class:field-disabled={ingestionScanMode !== 'line_scan'}>
+              <span class="field-label-row">
+                Flatfield Window Stride
+                <InfoChip
+                  label="Flatfield Window Stride help"
+                  text="Number of frames to advance before calculating the next line-scan profile. Must be at least 1 and no larger than the flatfield window width."
+                />
+              </span>
+              <input type="number" min="1" step="2" bind:value={ingestionFlatfieldWindowStride} disabled={ingestionScanMode !== 'line_scan'} />
             </label>
           </div>
         </details>

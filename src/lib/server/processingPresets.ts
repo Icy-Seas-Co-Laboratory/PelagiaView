@@ -138,29 +138,31 @@ function groupSettings(settings: Record<string, unknown>): Record<string, Record
 }
 
 function settingGroupForKey(key: string): string {
-  if (['ingestionTileCount'].includes(key)) {
+  if (
+    [
+      'ingestionTileCount',
+      'ingestionScanMode',
+      'ingestionLineScanAxis',
+      'ingestionBackgroundWindowWidth',
+      'ingestionBackgroundWindowStride',
+      'ingestionFlatfieldWindowWidth',
+      'ingestionFlatfieldWindowStride'
+    ].includes(key)
+  ) {
     return 'ingestion';
   }
   if (
     [
       'framePayloadKind',
       'applyPreprocessing',
-      'backgroundCorrection',
-      'backgroundFrameLimit',
-      'backgroundMinFieldValue',
-      'backgroundMaxFieldValue',
-      'flatfieldCorrection',
-      'flatfieldQ',
-      'flatfieldAxis',
-      'flatfieldMinFieldValue',
-      'flatfieldMaxFieldValue',
+      'minFieldValue',
+      'maxFieldValue',
       'applyMask',
       'cropEnabled',
       'cropX',
       'cropY',
       'cropW',
-      'cropH',
-      'invertIntensity'
+      'cropH'
     ].includes(key)
   ) {
     return 'preprocessing';

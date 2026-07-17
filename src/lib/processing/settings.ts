@@ -1,5 +1,11 @@
 export type ProcessingSettings = {
   ingestionTileCount?: number;
+  ingestionScanMode?: 'area_scan' | 'line_scan';
+  ingestionLineScanAxis?: number;
+  ingestionBackgroundWindowWidth?: number;
+  ingestionBackgroundWindowStride?: number;
+  ingestionFlatfieldWindowWidth?: number;
+  ingestionFlatfieldWindowStride?: number;
   framePayloadKind?: 'original' | 'preprocessed';
   applyPreprocessing?: boolean;
   thresholdMethod?: string;
@@ -41,24 +47,14 @@ export type ProcessingSettings = {
   clearBorder?: boolean;
   roiAssemblyMethod?: string;
   roiAssemblyConnectivity?: number;
-  backgroundCorrection?: boolean;
-  backgroundFrameLimit?: number;
-  backgroundWindowWidth?: number;
-  backgroundWindowStride?: number;
-  backgroundMinFieldValue?: number;
-  backgroundMaxFieldValue?: number | null;
-  flatfieldCorrection?: boolean;
-  flatfieldQ?: number;
-  flatfieldAxis?: number;
-  flatfieldMinFieldValue?: number;
-  flatfieldMaxFieldValue?: number | null;
+  minFieldValue?: number;
+  maxFieldValue?: number | null;
   applyMask?: boolean;
   cropEnabled?: boolean;
   cropX?: number | null;
   cropY?: number | null;
   cropW?: number | null;
   cropH?: number | null;
-  invertIntensity?: boolean;
   minArea?: number | null;
   maxArea?: number | null;
   minPerimeter?: number;
@@ -151,27 +147,18 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   };
 
   copy('ingestionTileCount');
+  copy('ingestionScanMode');
+  copy('ingestionLineScanAxis');
+  copy('ingestionBackgroundWindowWidth');
+  copy('ingestionBackgroundWindowStride');
+  copy('ingestionFlatfieldWindowWidth');
+  copy('ingestionFlatfieldWindowStride');
 
   copy('framePayloadKind');
   copy('applyPreprocessing');
 
-  copy('backgroundCorrection');
-  if (settings.backgroundCorrection) {
-    copy('backgroundFrameLimit');
-    copy('backgroundWindowWidth');
-    copy('backgroundWindowStride');
-    copy('backgroundMinFieldValue');
-    copy('backgroundMaxFieldValue');
-  }
-
-  copy('flatfieldCorrection');
-  if (settings.flatfieldCorrection) {
-    copy('flatfieldQ');
-    copy('flatfieldAxis');
-    copy('flatfieldMinFieldValue');
-    copy('flatfieldMaxFieldValue');
-  }
-
+  copy('minFieldValue');
+  copy('maxFieldValue');
   copy('applyMask');
   copy('cropEnabled');
   if (settings.cropEnabled) {
@@ -180,7 +167,6 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
     copy('cropW');
     copy('cropH');
   }
-  copy('invertIntensity');
 
   const thresholdMethod = settings.thresholdMethod;
   copy('thresholdMethod');

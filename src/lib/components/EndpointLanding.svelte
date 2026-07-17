@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { browser } from '$app/environment';
   import { get } from 'svelte/store';
   import { ApiError, PelagiaApiClient } from '$lib/api/client';
   import {
@@ -20,9 +20,11 @@
   } from '$lib/utils/codecs';
   import { sessionLoginPrefillFromUrl } from '$lib/utils/sessionLoginPrefill';
 
-  let endpoint = $session.baseUrl;
-  let username = '';
-  let password = '';
+  const initialLoginPrefill = browser ? sessionLoginPrefillFromUrl(new URL(window.location.href)) : {};
+
+  let endpoint = initialLoginPrefill.endpoint ?? $session.baseUrl;
+  let username = initialLoginPrefill.username ?? '';
+  let password = initialLoginPrefill.password ?? '';
   let pendingLogin: ProjectSelectionLogin | null = null;
   let selectedProjectId = '';
   let selectingProject = false;
@@ -45,13 +47,6 @@
   $: frameStorageOptions = ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
   $: roiStorageOptions = ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
   $: if (!kvstoreNameTouched) kvstoreName = suggestedKvstoreName(projectKey);
-
-  onMount(() => {
-    const prefill = sessionLoginPrefillFromUrl(new URL(window.location.href));
-    if (prefill.endpoint) endpoint = prefill.endpoint;
-    if (prefill.username) username = prefill.username;
-    if (prefill.password) password = prefill.password;
-  });
 
   async function connect() {
     localError = null;

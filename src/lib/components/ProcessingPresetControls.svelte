@@ -26,7 +26,15 @@
     {
       id: 'ingestion',
       label: 'Ingestion',
-      keys: ['ingestionTileCount']
+      keys: [
+        'ingestionTileCount',
+        'ingestionScanMode',
+        'ingestionLineScanAxis',
+        'ingestionBackgroundWindowWidth',
+        'ingestionBackgroundWindowStride',
+        'ingestionFlatfieldWindowWidth',
+        'ingestionFlatfieldWindowStride'
+      ]
     },
     {
       id: 'preprocessing',
@@ -34,24 +42,14 @@
       keys: [
         'framePayloadKind',
         'applyPreprocessing',
-        'backgroundCorrection',
-        'backgroundFrameLimit',
-        'backgroundWindowWidth',
-        'backgroundWindowStride',
-        'backgroundMinFieldValue',
-        'backgroundMaxFieldValue',
-        'flatfieldCorrection',
-        'flatfieldQ',
-        'flatfieldAxis',
-        'flatfieldMinFieldValue',
-        'flatfieldMaxFieldValue',
+        'minFieldValue',
+        'maxFieldValue',
         'applyMask',
         'cropEnabled',
         'cropX',
         'cropY',
         'cropW',
-        'cropH',
-        'invertIntensity'
+        'cropH'
       ]
     },
     {

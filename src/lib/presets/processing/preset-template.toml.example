@@ -1,30 +1,38 @@
 # Copy this file to a `.toml` preset file and uncomment only the settings that
-# should override server-provided defaults.
+# should override server-provided defaults. Omit inactive or unused settings.
 
 [preset]
 # id = "my-preset"
 # name = "My preset"
 # description = "Short description shown in PelagiaView."
 
+# Ingestion controls source analysis and asset queueing. Area-scan presets
+# normally set only background scheduling; line-scan presets normally set only
+# flatfield scheduling.
 [settings.ingestion]
 # ingestionTileCount = 2
+# ingestionScanMode = "area_scan" # or "line_scan"
+# ingestionLineScanAxis = 0
+# ingestionBackgroundWindowWidth = 25
+# ingestionBackgroundWindowStride = 25
+# ingestionFlatfieldWindowWidth = 1
+# ingestionFlatfieldWindowStride = 1
 
+# Preprocessing now uses stored background fields or stored flatfield profiles
+# generated during ingestion. It no longer stores correction toggles, q values,
+# axis selection, ad-hoc background windows, or inversion overrides.
 [settings.preprocessing]
-# backgroundCorrection = true
-# backgroundPercentile = 50
-# flatfieldCorrection = true
-# flatfieldQ = 0.95
-# flatfieldAxis = 0
-# flatfieldMinFieldValue = 1
-# flatfieldMaxFieldValue = 255
+# minFieldValue = 1
+# maxFieldValue = 255
 # applyMask = false
 # cropEnabled = false
 # cropX = 0
 # cropY = 0
 # cropW = 1024
 # cropH = 1024
-# invertIntensity = false
 
+# Thresholding creates the foreground mask used by candidate detection. Include
+# only the settings relevant to the selected thresholdMethod.
 [settings.threshold]
 # thresholdMethod = "bounded_otsu_canny"
 # manualThreshold = 100
@@ -46,6 +54,8 @@
 # sobelThreshold = 100
 # sobelKernelSize = 3
 
+# Mask augmentation edits the threshold mask before candidate ROI assembly.
+# Include kernel settings only for enabled steps.
 [settings.mask_augmentation]
 # maskAugmentationEnabled = true
 # maskAugmentationSteps = ["dilate"]
@@ -66,6 +76,7 @@
 # minComponentArea = 1
 # clearBorder = false
 
+# Candidate detection converts foreground mask components into candidate ROIs.
 [settings.candidate_detection]
 # roiAssemblyMethod = "connected_components"
 # roiAssemblyConnectivity = 8
@@ -81,12 +92,17 @@
 # maxWidthPlusHeight = 2048
 # padding = 100
 
+# ROI storage thresholds decide which candidate detections receive stored crop
+# payloads. Omit these to let the backend/project defaults decide.
 [settings.roi_storage]
 # storeRoiPayloadMinArea = 1
 # storeRoiPayloadMinWidth = 1
 # storeRoiPayloadMinHeight = 1
 # storeRoiPayloadMinWidthPlusHeight = 1
 
+# Refinement turns candidate ROIs into refined detections. Encoding defaults
+# should usually come from project storage settings, so use refinementEncoding
+# only when the refinement endpoint specifically needs an override.
 [settings.refinement]
 # refinementModelKind = "identity"
 # refinementModelRef = ""

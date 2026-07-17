@@ -56,7 +56,11 @@
       {@const views = groupViews(group.id)}
       <details class="sidebar-group" class:active-sidebar-group={group.id === activeGroup} open={group.id === activeGroup}>
         <summary title={`${group.label} pages`}>
-          <span>{group.label}</span>
+          <span class="sidebar-section-label">
+            <span class="sidebar-section-eyebrow">Section</span>
+            <span>{group.label}</span>
+          </span>
+          <span class="sidebar-section-caret" aria-hidden="true">▾</span>
         </summary>
         <div class="sidebar-group-items">
           {#each views as view}

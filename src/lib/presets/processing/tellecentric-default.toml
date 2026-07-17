@@ -1,24 +1,22 @@
-null_settings = [ "minPerimeter", "refinementExpansionPixels", "refinementModelBatchSize" ]
-
 [preset]
 id = "tellecentric-default"
-name = "Tellecentric Imaging System (default)"
-description = "Standard presets for analyzing images from a Wassoc-like shadowgraph glider tellecentric imaging sensor."
-updated_at = "2026-06-23T21:48:14.751Z"
+name = "Telecentric imaging system default"
+description = "Area-scan defaults for telecentric shadowgraph imagery with a fixed crop, stored background-field preprocessing, manual thresholding, and connected-component candidate ROI assembly."
+
+[settings.ingestion]
+ingestionScanMode = "area_scan"
+ingestionBackgroundWindowWidth = 25
+ingestionBackgroundWindowStride = 25
 
 [settings.preprocessing]
-backgroundCorrection = true
-backgroundFrameLimit = 100
-backgroundMinFieldValue = 50
-backgroundMaxFieldValue = 255
-flatfieldCorrection = false
+minFieldValue = 50
+maxFieldValue = 255
 applyMask = false
 cropEnabled = true
 cropX = 750
 cropY = 200
 cropW = 2800
 cropH = 2800
-invertIntensity = true
 
 [settings.threshold]
 thresholdMethod = "manual"

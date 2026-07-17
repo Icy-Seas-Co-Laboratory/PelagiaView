@@ -3,6 +3,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
+  import InfoChip from '$lib/components/InfoChip.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
@@ -1403,7 +1404,13 @@
     <div class="browser-primary-filters">
       <div class="browser-view-options">
         <div>
-          <span class="control-label">ROI source</span>
+          <span class="control-label field-label-row">
+            ROI source
+            <InfoChip
+              label="ROI source help"
+              text="Candidate shows raw detection crops. Refined shows model-refined ROI outputs when available."
+            />
+          </span>
           <div class="toggle-list">
             <button
               class:active={roiViewMode === 'candidate'}
@@ -1423,7 +1430,13 @@
         </div>
 
         <label class="switch-row compact-switch-row">
-          <span>Mask</span>
+          <span class="field-label-row">
+            Mask
+            <InfoChip
+              label="ROI mask help"
+              text="Displays masked ROI imagery when mask payloads are available; otherwise the unmasked crop is used."
+            />
+          </span>
           <input type="checkbox" bind:checked={applyRoiMask} />
           <span class="switch-track" aria-hidden="true"></span>
         </label>
@@ -1431,7 +1444,13 @@
 
       <div class="form-grid compact-grid browser-sort-group">
         <label>
-          Sort by
+          <span class="field-label-row">
+            Sort by
+            <InfoChip
+              label="ROI sort help"
+              text="Controls the order of ROI tiles requested from the server. Area and byte size can help find large or expensive ROIs."
+            />
+          </span>
           <select bind:value={sortBy}>
             <option value="asset_frame">Asset + frame</option>
             <option value="area">Area</option>

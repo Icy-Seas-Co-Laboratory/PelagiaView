@@ -74,20 +74,6 @@ type FrameImageOptions = {
   scale?: string | number;
   width?: number | null;
   height?: number | null;
-  flatfield_correction?: boolean | null;
-  flatfield_q?: number | null;
-  flatfield_axis?: number | null;
-  flatfield_min_field_value?: number | null;
-  flatfield_max_field_value?: number | null;
-  background_correction?: boolean | null;
-  background_min_field_value?: number | null;
-  background_max_field_value?: number | null;
-  background_asset_id?: string | null;
-  background_start_frame?: number | null;
-  background_end_frame?: number | null;
-  background_limit?: number | null;
-  background_window_stride?: number | null;
-  background_window_width?: number | null;
   preview_max_dim?: number | null;
 };
 

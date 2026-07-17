@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import InfoChip from '$lib/components/InfoChip.svelte';
   import { ApiError } from '$lib/api/client';
   import type {
     AuthUserSummary,
@@ -591,7 +592,13 @@
           {/if}
         </label>
         <label>
-          Frame encoding
+          <span class="field-label-row">
+            Frame encoding
+            <InfoChip
+              label="Frame encoding help"
+              text="Project default codec for stored full-frame image payloads. Faster codecs improve browsing and processing throughput; unavailable codecs are disabled."
+            />
+          </span>
           <select bind:value={projectFrameStorageEncoding} disabled={!canCreateProject || creatingProject}>
             {#each frameStorageOptions as encoding}
               <option
@@ -603,11 +610,23 @@
           </select>
         </label>
         <label>
-          Frame quality
+          <span class="field-label-row">
+            Frame quality
+            <InfoChip
+              label="Frame quality help"
+              text="Quality setting for lossy frame codecs. Lossless codecs may ignore this value."
+            />
+          </span>
           <input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={!canCreateProject || creatingProject} />
         </label>
         <label>
-          ROI encoding
+          <span class="field-label-row">
+            ROI encoding
+            <InfoChip
+              label="ROI encoding help"
+              text="Project default codec for stored ROI crop payloads. Auto lets the backend choose the project/global default."
+            />
+          </span>
           <select bind:value={projectRoiStorageEncoding} disabled={!canCreateProject || creatingProject}>
             {#each roiStorageOptions as encoding}
               <option
@@ -644,7 +663,13 @@
             {project.is_active === false ? 'Inactive' : projectRole(project)}
           </span>
           <label class="inline-role-select project-storage-field">
-            <span>Frame</span>
+            <span class="field-label-row">
+              Frame
+              <InfoChip
+                label="Project frame codec help"
+                text="Default codec used for newly stored full-frame payloads in this project."
+              />
+            </span>
             <select
               value={storageDraft.frameEncoding}
               on:change={(event) => setProjectStorageDraft(project, { frameEncoding: normalizeFrameStorageEncoding((event.currentTarget as HTMLSelectElement).value) })}
@@ -660,7 +685,13 @@
             </select>
           </label>
           <label class="inline-role-select project-storage-field">
-            <span>Quality</span>
+            <span class="field-label-row">
+              Quality
+              <InfoChip
+                label="Project frame quality help"
+                text="Lossy frame codec quality. Lossless codecs may ignore this setting."
+              />
+            </span>
             <input
               type="number"
               min="0"
@@ -671,7 +702,13 @@
             />
           </label>
           <label class="inline-role-select project-storage-field">
-            <span>ROI</span>
+            <span class="field-label-row">
+              ROI
+              <InfoChip
+                label="Project ROI codec help"
+                text="Default codec used for newly stored ROI image payloads in this project."
+              />
+            </span>
             <select
               value={storageDraft.roiEncoding}
               on:change={(event) => setProjectStorageDraft(project, { roiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value) })}

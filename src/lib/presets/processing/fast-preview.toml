@@ -1,7 +1,7 @@
 [preset]
 id = "fast-preview"
 name = "Fast preview"
-description = "Minimal threshold and mask work for quick interactive passes while tuning frames."
+description = "Lightweight threshold and candidate ROI settings for quick interactive review. This preset intentionally leaves ingestion and preprocessing settings unchanged."
 
 [settings.threshold]
 thresholdMethod = "bounded_otsu"

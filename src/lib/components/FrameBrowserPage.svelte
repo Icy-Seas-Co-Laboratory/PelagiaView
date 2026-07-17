@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
+  import InfoChip from '$lib/components/InfoChip.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import { authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
@@ -1029,7 +1030,13 @@
 
       <div class="form-grid compact-grid browser-sort-group">
         <label>
-          Sort by
+          <span class="field-label-row">
+            Sort by
+            <InfoChip
+              label="Frame sort help"
+              text="Controls the order of frame tiles requested from the server. ROI count sorts are useful for review-heavy assets."
+            />
+          </span>
           <select bind:value={sortBy}>
             <option value="asset_frame">Asset + frame</option>
             <option value="frame">Frame number</option>
@@ -1094,7 +1101,13 @@
         </label>
 
         <label>
-          Preprocessing
+          <span class="field-label-row">
+            Preprocessing
+            <InfoChip
+              label="Preprocessing filter help"
+              text="Filters frames by whether stored preprocessed payloads exist or whether the stage is complete across the selected assets."
+            />
+          </span>
           <select bind:value={preprocessingState}>
             <option value="">Any</option>
             <option value="has-preprocessed">Has preprocessed payload</option>
@@ -1105,7 +1118,13 @@
         </label>
 
         <label>
-          Candidate detection
+          <span class="field-label-row">
+            Candidate detection
+            <InfoChip
+              label="Candidate detection filter help"
+              text="Filters frames by candidate ROI detection progress or whether detections are present."
+            />
+          </span>
           <select bind:value={detectionState}>
             <option value="">Any</option>
             <option value="has-detections">Has detections</option>
@@ -1116,7 +1135,13 @@
         </label>
 
         <label>
-          ROI refinement
+          <span class="field-label-row">
+            ROI refinement
+            <InfoChip
+              label="ROI refinement filter help"
+              text="Filters frames by refined ROI availability or refinement progress."
+            />
+          </span>
           <select bind:value={refinementState}>
             <option value="">Any</option>
             <option value="has-refinement">Has refinement</option>

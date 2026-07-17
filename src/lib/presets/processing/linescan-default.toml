@@ -1,15 +1,17 @@
 [preset]
 id = "linescan-default"
-name = "Linescan default"
-description = "Manual thresholding with flatfield correction for linescan frame review."
+name = "Line scan default"
+description = "Baseline line-scan workflow using ingestion-generated flatfield profiles, stored-field preprocessing, manual thresholding, and connected-component candidate ROI assembly."
+
+[settings.ingestion]
+ingestionScanMode = "line_scan"
+ingestionLineScanAxis = 0
+ingestionFlatfieldWindowWidth = 1
+ingestionFlatfieldWindowStride = 1
 
 [settings.preprocessing]
-flatfieldCorrection = true
-flatfieldQ = 0.5
-flatfieldAxis = 0
-flatfieldMinFieldValue = 25
-flatfieldMaxFieldValue = 255
-invertIntensity = true
+minFieldValue = 25
+maxFieldValue = 255
 
 [settings.threshold]
 thresholdMethod = "manual"

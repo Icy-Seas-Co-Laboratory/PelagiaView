@@ -1,20 +1,18 @@
-null_settings = [ "minPerimeter", "refinementExpansionPixels", "refinementModelBatchSize" ]
-
 [preset]
 id = "areascan-default"
-name = "Areascan (default)"
-description = ""
-updated_at = "2026-06-23T21:48:14.751Z"
+name = "Area scan default"
+description = "Baseline area-scan workflow using ingestion-generated background fields, stored-field preprocessing, manual thresholding, and connected-component candidate ROI assembly."
+
+[settings.ingestion]
+ingestionScanMode = "area_scan"
+ingestionBackgroundWindowWidth = 25
+ingestionBackgroundWindowStride = 25
 
 [settings.preprocessing]
-backgroundCorrection = true
-backgroundFrameLimit = 50
-backgroundMinFieldValue = 25
-backgroundMaxFieldValue = 255
-flatfieldCorrection = false
+minFieldValue = 25
+maxFieldValue = 255
 applyMask = false
 cropEnabled = false
-invertIntensity = true
 
 [settings.threshold]
 thresholdMethod = "manual"
