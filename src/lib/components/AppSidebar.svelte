@@ -65,7 +65,7 @@
         <div class="sidebar-group-items">
           {#each views as view}
             <a href={dashboardViewHref(view.id, currentUrl)} class:active={activeView === view.id} title={`${view.label}: ${view.detail}`}>
-              <span>{view.label}</span>
+              <span>{collapsed ? (view.shortLabel ?? view.label) : view.label}</span>
               <small>{view.detail}</small>
             </a>
           {/each}

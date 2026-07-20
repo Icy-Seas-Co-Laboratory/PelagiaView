@@ -910,7 +910,7 @@
                 Tile count
                 <InfoChip
                   label="Tile count help"
-                  text="Splits large frames into this many processing tiles during ingestion. Increase only when memory pressure is high or frames are very large."
+                  text="The number of frames to stitch together. Only suitable for Linescan frames that are continuously collected."
                 />
               </span>
               <input type="number" min="1" bind:value={nTile} />
@@ -920,7 +920,7 @@
                 Background Window Width
                 <InfoChip
                   label="Background Window Width help"
-                  text="Number of frames used for each area-scan mean background. Must be a positive odd value."
+                  text="Number of frames used for each area-scan mean background. Must be a positive, odd value."
                 />
               </span>
               <input type="number" min="1" step="2" bind:value={ingestionBackgroundWindowWidth} disabled={ingestionScanMode !== 'area_scan'} />
@@ -930,7 +930,7 @@
                 Background Window Stride
                 <InfoChip
                   label="Background Window Stride help"
-                  text="Number of frames to advance before calculating the next background. Must be at least 1 and no larger than the background window width."
+                  text="Number of frames to advance before calculating the next background. Must be at least 1 and no larger than the background window width (typically equal to the window width)."
                 />
               </span>
               <input type="number" min="1" step="2" bind:value={ingestionBackgroundWindowStride} disabled={ingestionScanMode !== 'area_scan'} />

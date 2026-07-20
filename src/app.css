@@ -315,6 +315,59 @@ label.field-disabled .field-help-icon {
   transform: translate(0, -50%);
 }
 
+.info-chip::before,
+.info-chip::after,
+.info-chip:hover::before,
+.info-chip:hover::after,
+.info-chip:focus-visible::before,
+.info-chip:focus-visible::after {
+  display: none;
+  content: none;
+}
+
+.floating-field-tooltip {
+  position: fixed;
+  z-index: 3600;
+  width: max-content;
+  max-width: min(22rem, calc(100vw - 1.25rem));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0.58rem 0.68rem;
+  color: #f7fbf9;
+  background: #17352e;
+  box-shadow: 0 0.75rem 1.8rem rgba(5, 8, 7, 0.26);
+  font-size: 0.76rem;
+  font-weight: 650;
+  line-height: 1.35;
+  pointer-events: none;
+  text-transform: none;
+  transform: translateX(-50%);
+  white-space: normal;
+}
+
+.floating-field-tooltip::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+}
+
+.floating-field-tooltip-bottom::before {
+  top: -0.36rem;
+  border-right: 0.36rem solid transparent;
+  border-bottom: 0.36rem solid #17352e;
+  border-left: 0.36rem solid transparent;
+}
+
+.floating-field-tooltip-top::before {
+  bottom: -0.36rem;
+  border-top: 0.36rem solid #17352e;
+  border-right: 0.36rem solid transparent;
+  border-left: 0.36rem solid transparent;
+}
+
 .help-modal-chip {
   cursor: pointer;
   color: #4d5d73;
@@ -329,8 +382,13 @@ label.field-disabled .field-help-icon {
 }
 
 .help-modal-chip::before,
-.help-modal-chip::after {
+.help-modal-chip::after,
+.help-modal-chip:hover::before,
+.help-modal-chip:hover::after,
+.help-modal-chip:focus-visible::before,
+.help-modal-chip:focus-visible::after {
   display: none;
+  content: none;
 }
 
 .help-modal-backdrop {
@@ -349,6 +407,13 @@ label.field-disabled .field-help-icon {
   padding: 0;
   background: rgba(8, 15, 18, 0.34);
   cursor: default;
+}
+
+.help-modal-scrim:hover:not(:disabled),
+.help-modal-scrim:focus-visible {
+  background: rgba(8, 15, 18, 0.34);
+  box-shadow: none;
+  outline: none;
 }
 
 .help-modal {
@@ -706,7 +771,7 @@ h2 {
 }
 
 .app-shell.sidebar-is-collapsed {
-  grid-template-columns: 4.6rem minmax(0, 1fr);
+  grid-template-columns: 6.4rem minmax(0, 1fr);
 }
 
 .app-workspace {
@@ -1090,7 +1155,7 @@ h2 {
 
 .collapsed-sidebar {
   grid-template-rows: auto minmax(0, 1fr);
-  padding-inline: 0.55rem;
+  padding-inline: 0.5rem;
 }
 
 .collapsed-sidebar .sidebar-head {
@@ -1109,36 +1174,48 @@ h2 {
 }
 
 .collapsed-sidebar .sidebar-group summary {
-  justify-content: center;
-  min-height: 1.8rem;
-  padding: 0.25rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 2.25rem;
+  padding: 0.3rem 0.4rem;
 }
 
 .collapsed-sidebar .sidebar-section-label {
-  justify-items: center;
+  justify-items: start;
 }
 
-.collapsed-sidebar .sidebar-section-eyebrow,
-.collapsed-sidebar .sidebar-section-caret {
+.collapsed-sidebar .sidebar-section-eyebrow {
   display: none;
 }
 
 .collapsed-sidebar .sidebar-section-label > span:last-child {
-  max-width: 2.2rem;
-  font-size: 0.68rem;
-  text-align: center;
+  max-width: none;
+  overflow: visible;
+  font-size: 0.66rem;
+  line-height: 1.12;
+  text-align: left;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.collapsed-sidebar .sidebar-group + .sidebar-group {
+  border-top: 1px solid #e1ece7;
+  padding-top: 0.35rem;
 }
 
 .collapsed-sidebar .sidebar-group a {
-  min-height: 2.25rem;
-  place-items: center;
-  padding: 0.32rem;
+  min-height: 2.2rem;
+  align-items: center;
+  padding: 0.32rem 0.4rem;
 }
 
 .collapsed-sidebar .sidebar-group a span {
-  max-width: 2.2rem;
+  max-width: none;
+  overflow: visible;
   font-size: 0.72rem;
-  text-align: center;
+  line-height: 1.12;
+  text-align: left;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .sidebar-session {
@@ -2570,11 +2647,12 @@ details[open] > summary.has-active-settings:not(.section-heading)::after {
   display: grid;
   justify-items: start;
   min-height: 3.1rem;
-  padding: 0.55rem 0.65rem;
+  padding: 0.62rem 0.65rem;
   color: #30443d;
   border-color: #d8e4df;
   background: #fbfdfc;
   text-align: left;
+  row-gap: 0.08rem;
 }
 
 .compact-select-list button.wildcard-filter {
@@ -2599,10 +2677,12 @@ details[open] > summary.has-active-settings:not(.section-heading)::after {
 
 .compact-select-list span {
   font-weight: 800;
+  line-height: 1.18;
 }
 
 .compact-select-list small {
   color: inherit;
+  line-height: 1.18;
   opacity: 0.78;
 }
 

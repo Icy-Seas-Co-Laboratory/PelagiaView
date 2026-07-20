@@ -14,6 +14,7 @@ export type DashboardView =
 export type DashboardViewDefinition = {
   id: DashboardView;
   label: string;
+  shortLabel?: string;
   detail: string;
   group: 'analysis' | 'workflow' | 'system';
   nextView?: DashboardView;
@@ -22,17 +23,17 @@ export type DashboardViewDefinition = {
 export const defaultDashboardView: DashboardView = 'rois';
 
 export const dashboardViews: DashboardViewDefinition[] = [
-  { id: 'rois', label: 'ROI Browser', detail: 'detections gallery', group: 'analysis' },
-  { id: 'frames', label: 'Frame Browser', detail: 'raw and processed frames', group: 'analysis' },
+  { id: 'rois', label: 'ROI Browser', shortLabel: 'ROIs', detail: 'detections gallery', group: 'analysis' },
+  { id: 'frames', label: 'Frame Browser', shortLabel: 'Frames', detail: 'raw and processed frames', group: 'analysis' },
   { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
   { id: 'status', label: 'Status', detail: 'queue and workers', group: 'system' },
-  { id: 'admin', label: 'Administration', detail: 'projects and users', group: 'system' },
+  { id: 'admin', label: 'Administration', shortLabel: 'Admin', detail: 'projects and users', group: 'system' },
   { id: 'assets', label: 'Assets', detail: 'asset catalog', group: 'workflow', nextView: 'ingestion' },
-  { id: 'ingestion', label: 'Ingestion', detail: 'server assets', group: 'workflow', nextView: 'preprocessing' },
-  { id: 'preprocessing', label: 'Preprocessing', detail: 'queue frame prep', group: 'workflow', nextView: 'segmentation' },
-  { id: 'segmentation', label: 'Candidate ROIs', detail: 'queue ROI jobs', group: 'workflow', nextView: 'roi_refinement' },
-  { id: 'roi_refinement', label: 'ROI Refinement', detail: 'queue refined ROIs', group: 'workflow', nextView: 'rois' },
-  { id: 'logs', label: 'Event Log', detail: 'job events', group: 'system' }
+  { id: 'ingestion', label: 'Ingestion', shortLabel: 'Ingest', detail: 'server assets', group: 'workflow', nextView: 'preprocessing' },
+  { id: 'preprocessing', label: 'Preprocessing', shortLabel: 'Prep', detail: 'queue frame prep', group: 'workflow', nextView: 'segmentation' },
+  { id: 'segmentation', label: 'Candidate ROIs', shortLabel: 'Candidate', detail: 'queue ROI jobs', group: 'workflow', nextView: 'roi_refinement' },
+  { id: 'roi_refinement', label: 'ROI Refinement', shortLabel: 'Refine', detail: 'queue refined ROIs', group: 'workflow', nextView: 'rois' },
+  { id: 'logs', label: 'Event Log', shortLabel: 'Logs', detail: 'job events', group: 'system' }
 ];
 
 const dashboardViewIds = new Set<DashboardView>(dashboardViews.map((view) => view.id));

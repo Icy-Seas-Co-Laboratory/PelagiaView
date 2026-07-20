@@ -3466,11 +3466,6 @@
           <input type="number" min="1" bind:value={cropH} disabled={!cropEnabled} />
         </label>
       </div>
-
-      <label class="check-row" class:has-field-override={fieldChanged('applyMask', applyMask)}>
-        <input type="checkbox" bind:checked={applyMask} />
-        Apply frame mask
-      </label>
     </details>
 
     <div class="button-row">
