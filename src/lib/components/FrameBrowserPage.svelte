@@ -45,6 +45,9 @@
   let frameModalLoadSerial = 0;
   let selectedFrameRoiIds = new Set<string>();
   let frameRoiDownloadBusy = false;
+  let selectedBrowserFrameIds = new Set<string>();
+  let browserFrameDownloadBusy = false;
+  let previousSelectionPayloadKind: FramePayloadKind = payloadKind;
   let tileScroller: HTMLElement;
   let loadMoreSentinel: HTMLElement;
   let pageScroller: HTMLElement | null = null;
@@ -74,6 +77,12 @@
   );
   $: visibleCount = frames.length;
   $: summaryLabel = `${formatCount(visibleCount)} frame${visibleCount === 1 ? '' : 's'} loaded`;
+  $: selectableBrowserFrames = frames.filter(frameIsDownloadable);
+  $: selectedBrowserFrameCount = selectableBrowserFrames.filter((frame) => frame.frame_id && selectedBrowserFrameIds.has(frame.frame_id)).length;
+  $: if (payloadKind !== previousSelectionPayloadKind) {
+    selectedBrowserFrameIds = new Set();
+    previousSelectionPayloadKind = payloadKind;
+  }
   $: frameModalImageDetections = frameModalDetections.filter(hasRoiImageData);
   $: selectableFrameDetections = frameModalImageDetections.filter((detection) => detection.id);
   $: selectedFrameRoiCount = selectableFrameDetections.filter((detection) => detection.id && selectedFrameRoiIds.has(detection.id)).length;
@@ -121,6 +130,7 @@
     if (reset) {
       frames = [];
       selectedFrame = null;
+      selectedBrowserFrameIds = new Set();
       nextOffset = 0;
       hasMore = true;
     }
@@ -284,6 +294,47 @@
     return frameImageUrl(frame, null, imageFormat, kind);
   }
 
+  function frameIsDownloadable(frame: FrameRow): boolean {
+    return Boolean(frame.frame_id && frameDownloadUrl(frame, payloadKind));
+  }
+
+  function toggleBrowserFrameSelection(frame: FrameRow, checked: boolean) {
+    if (!frame.frame_id) return;
+    const next = new Set(selectedBrowserFrameIds);
+    if (checked) next.add(frame.frame_id);
+    else next.delete(frame.frame_id);
+    selectedBrowserFrameIds = next;
+  }
+
+  function toggleAllBrowserFrames(checked: boolean) {
+    selectedBrowserFrameIds = checked
+      ? new Set(selectableBrowserFrames.map((frame) => frame.frame_id).filter(Boolean) as string[])
+      : new Set();
+  }
+
+  async function downloadSelectedBrowserFrames() {
+    const selected = selectableBrowserFrames.filter((frame) => frame.frame_id && selectedBrowserFrameIds.has(frame.frame_id));
+    if (!selected.length || browserFrameDownloadBusy) return;
+    browserFrameDownloadBusy = true;
+    error = null;
+    try {
+      const entries = [];
+      for (const frame of selected) {
+        const url = frameDownloadUrl(frame, payloadKind);
+        if (!url) continue;
+        entries.push({
+          filename: frameDownloadFilename(frame, payloadKind, imageFormat, payloadKind),
+          blob: await fetchRemoteBlob(url)
+        });
+      }
+      if (entries.length) downloadBlob(await createZipBlob(entries), browserFramesZipFilename());
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      browserFrameDownloadBusy = false;
+    }
+  }
+
   function frameRenderSpec(
     frame: FrameRow,
     maxWidth: number,
@@ -363,6 +414,10 @@
     const frameNumber = frame.frame_num ?? frame.frame_index ?? 'unknown';
     const normalizedSuffix = suffix === kind ? kind : `${kind}-${suffix}`;
     return `${base}_frame-${frameNumber}_${normalizedSuffix}.${format}`;
+  }
+
+  function browserFramesZipFilename(): string {
+    return `pelagia_${payloadKind}_frames_${selectedBrowserFrameCount}.zip`;
   }
 
   function frameNumberLabel(frame: FrameRow): string {
@@ -1161,7 +1216,23 @@
         <p class="eyebrow">Frames</p>
         <h2>Raw and Preprocessed Tiles</h2>
       </div>
-      <span class="soft">{summaryLabel}</span>
+      <div class="browser-selection-actions">
+        <label class="selection-master-toggle">
+          <input
+            type="checkbox"
+            checked={selectableBrowserFrames.length > 0 && selectedBrowserFrameCount === selectableBrowserFrames.length}
+            indeterminate={selectedBrowserFrameCount > 0 && selectedBrowserFrameCount < selectableBrowserFrames.length}
+            disabled={!selectableBrowserFrames.length}
+            on:change={(event) => toggleAllBrowserFrames((event.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>{selectedBrowserFrameCount ? `${selectedBrowserFrameCount} selected` : summaryLabel}</span>
+        </label>
+        {#if selectedBrowserFrameCount}
+          <button class="ghost compact-action" type="button" on:click={downloadSelectedBrowserFrames} disabled={browserFrameDownloadBusy}>
+            {browserFrameDownloadBusy ? 'Preparing zip...' : 'Download'}
+          </button>
+        {/if}
+      </div>
     </div>
 
     {#if error}<p class="form-error">{error}</p>{/if}
@@ -1171,8 +1242,17 @@
         <div class="roi-tile-grid frame-tile-grid">
           {#each frames as frame}
             {@const spec = frameRenderSpec(frame, tileDisplayMaxWidth, tileDisplayMaxHeight, tilePreviewMaxDimensionPx, 'menu')}
-            <div class="roi-tile frame-tile">
+            <div class="roi-tile frame-tile" class:tile-selected={frame.frame_id ? selectedBrowserFrameIds.has(frame.frame_id) : false}>
               <div class="roi-image-frame">
+                {#if frameIsDownloadable(frame)}
+                  <label class="tile-selection-toggle" aria-label="Select frame tile">
+                    <input
+                      type="checkbox"
+                      checked={frame.frame_id ? selectedBrowserFrameIds.has(frame.frame_id) : false}
+                      on:change={(event) => toggleBrowserFrameSelection(frame, (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                  </label>
+                {/if}
                 {#if spec}
                   {#key frameCanvasKey(frame, tilePreviewMaxDimensionPx)}
                     <KonvaImageCanvas

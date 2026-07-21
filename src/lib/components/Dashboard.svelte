@@ -86,12 +86,6 @@
         </div>
       </div>
       <div class="session-controls">
-        {#if activeDefinition.nextView && nextDefinition}
-          <a class="next-step-button topbar-next-step" href={dashboardViewHref(activeDefinition.nextView, $page.url)}>
-            <span>Next</span>
-            <strong>{nextDefinition.label}</strong>
-          </a>
-        {/if}
         <SystemPressureIndicator />
         <HeaderProcessingPresetSelect />
         <HeaderImageInversionToggle />

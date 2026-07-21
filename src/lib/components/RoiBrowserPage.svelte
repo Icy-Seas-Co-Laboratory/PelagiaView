@@ -67,6 +67,8 @@
   let frameModalDisplayMode: FrameDisplayMode = 'preprocessed';
   let selectedFrameRoiIds = new Set<string>();
   let frameRoiDownloadBusy = false;
+  let selectedBrowserRoiIds = new Set<string>();
+  let browserRoiDownloadBusy = false;
   let detailFrameFailedUrl = '';
   let frameModalFailedUrl = '';
   let lastDetailFrameUrl = '';
@@ -90,7 +92,7 @@
   const fullFrameBboxScale = 0.5;
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
-  $: visibleCount = detections.filter((detection) => detection.id).length;
+  $: visibleCount = detections.filter(hasRoiImageData).length;
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
   $: frameModalPayloadKind = payloadKindForDisplay(frameModalDisplayMode);
   $: invertImages = $imageInversionEnabled;
@@ -129,6 +131,8 @@
   $: frameDetectionsWithImageData = frameDetections.filter(hasRoiImageData);
   $: selectableFrameDetections = frameDetectionsWithImageData.filter((detection) => detection.id);
   $: selectedFrameRoiCount = selectableFrameDetections.filter((detection) => detection.id && selectedFrameRoiIds.has(detection.id)).length;
+  $: selectableBrowserDetections = detections.filter(hasRoiImageData);
+  $: selectedBrowserRoiCount = selectableBrowserDetections.filter((detection) => detection.id && selectedBrowserRoiIds.has(detection.id)).length;
   $: resetFrameContextImage(detailFrameUrl);
   $: resetFrameModalImage(frameModalUrl);
   $: syncPageScrollListener(tileScroller);
@@ -202,6 +206,7 @@
     if (reset) {
       fullResolutionTileKeys = new Set();
       lastRequestedAppendOffset = null;
+      selectedBrowserRoiIds = new Set();
     } else {
       lastRequestedAppendOffset = offset;
     }
@@ -703,6 +708,43 @@
     selectedFrameRoiIds = new Set();
   }
 
+  function toggleBrowserRoiSelection(detection: DetectionSummary, checked: boolean) {
+    if (!detection.id) return;
+    const next = new Set(selectedBrowserRoiIds);
+    if (checked) next.add(detection.id);
+    else next.delete(detection.id);
+    selectedBrowserRoiIds = next;
+  }
+
+  function toggleAllBrowserRois(checked: boolean) {
+    selectedBrowserRoiIds = checked
+      ? new Set(selectableBrowserDetections.map((detection) => detection.id).filter(Boolean) as string[])
+      : new Set();
+  }
+
+  async function downloadSelectedBrowserRois() {
+    const selected = selectableBrowserDetections.filter((detection) => detection.id && selectedBrowserRoiIds.has(detection.id));
+    if (!selected.length || browserRoiDownloadBusy) return;
+    browserRoiDownloadBusy = true;
+    error = null;
+    try {
+      const entries = [];
+      for (const detection of selected) {
+        const url = imageUrl(detection, roiViewMode, 'png', applyRoiMask);
+        if (!url) continue;
+        entries.push({
+          filename: roiFilenameForDetection(detection, applyRoiMask ? 'masked' : 'roi', roiViewMode),
+          blob: await fetchRemoteBlob(url)
+        });
+      }
+      if (entries.length) downloadBlob(await createZipBlob(entries), browserRoisZipFilename());
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      browserRoiDownloadBusy = false;
+    }
+  }
+
   async function downloadSelectedFrameRois() {
     const selected = selectableFrameDetections.filter((detection) => detection.id && selectedFrameRoiIds.has(detection.id));
     if (!selected.length || frameRoiDownloadBusy) return;
@@ -737,6 +779,12 @@
       'asset';
     const suffix = applyRoiMask ? 'masked-rois' : 'rois';
     return `${assetName}_frame_${frameNumberLabel()}_${suffix}.zip`;
+  }
+
+  function browserRoisZipFilename(): string {
+    const source = roiViewMode === 'refined' ? 'refined' : 'candidate';
+    const mask = applyRoiMask ? '-masked' : '';
+    return `pelagia_${source}${mask}_rois_${selectedBrowserRoiCount}.zip`;
   }
 
   function bboxLabel(detection: DetectionSummary): string {
@@ -1552,7 +1600,23 @@
         <p class="eyebrow">Detections</p>
         <h2>ROI Tiles</h2>
       </div>
-      <span class="soft">{visibleCount} image{visibleCount === 1 ? '' : 's'} loaded</span>
+      <div class="browser-selection-actions">
+        <label class="selection-master-toggle">
+          <input
+            type="checkbox"
+            checked={selectableBrowserDetections.length > 0 && selectedBrowserRoiCount === selectableBrowserDetections.length}
+            indeterminate={selectedBrowserRoiCount > 0 && selectedBrowserRoiCount < selectableBrowserDetections.length}
+            disabled={!selectableBrowserDetections.length}
+            on:change={(event) => toggleAllBrowserRois((event.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>{selectedBrowserRoiCount ? `${selectedBrowserRoiCount} selected` : `${visibleCount} loaded`}</span>
+        </label>
+        {#if selectedBrowserRoiCount}
+          <button class="ghost compact-action" type="button" on:click={downloadSelectedBrowserRois} disabled={browserRoiDownloadBusy}>
+            {browserRoiDownloadBusy ? 'Preparing zip...' : 'Download'}
+          </button>
+        {/if}
+      </div>
     </div>
 
     {#if error}<p class="form-error">{error}</p>{/if}
@@ -1563,8 +1627,15 @@
           {#each detections as detection}
             {#if detection.id && detection.roi_payload_bytes}
               {@const proxyMaxDimension = roiTileProxyForRender(detection)}
-              <div class="roi-tile">
+              <div class="roi-tile" class:tile-selected={selectedBrowserRoiIds.has(detection.id)}>
                 <div class="roi-image-frame">
+                  <label class="tile-selection-toggle" aria-label="Select ROI tile">
+                    <input
+                      type="checkbox"
+                      checked={selectedBrowserRoiIds.has(detection.id)}
+                      on:change={(event) => toggleBrowserRoiSelection(detection, (event.currentTarget as HTMLInputElement).checked)}
+                    />
+                  </label>
                   {#key roiCanvasKey(detection, roiViewMode, imageFormat, applyRoiMask, invertImages, proxyMaxDimension)}
                     <KonvaImageCanvas
                       spec={roiRenderSpec(detection, roiDisplayMaxWidth, roiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages, proxyMaxDimension)}
