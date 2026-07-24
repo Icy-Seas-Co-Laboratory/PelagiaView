@@ -2,6 +2,16 @@ import { browser } from '$app/environment';
 
 const SESSION_STORAGE_KEY = 'pelagia-view-analytics-session-id';
 const ACTIVITY_EVENT_INTERVAL_MS = 30_000;
+const SENSITIVE_QUERY_KEYS = new Set(['password', 'pass', 'token', 'access_token', 'refresh_token', 'api_key', 'secret']);
+
+type AnalyticsTarget = {
+  baseUrl: string;
+  token: string;
+  userId?: string | null;
+  username?: string | null;
+  projectId?: string | null;
+  projectKey?: string | null;
+};
 
 type PageMetrics = {
   route: string;
@@ -15,25 +25,54 @@ type PageMetrics = {
 
 let currentPage: PageMetrics | null = null;
 let lastActivityEventAt = 0;
+let analyticsTarget: AnalyticsTarget | null = null;
+
+export function configureAnalyticsTarget(target: AnalyticsTarget | null) {
+  const hadTarget = Boolean(analyticsTarget);
+  analyticsTarget = target?.baseUrl && target.token
+    ? { ...target, baseUrl: target.baseUrl.replace(/\/+$/, '') }
+    : null;
+  if (browser && analyticsTarget && !hadTarget && currentPage) {
+    recordClientEvent('client_page_view', {
+      page_route: currentPage.route,
+      visibility_state: document.visibilityState,
+      reason: 'analytics_target_configured'
+    });
+  }
+}
 
 export function recordClientEvent(eventType: string, payload: Record<string, unknown> = {}) {
-  if (!browser) return;
+  if (!browser || !analyticsTarget) return;
+  const route = sanitizedRoute(window.location.pathname + window.location.search);
+  const eventPayload = {
+    ...payload,
+    route,
+    analytics_session_id: analyticsSessionId(),
+    user_id: analyticsTarget.userId ?? null,
+    username: analyticsTarget.username ?? null,
+    project_id: analyticsTarget.projectId ?? null,
+    project_key: analyticsTarget.projectKey ?? null,
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight
+    },
+    visibility_state: document.visibilityState
+  };
+  const durationMs = numericPayloadValue(payload.duration_ms);
   const body = JSON.stringify({
     event_type: eventType,
-    route: window.location.pathname + window.location.search,
-    session_id: analyticsSessionId(),
-    payload
+    message: eventType,
+    level: 'info',
+    logger: 'pelagia.view.analytics',
+    duration_ms: durationMs,
+    payload: eventPayload
   });
-
-  if (navigator.sendBeacon) {
-    const blob = new Blob([body], { type: 'application/json' });
-    navigator.sendBeacon('/analytics', blob);
-    return;
-  }
-
-  void fetch('/analytics', {
+  void fetch(`${analyticsTarget.baseUrl}/logs`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${analyticsTarget.token}`
+    },
     body,
     keepalive: true
   }).catch(() => undefined);
@@ -43,10 +82,11 @@ export function initClientAnalytics(): () => void {
   if (!browser) return () => undefined;
 
   const route = window.location.pathname + window.location.search;
+  const safeRoute = sanitizedRoute(route);
   if (!currentPage) {
-    startPage(route);
-  } else if (currentPage.route !== route) {
-    recordRouteChange(route);
+    startPage(safeRoute);
+  } else if (currentPage.route !== safeRoute) {
+    recordRouteChange(safeRoute);
   }
 
   const handleVisibilityChange = () => {
@@ -56,7 +96,7 @@ export function initClientAnalytics(): () => void {
       currentPage.hiddenStartedAt = now;
       recordPageDuration('visibility_hidden');
     } else {
-      startPage(window.location.pathname + window.location.search, { recordView: false });
+      startPage(sanitizedRoute(window.location.pathname + window.location.search), { recordView: false });
     }
   };
 
@@ -86,20 +126,22 @@ export function initClientAnalytics(): () => void {
 
 export function recordRouteChange(route: string) {
   if (!browser) return;
-  if (currentPage?.route === route) return;
+  const safeRoute = sanitizedRoute(route);
+  if (currentPage?.route === safeRoute) return;
   recordPageDuration('navigation');
-  startPage(route);
+  startPage(safeRoute);
 }
 
 export function recordApiRequest(input: string, init: RequestInit | undefined, response: Response | null, durationMs: number, error?: unknown) {
   if (!browser) return;
   const url = new URL(input, window.location.href);
+  if (url.pathname === '/logs' || url.pathname.startsWith('/logs/')) return;
   const method = String(init?.method ?? 'GET').toUpperCase();
   recordClientEvent('client_api_request', {
     method,
     endpoint: url.pathname,
     endpoint_group: endpointGroup(url.pathname),
-    query_keys: [...url.searchParams.keys()].sort(),
+    query_keys: [...url.searchParams.keys()].filter((key) => !isSensitiveQueryKey(key)).sort(),
     status: response?.status ?? 0,
     ok: Boolean(response?.ok),
     duration_ms: roundedDuration(durationMs),
@@ -187,6 +229,26 @@ function analyticsSessionId(): string {
     localStorage.setItem(SESSION_STORAGE_KEY, value);
   }
   return value;
+}
+
+function numericPayloadValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function sanitizedRoute(route: string): string {
+  try {
+    const url = new URL(route, window.location.origin);
+    for (const key of [...url.searchParams.keys()]) {
+      if (isSensitiveQueryKey(key)) url.searchParams.set(key, '[redacted]');
+    }
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return route;
+  }
+}
+
+function isSensitiveQueryKey(key: string): boolean {
+  return SENSITIVE_QUERY_KEYS.has(key.toLowerCase());
 }
 
 function generateSessionId(): string {

@@ -18,7 +18,7 @@
     ensureAvailableCodec,
     type CodecAvailability
   } from '$lib/utils/codecs';
-  import { sessionLoginPrefillFromUrl } from '$lib/utils/sessionLoginPrefill';
+  import { scrubSessionLoginPrefillFromCurrentUrl, sessionLoginPrefillFromUrl } from '$lib/utils/sessionLoginPrefill';
 
   const initialLoginPrefill = browser ? sessionLoginPrefillFromUrl(new URL(window.location.href)) : {};
 
@@ -56,6 +56,7 @@
         username,
         password
       });
+      scrubSessionLoginPrefillFromCurrentUrl();
       selectedProjectId = pendingLogin.projects[0]?.id ?? '';
       selectingProject = false;
       if (pendingLogin.projectCreationRequired || pendingLogin.projects.length < 1) {
@@ -186,6 +187,7 @@
             is_active: true
           }
         });
+        scrubSessionLoginPrefillFromCurrentUrl();
         const activeClient = getClient();
         const activeProject = get(session).project;
         const projectId = activeProject?.id ?? activeProject?.project_key;

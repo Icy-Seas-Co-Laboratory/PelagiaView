@@ -2,7 +2,7 @@ import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
 import { PelagiaApiClient, normalizeBaseUrl, setActiveApiToken } from '$lib/api/client';
 import type { AuthLoginResponse, AuthUserSummary, HealthResponse, ProjectSummary, SystemStatus } from '$lib/api/types';
-import { recordSessionEvent } from '$lib/utils/analytics';
+import { configureAnalyticsTarget, recordSessionEvent } from '$lib/utils/analytics';
 import { clearPreferences, uiStatePreferenceKeys } from '$lib/utils/preferenceRegistry';
 
 const STORAGE_KEY = 'pelagia-view-session';
@@ -102,6 +102,7 @@ export async function connectSession(input: ConnectSessionInput): Promise<void> 
 
 export async function beginProjectSelectionLogin(input: ConnectSessionInput): Promise<ProjectSelectionLogin> {
   const normalized = normalizeBaseUrl(input.baseUrl);
+  configureAnalyticsTarget(null);
   session.update((state) => ({ ...state, baseUrl: normalized, connecting: true, error: null }));
   const loginClient = new PelagiaApiClient(normalized);
 
@@ -131,6 +132,7 @@ export async function beginProjectSelectionLogin(input: ConnectSessionInput): Pr
       projectCreationRequired: Boolean(login.project_creation_required)
     };
   } catch (error) {
+    configureAnalyticsTarget(null);
     session.update((state) => ({
       ...state,
       token: null,
@@ -203,6 +205,7 @@ export async function restoreSession(): Promise<void> {
   if (!browser) return;
   const stored = readStoredSession();
   if (!shouldRestoreStoredSession(stored) || !stored?.baseUrl || !stored.token) {
+    configureAnalyticsTarget(null);
     session.update((state) => ({ ...state, connecting: false }));
     persistStoredSession({ baseUrl: stored?.baseUrl ?? get(session).baseUrl, active: false });
     return;
@@ -218,6 +221,7 @@ export function skipSessionRestore(baseUrl?: string): void {
   const nextBaseUrl = baseUrl ? normalizeBaseUrl(baseUrl) : get(session).baseUrl;
   client = null;
   setActiveApiToken(null);
+  configureAnalyticsTarget(null);
   session.update((state) => ({
     ...state,
     baseUrl: nextBaseUrl,
@@ -243,6 +247,7 @@ async function establishSession(
   options: { persistActive: boolean; restoring?: boolean }
 ): Promise<void> {
   const normalized = normalizeBaseUrl(input.baseUrl);
+  configureAnalyticsTarget(null);
   session.update((state) => ({ ...state, baseUrl: normalized, connecting: true, error: null }));
   const loginClient = new PelagiaApiClient(normalized);
 
@@ -258,6 +263,7 @@ async function establishSession(
     });
     await finishAuthenticatedSession(normalized, login, health, { persistActive: options.persistActive, restoring: Boolean(options.restoring) });
   } catch (error) {
+    configureAnalyticsTarget(null);
     session.update((state) => ({
       ...state,
       token: null,
@@ -333,6 +339,7 @@ async function finishAuthenticatedSession(
     systemStatus,
     connectedAt
   });
+  configureSessionAnalytics(baseUrl, login.token, user, project);
   if (browser && options.persistActive) {
     persistStoredSession({
       baseUrl,
@@ -397,6 +404,7 @@ async function restoreStoredSession(stored: StoredSession): Promise<void> {
       systemStatus,
       connectedAt
     });
+    configureSessionAnalytics(normalized, token, user, project);
     persistStoredSession({
       baseUrl: normalized,
       token,
@@ -417,6 +425,7 @@ async function restoreStoredSession(stored: StoredSession): Promise<void> {
     });
   } catch (error) {
     setActiveApiToken(null);
+    configureAnalyticsTarget(null);
     client = null;
     session.update((state) => ({
       ...state,
@@ -483,6 +492,7 @@ export async function switchSessionProject(projectId: string): Promise<void> {
       switchingProject: false,
       connectedAt
     }));
+    configureSessionAnalytics(state.baseUrl, nextSession.token, user, project);
     if (browser) {
       persistStoredSession({
         baseUrl: state.baseUrl,
@@ -539,9 +549,13 @@ export async function refreshSessionProjects(): Promise<ProjectSummary[]> {
 export function disconnectSession(): void {
   const state = get(session);
   const baseUrl = state.baseUrl;
+  recordSessionEvent('client_session_disconnected', {
+    base_origin: baseOrigin(baseUrl)
+  });
   void client?.logout().catch(() => undefined);
   client = null;
   setActiveApiToken(null);
+  configureAnalyticsTarget(null);
   session.update((state) => ({
     ...state,
     token: null,
@@ -559,8 +573,25 @@ export function disconnectSession(): void {
   if (browser) {
     persistStoredSession({ baseUrl: get(session).baseUrl, active: false });
   }
-  recordSessionEvent('client_session_disconnected', {
-    base_origin: baseOrigin(baseUrl)
+}
+
+function configureSessionAnalytics(
+  baseUrl: string,
+  token: string | null,
+  user: AuthUserSummary | null,
+  project: ProjectSummary | null
+): void {
+  if (!token) {
+    configureAnalyticsTarget(null);
+    return;
+  }
+  configureAnalyticsTarget({
+    baseUrl,
+    token,
+    userId: user?.id ?? null,
+    username: user?.username ?? null,
+    projectId: project?.id ?? null,
+    projectKey: project?.project_key ?? null
   });
 }
 
