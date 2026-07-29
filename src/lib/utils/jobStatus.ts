@@ -62,7 +62,7 @@ export function countJobs(jobs: Job[]): JobStatusCounts {
   for (const job of jobs) {
     const status = normalizedJobStatus(job);
     if (status === 'queued' || status === 'pending') counts.queued += 1;
-    else if (status === 'leased' || status === 'running' || status === 'started' || status === 'active') counts.running += 1;
+    else if (status === 'leased' || status === 'working' || status === 'running' || status === 'started' || status === 'active') counts.running += 1;
     else if (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') counts.succeeded += 1;
     else if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') counts.failed += 1;
     else if (status === 'paused' || status === 'pause') counts.paused += 1;
@@ -74,7 +74,7 @@ export function countJobs(jobs: Job[]): JobStatusCounts {
 export function jobActions(job: Job): JobAction[] {
   const status = normalizedJobStatus(job);
   if (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') return ['retry'];
-  if (status === 'queued' || status === 'leased' || status === 'running') return ['pause', 'retry'];
+  if (status === 'queued' || status === 'leased' || status === 'working' || status === 'running') return ['pause', 'retry'];
   if (status === 'paused' || status === 'pause') return ['resume', 'retry'];
   if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') return ['retry'];
   return ['pause', 'resume', 'retry'];
@@ -94,7 +94,7 @@ export function jobActionClass(job: Job, action: JobAction): string {
     (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') && action === 'retry'
       ? 'job-action-muted'
       : '',
-    (status === 'queued' || status === 'leased' || status === 'running') && (action === 'pause' || action === 'retry')
+    (status === 'queued' || status === 'leased' || status === 'working' || status === 'running') && (action === 'pause' || action === 'retry')
       ? 'job-action-muted'
       : ''
   ]

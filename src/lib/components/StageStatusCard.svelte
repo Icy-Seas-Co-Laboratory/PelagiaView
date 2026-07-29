@@ -24,7 +24,7 @@
   $: percent = numericValue(progress?.percent);
   $: progressWidth = `${Math.max(0, Math.min(100, percent ?? 0))}%`;
   $: queued = numericValue(total?.queued) ?? 0;
-  $: running = numericValue(total?.leased) ?? 0;
+  $: running = (numericValue(total?.leased) ?? 0) + (numericValue(total?.working) ?? 0);
   $: failed = (numericValue(total?.failed) ?? 0) + (numericValue(total?.cancelled) ?? 0) + (numericValue(total?.dead_lettered) ?? 0);
   $: paused = numericValue(total?.paused) ?? 0;
   $: queueCount = queued + running + paused;

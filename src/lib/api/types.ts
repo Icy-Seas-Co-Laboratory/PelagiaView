@@ -292,6 +292,7 @@ export type JobAggregateSummary = {
   job_count?: number | string | null;
   queued?: number | string | null;
   leased?: number | string | null;
+  working?: number | string | null;
   paused?: number | string | null;
   succeeded?: number | string | null;
   failed?: number | string | null;

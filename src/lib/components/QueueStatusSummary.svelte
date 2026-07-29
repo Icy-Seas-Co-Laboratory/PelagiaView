@@ -121,7 +121,7 @@
       (numericValue(row?.cancelled) ?? 0) +
       (numericValue(row?.dead_lettered) ?? 0);
     const queued = numericValue(row?.queued) ?? 0;
-    const running = numericValue(row?.leased) ?? 0;
+    const running = (numericValue(row?.leased) ?? 0) + (numericValue(row?.working) ?? 0);
     const succeeded = numericValue(row?.succeeded) ?? 0;
     const paused = numericValue(row?.paused) ?? 0;
     return {

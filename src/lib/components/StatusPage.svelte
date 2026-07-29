@@ -83,7 +83,7 @@
   $: if (workerPreferencesReady) persistWorkerPreferences(workerPreferenceSnapshot);
   $: globalTotal = globalSummary?.total;
   $: queuedJobCount = numericValue(globalTotal?.queued) ?? 0;
-  $: runningJobCount = numericValue(globalTotal?.leased) ?? 0;
+  $: runningJobCount = (numericValue(globalTotal?.leased) ?? 0) + (numericValue(globalTotal?.working) ?? 0);
   $: currentQueueCount = queuedJobCount + runningJobCount + pausedJobCount;
   $: failedJobCount =
     (numericValue(globalTotal?.failed) ?? 0) +
