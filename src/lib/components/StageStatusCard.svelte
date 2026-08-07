@@ -11,12 +11,13 @@
   export let href = '';
   export let poll = true;
   export let clearing = false;
-  export let onClearQueue: ((stage: string) => Promise<void> | void) | null = null;
+  export let onClearQueue: ((stage: string) => Promise<number | void> | number | void) | null = null;
 
   let summary: JobsSummaryResponse | null = null;
   let loading = true;
   let error: string | null = null;
   let localClearing = false;
+  let clearedCount: number | null = null;
   let cancelled = false;
 
   $: total = summary?.total;
@@ -55,9 +56,11 @@
     if (!onClearQueue || isClearing || queueCount <= 0) return;
     localClearing = true;
     error = null;
+    clearedCount = null;
     try {
-      await onClearQueue(stage);
+      const result = await onClearQueue(stage);
       await load();
+      clearedCount = typeof result === 'number' ? result : null;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -117,6 +120,8 @@
   <div class="stage-card-foot">
     {#if error}
       <span class="form-error">{error}</span>
+    {:else if clearedCount !== null}
+      <span class="soft" role="status">Cleared {clearedCount} job{clearedCount === 1 ? '' : 's'}</span>
     {:else if loading}
       <span class="soft">Refreshing</span>
     {:else if recent}

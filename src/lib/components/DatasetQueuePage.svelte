@@ -195,6 +195,7 @@
   let storeRoiPayloadMinHeight: number | null = null;
   let storeRoiPayloadMinWidthPlusHeight: number | null = null;
 
+  let refinementMethod: 'oracle' | 'identity' = 'oracle';
   let refinementModelRef = '';
   let refinementModelRefs: string[] = [];
   let oracleStatus = 'unknown';
@@ -278,6 +279,7 @@
     storeRoiPayloadMinHeight: number | null;
     storeRoiPayloadMinWidthPlusHeight: number | null;
     refinementModelRef: string;
+    refinementMethod: 'oracle' | 'identity';
     refinementAllowFrameExpansion: boolean;
     refinementMaxIterations: number;
     refinementExpansionPixels: number | null;
@@ -514,6 +516,7 @@
       storeRoiPayloadMinHeight,
       storeRoiPayloadMinWidthPlusHeight,
       refinementModelRef,
+      refinementMethod,
       refinementAllowFrameExpansion,
       refinementMaxIterations,
       refinementExpansionPixels,
@@ -597,6 +600,7 @@
     storeRoiPayloadMinHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
     refinementModelRef = stringPreference(preferences.refinementModelRef, refinementModelRef);
+    refinementMethod = preferences.refinementMethod === 'identity' ? 'identity' : 'oracle';
     refinementAllowFrameExpansion = booleanPreference(preferences.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
     refinementMaxIterations = numberPreference(preferences.refinementMaxIterations, refinementMaxIterations);
     refinementExpansionPixels = nullablePreferenceNumber(preferences.refinementExpansionPixels, refinementExpansionPixels);
@@ -1278,6 +1282,7 @@
 
   function roiRefinementOptions(): Record<string, unknown> {
     return {
+      method: refinementMethod,
       model_ref: refinementModelRef || undefined,
       allow_frame_expansion: refinementAllowFrameExpansion,
       max_iterations: refinementMaxIterations,
@@ -2027,6 +2032,16 @@
             <HelpChip topic="refinement-models" label="Open ROI refinement help" />
           </span>
         </div>
+        <label>
+          Refinement method
+          <select bind:value={refinementMethod}>
+            <option value="oracle">Oracle mask refinement</option>
+            <option value="identity">Identity — promote candidates unchanged</option>
+          </select>
+        </label>
+        {#if refinementMethod === 'identity'}
+          <p class="muted">Selected candidate ROIs will become refined ROIs without model inference, expansion, residual discovery, or overlap reconciliation.</p>
+        {:else}
         <p class="muted">Oracle Builder status: {oracleStatus}</p>
         {#if refinementModelRefs.length}
           <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
@@ -2044,6 +2059,7 @@
             <input bind:value={refinementModelRef} placeholder="default" />
           </label>
         {/if}
+        {/if}
       </div>
 
       <details class="form-section collapsible-section">
@@ -2054,6 +2070,7 @@
           </span>
         </summary>
 
+        {#if refinementMethod === 'oracle'}
         <details class="control-details" open>
           <summary>Frame-aware ROI growth</summary>
           <label class="check-row" class:has-field-override={fieldChanged('refinementAllowFrameExpansion', refinementAllowFrameExpansion)}>
@@ -2073,6 +2090,7 @@
             <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
           </label>
         </details>
+        {/if}
 
         <details class="control-details" open>
           <summary>Refined detections</summary>

@@ -7,7 +7,7 @@
   import StageStatusCard from '$lib/components/StageStatusCard.svelte';
   import { getClient, session } from '$lib/stores/session';
   import { startSystemUsagePolling, systemUsageState } from '$lib/stores/systemUsage';
-  import type { Job, JobsSummaryResponse, KvStoreOverview, SystemStatus, SystemUsageFilesystem, WorkerSession } from '$lib/api/types';
+  import type { Job, JobsClearResponse, JobsSummaryResponse, KvStoreOverview, SystemStatus, SystemUsageFilesystem, WorkerSession } from '$lib/api/types';
   import { formatBytes, formatCount, formatDate, numericValue, statusTone } from '$lib/utils/format';
   import { dashboardViewHref, type DashboardView } from '$lib/utils/dashboardNavigation';
   import { projectPreferenceKey } from '$lib/utils/preferences';
@@ -23,6 +23,7 @@
   let clearingReview = false;
   let clearingStages: Record<string, boolean> = {};
   let actionError: string | null = null;
+  let actionMessage: string | null = null;
   let lastRefreshedAt: Date | null = null;
   let refreshSequence = 0;
   let lastStatusProjectKey = '';
@@ -166,12 +167,15 @@
     if (clearingQueue || currentQueueCount <= 0) return;
     clearingQueue = true;
     actionError = null;
+    actionMessage = null;
     try {
-      await requestJobClear({
+      const result = await requestJobClear({
         mode: 'cancel',
         reason: 'Cleared active jobs from the status page.'
       });
       await refreshStatus();
+      const count = clearedCount(result);
+      actionMessage = count > 0 ? `Cleared ${count} active job${count === 1 ? '' : 's'}.` : 'No active jobs matched the queue.';
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -183,13 +187,17 @@
     if (clearingStages[stage]) return;
     setStageClearing(stage, true);
     actionError = null;
+    actionMessage = null;
     try {
-      await requestJobClear({
+      const result = await requestJobClear({
         stage,
         mode: 'cancel',
         reason: `Cleared active ${stage} jobs from the status page.`
       });
       await refreshStatus();
+      const count = clearedCount(result);
+      actionMessage = count > 0 ? `Cleared ${count} ${stage} job${count === 1 ? '' : 's'}.` : `No active ${stage} jobs matched the queue.`;
+      return count;
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
       throw error;
@@ -202,18 +210,21 @@
     if (clearingReview) return;
     clearingReview = true;
     actionError = null;
+    actionMessage = null;
     try {
-      await requestJobClear({
+      const deleted = await requestJobClear({
         status: terminalReviewStatuses,
         mode: 'delete',
         reason: 'Cleared terminal review jobs from the status page.'
       });
-      await requestJobClear({
+      const cancelled = await requestJobClear({
         status: pausedReviewStatuses,
         mode: 'cancel',
         reason: 'Cleared paused review jobs from the status page.'
       });
       await refreshStatus();
+      const count = clearedCount(deleted) + clearedCount(cancelled);
+      actionMessage = count > 0 ? `Cleared ${count} review job${count === 1 ? '' : 's'}.` : 'No review jobs matched.';
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
       throw error;
@@ -227,15 +238,19 @@
     stage?: string;
     mode: 'cancel' | 'delete';
     reason: string;
-  }) {
+  }): Promise<JobsClearResponse> {
     const client = getClient();
     if (!client) throw new Error('Connect to a Pelagia server before clearing jobs.');
-    await client.clearJobs({
+    return client.clearJobs({
       status: options.status,
-      stage: options.stage,
+      stage: options.stage ? [options.stage] : undefined,
       mode: options.mode,
       reason: options.reason
     });
+  }
+
+  function clearedCount(result: JobsClearResponse): number {
+    return (numericValue(result.cancelled_count) ?? 0) + (numericValue(result.deleted_count) ?? 0);
   }
 
   function setStageClearing(stage: string, value: boolean) {
@@ -574,6 +589,8 @@
 
     {#if actionError}
       <p class="form-error">{actionError}</p>
+    {:else if actionMessage}
+      <p class="soft" role="status">{actionMessage}</p>
     {/if}
   </section>
 

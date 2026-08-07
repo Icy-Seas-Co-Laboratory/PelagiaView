@@ -8,6 +8,7 @@ export type DashboardView =
   | 'explorer'
   | 'frames'
   | 'rois'
+  | 'curation'
   | 'logs'
   | 'admin';
 
@@ -24,6 +25,7 @@ export const defaultDashboardView: DashboardView = 'rois';
 
 export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'rois', label: 'ROI Browser', shortLabel: 'ROIs', detail: 'detections gallery', group: 'analysis' },
+  { id: 'curation', label: 'Curation', detail: 'human and ML review', group: 'analysis' },
   { id: 'frames', label: 'Frame Browser', shortLabel: 'Frames', detail: 'raw and processed frames', group: 'analysis' },
   { id: 'explorer', label: 'Explorer', detail: 'live preview', group: 'analysis' },
   { id: 'status', label: 'Status', detail: 'queue and workers', group: 'system' },

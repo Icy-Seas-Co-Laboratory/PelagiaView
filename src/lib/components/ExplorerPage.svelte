@@ -176,6 +176,7 @@
   let maskDifferenceUrls = new Map<string, string>();
   let maskDifferenceKey = '';
   let maskDifferenceSerial = 0;
+  let refinementMethod: 'oracle' | 'identity' = 'oracle';
   let refinementModelRef = '';
   let refinementModelRefs: string[] = [];
   let oracleStatus = 'unknown';
@@ -1263,6 +1264,7 @@
 
   function roiRefinementOptions(): Record<string, unknown> {
     return {
+      method: refinementMethod,
       model_ref: refinementModelRef || undefined,
       allow_frame_expansion: refinementAllowFrameExpansion,
       max_iterations: refinementMaxIterations,
@@ -3899,6 +3901,16 @@
         </label>
       </div>
 
+      <label>
+        Refinement method
+        <select bind:value={refinementMethod}>
+          <option value="oracle">Oracle mask refinement</option>
+          <option value="identity">Identity — promote candidates unchanged</option>
+        </select>
+      </label>
+      {#if refinementMethod === 'identity'}
+        <p class="muted">Promotes candidate ROIs without model inference or boundary changes.</p>
+      {:else}
       <p class="muted">Oracle Builder status: {oracleStatus}</p>
       {#if refinementModelRefs.length}
         <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
@@ -3916,13 +3928,17 @@
           <input bind:value={refinementModelRef} placeholder="default" />
         </label>
       {/if}
+      {/if}
       <details class="control-details">
         <summary class:has-active-settings={refinementStorageAdvancedActive}>Expansion and storage</summary>
+        {#if refinementMethod === 'oracle'}
         <label class="check-row" class:has-field-override={fieldChanged('refinementAllowFrameExpansion', refinementAllowFrameExpansion)}>
           <input type="checkbox" bind:checked={refinementAllowFrameExpansion} />
           Allow frame expansion
         </label>
+        {/if}
         <div class="form-grid compact-grid">
+          {#if refinementMethod === 'oracle'}
           <label class:has-field-override={fieldChanged('refinementMaxIterations', refinementMaxIterations)}>
             Max iterations
             <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
@@ -3935,6 +3951,7 @@
             Edge touch margin
             <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
           </label>
+          {/if}
           <label class:has-field-override={fieldChanged('refinementEncoding', refinementEncoding)}>
             Encoding
             <select bind:value={refinementEncoding}>

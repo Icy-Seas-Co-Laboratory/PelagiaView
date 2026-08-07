@@ -6,6 +6,7 @@
   import AssetsPage from './AssetsPage.svelte';
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
+  import CurationPage from './CurationPage.svelte';
   import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
   import HeaderProcessingPresetSelect from './HeaderProcessingPresetSelect.svelte';
   import IngestionPage from './IngestionPage.svelte';
@@ -110,6 +111,8 @@
           <ExplorerPage />
         {:else if activeTab === 'rois'}
           <RoiBrowserPage />
+        {:else if activeTab === 'curation'}
+          <CurationPage />
         {:else if activeTab === 'frames'}
           <FrameBrowserPage />
         {:else if activeTab === 'admin'}

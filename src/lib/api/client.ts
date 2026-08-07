@@ -9,6 +9,10 @@ import type {
   AnalyzeIngestionRequest,
   AnalyzeIngestionResponse,
   CollectionSummary,
+  CurationLabel,
+  CurationOptions,
+  CurationRoi,
+  CurationRoiPage,
   DetectionListResponse,
   DetectionFilters,
   DetectionSummary,
@@ -823,6 +827,59 @@ export class PelagiaApiClient {
     refined_detections?: DetectionSummary[];
   }> {
     return this.post('/roi-refinement', compact(body));
+  }
+
+  async getCurationOptions(): Promise<CurationOptions> {
+    return this.get('/curation/options', {}, 0);
+  }
+
+  async listCurationLabels(includeDeprecated = false): Promise<CurationLabel[]> {
+    const response = await this.get<{ labels: CurationLabel[] }>('/curation/labels', {
+      include_deprecated: includeDeprecated
+    }, 0);
+    return response.labels ?? [];
+  }
+
+  async createCurationLabel(body: { name: string; display_name?: string | null }): Promise<CurationLabel> {
+    const response = await this.post<{ label: CurationLabel }>('/curation/labels', body);
+    return response.label;
+  }
+
+  async listCurationRois(options: Record<string, unknown> = {}): Promise<CurationRoiPage> {
+    return this.get('/curation/rois', options as Record<string, QueryParamValue>, 0);
+  }
+
+  async getCurationRoi(roiId: string): Promise<CurationRoi> {
+    const response = await this.get<{ roi: CurationRoi }>(`/curation/rois/${encodeURIComponent(roiId)}`, {}, 0);
+    return response.roi;
+  }
+
+  async annotateCurationRois(
+    roiIds: string[],
+    labelId: string,
+    suggestedByEvidenceId?: string | null
+  ): Promise<void> {
+    await this.post('/curation/annotations', {
+      roi_ids: roiIds,
+      label_id: labelId,
+      suggested_by_evidence_id: suggestedByEvidenceId || undefined
+    });
+  }
+
+  async reviewCurationRois(roiIds: string[], decision: 'verified' | 'rejected' | 'needs_review'): Promise<void> {
+    await this.post('/curation/reviews', { roi_ids: roiIds, decision });
+  }
+
+  async removeCurationLabels(roiIds: string[]): Promise<void> {
+    await this.post('/curation/annotations/remove', { roi_ids: roiIds });
+  }
+
+  async queueClassificationJob(body: {
+    roi_ids?: string[];
+    model_ref?: string | null;
+    priority?: number | null;
+  }): Promise<{ job: Job; model_ref: string }> {
+    return this.post('/curation/classification-jobs', compact(body));
   }
 
   async listRawDirectory(path = '.'): Promise<DirectoryListing> {

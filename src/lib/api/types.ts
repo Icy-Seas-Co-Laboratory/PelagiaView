@@ -312,8 +312,8 @@ export type JobsSummaryResponse = {
 export type JobsClearOptions = {
   run_id?: string | null;
   asset_id?: string | null;
-  status?: string | string[] | null;
-  stage?: string | string[] | null;
+  status?: string[] | null;
+  stage?: string[] | null;
   ids?: string[] | null;
   worker_id?: string | null;
   reason?: string | null;
@@ -1060,6 +1060,7 @@ export type SegmentationCapabilities = {
 
 export type RoiRefinementOptions = {
   detection_ids?: string[];
+  method?: 'oracle' | 'identity';
   model_ref?: string | null;
   max_iterations?: number | null;
   expansion_pixels?: number | null;
@@ -1074,6 +1075,7 @@ export type RoiRefinementCapabilities = {
   pipeline_stage_order?: string[];
   supported?: {
     model_refs?: string[];
+    methods?: Array<'oracle' | 'identity'>;
     models?: Array<Record<string, unknown>>;
     inference_backend?: string;
     oracle?: { enabled?: boolean; status?: string; error?: string };
@@ -1083,6 +1085,74 @@ export type RoiRefinementCapabilities = {
     roi_refinement?: Record<string, unknown>;
   };
   fields?: Record<string, Array<Record<string, unknown>>>;
+};
+
+export type CurationLabel = {
+  id: string;
+  name: string;
+  display_name?: string | null;
+  stable_concept_id?: string | null;
+  parent_label_id?: string | null;
+  annotation_count?: number;
+  prediction_count?: number;
+  deprecated_at?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type CurationEvidenceSummary = {
+  evidence_id?: string | null;
+  inference_run_id?: string | null;
+  predicted_label_id?: string | null;
+  predicted_label_name?: string | null;
+  predicted_class_index?: number | null;
+  confidence?: number | null;
+  entropy?: number | null;
+  probability_margin?: number | null;
+  prototype_class_index?: number | null;
+  prototype_similarity?: number | null;
+  prototype_margin?: number | null;
+  knn_class_index?: number | null;
+  knn_agreement?: number | null;
+  knn_weighted_support?: number | null;
+  knn_margin?: number | null;
+};
+
+export type CurationRoi = CurationEvidenceSummary & {
+  id: string;
+  asset_id?: string | null;
+  asset_filename?: string | null;
+  frame_id?: string | null;
+  frame_index?: number | null;
+  roi_index?: number | null;
+  area?: number | null;
+  roi_shape?: number[];
+  roi_url?: string;
+  thumbnail_url?: string;
+  annotation_id?: string | null;
+  label_id?: string | null;
+  label_name?: string | null;
+  label_display_name?: string | null;
+  annotation_status?: string | null;
+  actor_username?: string | null;
+  review_decision?: 'verified' | 'rejected' | 'needs_review' | null;
+  annotations?: Array<Record<string, unknown>>;
+  reviews?: Array<Record<string, unknown>>;
+  evidence?: Array<Record<string, any>>;
+};
+
+export type CurationOptions = {
+  oracle: { enabled?: boolean; status?: string; error?: string };
+  models: Array<Record<string, any>>;
+  default_model_ref: string;
+  labels: CurationLabel[];
+  ownership: Record<string, string>;
+};
+
+export type CurationRoiPage = {
+  items: CurationRoi[];
+  total: number;
+  limit: number;
+  offset: number;
 };
 
 export type FramePreprocessOptions = {
