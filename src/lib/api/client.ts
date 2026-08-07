@@ -10,6 +10,7 @@ import type {
   AnalyzeIngestionResponse,
   CollectionSummary,
   CurationLabel,
+  CurationLabelImportResult,
   CurationOptions,
   CurationRoi,
   CurationRoiPage,
@@ -843,6 +844,10 @@ export class PelagiaApiClient {
   async createCurationLabel(body: { name: string; display_name?: string | null }): Promise<CurationLabel> {
     const response = await this.post<{ label: CurationLabel }>('/curation/labels', body);
     return response.label;
+  }
+
+  async importDefaultCurationLabels(): Promise<CurationLabelImportResult> {
+    return this.post('/curation/labels/import-defaults', {});
   }
 
   async listCurationRois(options: Record<string, unknown> = {}): Promise<CurationRoiPage> {

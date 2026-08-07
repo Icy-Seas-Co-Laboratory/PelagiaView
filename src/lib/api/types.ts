@@ -1099,6 +1099,54 @@ export type CurationLabel = {
   metadata?: Record<string, unknown>;
 };
 
+export type CurationLabelDictionary = {
+  key: string;
+  filename: string;
+  vocabulary: {
+    id: string;
+    name: string;
+    version: string;
+    [key: string]: unknown;
+  };
+  sources: Array<Record<string, unknown>>;
+  labels: Array<Record<string, unknown>>;
+  selectable_count: number;
+};
+
+export type CurationLabelImportResult = {
+  dictionary_key: string;
+  created_count: number;
+  updated_count: number;
+  labels: CurationLabel[];
+};
+
+export type OracleModelSummary = {
+  alias: string;
+  loaded: boolean;
+  available: boolean;
+  load_error?: string | null;
+  task?: string | null;
+  architecture?: string | null;
+  model?: {
+    artifact_id?: string | null;
+    run_id?: string | null;
+    artifact_fingerprint?: string | null;
+    task?: string | null;
+    architecture?: string | null;
+  };
+  capabilities?: {
+    contract_version?: string | null;
+    labels?: Array<{ class_index: number; label_id?: string | null; name?: string | null }>;
+    embedding?: { available?: boolean; dimension?: number | null; normalized?: boolean };
+    evidence?: {
+      available?: boolean;
+      prototype?: boolean;
+      knn?: boolean;
+      visual_exemplars?: boolean;
+    };
+  };
+};
+
 export type CurationEvidenceSummary = {
   evidence_id?: string | null;
   inference_run_id?: string | null;
@@ -1141,10 +1189,17 @@ export type CurationRoi = CurationEvidenceSummary & {
 };
 
 export type CurationOptions = {
-  oracle: { enabled?: boolean; status?: string; error?: string };
-  models: Array<Record<string, any>>;
+  oracle: {
+    enabled?: boolean;
+    status?: string;
+    error?: string;
+    registered_model_count?: number;
+    available_model_count?: number;
+  };
+  models: OracleModelSummary[];
   default_model_ref: string;
   labels: CurationLabel[];
+  default_label_dictionary: CurationLabelDictionary;
   ownership: Record<string, string>;
 };
 

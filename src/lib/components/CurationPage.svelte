@@ -1,7 +1,14 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import { getClient } from '$lib/stores/session';
-  import type { CurationLabel, CurationOptions, CurationRoi } from '$lib/api/types';
+  import { imageInversionEnabled } from '$lib/stores/displayPreferences';
+  import {
+    buildCurationTaxonomy,
+    expandableCurationLabelIds,
+    visibleCurationTaxonomy
+  } from '$lib/utils/curationTaxonomy';
+  import type { CurationLabel, CurationOptions, CurationRoi, Job, OracleModelSummary } from '$lib/api/types';
 
   let options: CurationOptions | null = null;
   let labels: CurationLabel[] = [];
@@ -24,6 +31,11 @@
   let error: string | null = null;
   let notice: string | null = null;
   let newLabel = '';
+  let expandedLabelIds = new Set<string>();
+  let classificationJobs: Job[] = [];
+  let classificationError: string | null = null;
+  let classificationPollTimer: number | null = null;
+  const observedClassificationStatuses = new Map<string, string>();
 
   $: selectedItems = items.filter((item) => selected.has(item.id));
   $: currentEvidence = (detail?.evidence?.[0] as Record<string, any> | undefined) ?? null;
@@ -38,13 +50,28 @@
     .sort((a, b) => b.similarity - a.similarity);
   $: knnNeighbors = (currentEvidence?.neighbors ?? []) as Array<Record<string, any>>;
   $: consensus = consensusSummary(detail);
+  $: oracleModels = options?.models ?? [];
+  $: availableModels = oracleModels.filter((model) => model.available !== false);
+  $: selectedModel = availableModels.find((model) => model.alias === modelRef) ?? null;
+  $: labelTaxonomy = buildCurationTaxonomy(labels);
+  $: visibleLabelRows = visibleCurationTaxonomy(labelTaxonomy, expandedLabelIds);
+  $: labelHierarchyExists = labelTaxonomy.some((row) => row.depth > 0);
+  $: activeClassificationJobs = classificationJobs.filter((job) => isActiveJob(job));
+  $: visibleClassificationJobs = activeClassificationJobs.length
+    ? activeClassificationJobs
+    : classificationJobs.slice(0, 1);
 
   onMount(async () => {
     window.addEventListener('keydown', keydown);
     await initialize();
+    await loadClassificationJobs(false);
+    classificationPollTimer = window.setInterval(() => void loadClassificationJobs(true), 3000);
   });
 
-  onDestroy(() => window.removeEventListener('keydown', keydown));
+  onDestroy(() => {
+    window.removeEventListener('keydown', keydown);
+    if (classificationPollTimer !== null) window.clearInterval(classificationPollTimer);
+  });
 
   async function initialize() {
     const client = getClient();
@@ -53,7 +80,12 @@
     try {
       options = await client.getCurationOptions();
       labels = options.labels ?? [];
-      modelRef = options.default_model_ref ?? '';
+      expandedLabelIds = expandableCurationLabelIds(buildCurationTaxonomy(labels));
+      const usableModels = options.models.filter((model) => model.available !== false);
+      modelRef =
+        usableModels.find((model) => model.alias === options?.default_model_ref)?.alias ??
+        usableModels[0]?.alias ??
+        '';
       await load();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -182,7 +214,13 @@
   async function refreshAfterWrite() {
     const client = getClient();
     if (!client) return;
+    const previousExpandable = expandableCurationLabelIds(labelTaxonomy);
     labels = await client.listCurationLabels();
+    const expandable = expandableCurationLabelIds(buildCurationTaxonomy(labels));
+    expandedLabelIds = new Set([
+      ...expandedLabelIds,
+      ...[...expandable].filter((id) => !previousExpandable.has(id))
+    ]);
     await load();
   }
 
@@ -210,6 +248,23 @@
     }
   }
 
+  async function importDefaultLabels() {
+    const client = getClient();
+    if (!client || working) return;
+    working = true;
+    error = null;
+    try {
+      const result = await client.importDefaultCurationLabels();
+      labels = result.labels;
+      expandedLabelIds = expandableCurationLabelIds(buildCurationTaxonomy(labels));
+      notice = `Loaded ${result.created_count} new and refreshed ${result.updated_count} existing labels from ${result.dictionary_key}.`;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      working = false;
+    }
+  }
+
   async function runInference(selectedOnly: boolean) {
     const client = getClient();
     if (!client || !modelRef || working) return;
@@ -218,12 +273,71 @@
     working = true;
     try {
       const response = await client.queueClassificationJob({ roi_ids: roiIds, model_ref: modelRef });
+      classificationJobs = [response.job, ...classificationJobs.filter((job) => job.id !== response.job.id)];
+      observedClassificationStatuses.set(response.job.id, response.job.status ?? 'queued');
       notice = `Queued classification job ${response.job.id}. Evidence will appear as the worker completes.`;
+      await loadClassificationJobs(false);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
       working = false;
     }
+  }
+
+  async function loadClassificationJobs(refreshEvidence: boolean) {
+    const client = getClient();
+    if (!client) return;
+    try {
+      const next = await client.listJobs({
+        stage: 'classify',
+        include_progress: true,
+        limit: 5,
+        sort: 'updated_at',
+        direction: 'desc'
+      });
+      let completedSinceLastPoll = false;
+      for (const job of next) {
+        const status = job.status ?? 'unknown';
+        const previous = observedClassificationStatuses.get(job.id);
+        if (previous && isActiveStatus(previous) && !isActiveStatus(status)) {
+          completedSinceLastPoll = true;
+        }
+        observedClassificationStatuses.set(job.id, status);
+      }
+      classificationJobs = next;
+      classificationError = null;
+      if (refreshEvidence && completedSinceLastPoll) await load();
+    } catch (cause) {
+      classificationError = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  function isActiveStatus(status: string): boolean {
+    return ['queued', 'leased', 'working', 'paused'].includes(status.toLowerCase());
+  }
+
+  function isActiveJob(job: Job): boolean {
+    return isActiveStatus(job.status ?? '');
+  }
+
+  function jobProgressPercent(job: Job): number | null {
+    const value = Number(job.progress?.percent);
+    return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+  }
+
+  function jobProgressCount(job: Job): string {
+    const completed = Number(job.progress?.completed);
+    const total = Number(job.progress?.total);
+    if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
+      return `${completed.toLocaleString()} of ${total.toLocaleString()} ROIs`;
+    }
+    if (job.status === 'succeeded' && total === 0) return 'No eligible ROIs';
+    return job.status === 'queued' ? 'Waiting for a classification worker' : 'Determining workload';
+  }
+
+  function jobPhase(job: Job): string {
+    const phase = String(job.progress?.current?.phase ?? job.progress?.secondary?.phase ?? '');
+    return phase ? phase.replaceAll('_', ' ') : job.status ?? 'unknown';
   }
 
   function keydown(event: KeyboardEvent) {
@@ -245,7 +359,7 @@
     }
     if (/^[0-9]$/.test(event.key)) {
       const index = event.key === '0' ? 9 : Number(event.key) - 1;
-      const label = labels[index];
+      const label = visibleLabelRows[index]?.label;
       if (label) {
         event.preventDefault();
         void assign(label);
@@ -270,6 +384,23 @@
 
   function labelName(label: CurationLabel) {
     return label.display_name || label.name;
+  }
+
+  function toggleLabelBranch(labelId: string, event: Event) {
+    event.stopPropagation();
+    const next = new Set(expandedLabelIds);
+    next.has(labelId) ? next.delete(labelId) : next.add(labelId);
+    expandedLabelIds = next;
+  }
+
+  function toggleAllLabelBranches() {
+    const expandable = expandableCurationLabelIds(labelTaxonomy);
+    const allExpanded = [...expandable].every((id) => expandedLabelIds.has(id));
+    expandedLabelIds = allExpanded ? new Set() : expandable;
+  }
+
+  function taxonomyOptionName(depth: number, label: CurationLabel): string {
+    return `${'  '.repeat(depth)}${depth ? '↳ ' : ''}${labelName(label)}`;
   }
 
   function classLabel(classIndex: number): string {
@@ -297,6 +428,26 @@
     if (votes.length < 2) return 'Partial evidence';
     return votes.every((value) => value === votes[0]) ? 'All evidence agrees' : 'Evidence disagreement';
   }
+
+  function modelArchitecture(model: OracleModelSummary): string {
+    return model.architecture || model.model?.architecture || 'Unspecified architecture';
+  }
+
+  function modelClassCount(model: OracleModelSummary): number {
+    return model.capabilities?.labels?.length ?? 0;
+  }
+
+  function modelFeatures(model: OracleModelSummary): string[] {
+    const features: string[] = [];
+    if (model.capabilities?.embedding?.available) features.push('embeddings');
+    if (model.capabilities?.evidence?.prototype) features.push('prototypes');
+    if (model.capabilities?.evidence?.knn) features.push('KNN');
+    return features;
+  }
+
+  function shortIdentity(value: string | null | undefined): string {
+    return value ? value.slice(0, 8) : 'unknown';
+  }
 </script>
 
 <div class="curation-workspace">
@@ -308,22 +459,69 @@
     <label>Sort<select bind:value={sortBy} on:change={updateFilters}><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="confidence_asc">Lowest confidence</option><option value="confidence_desc">Highest confidence</option><option value="disagreement">Most disagreement</option><option value="area_asc">Smallest ROI</option><option value="area_desc">Largest ROI</option></select></label>
     <div class="search-row"><input bind:value={search} on:keydown={(event) => event.key === 'Enter' && updateFilters()} placeholder="Search ROI or asset" /><button on:click={updateFilters}>Go</button></div>
 
-    <section class="label-tree"><div class="section-title"><h3>Labels</h3><button class:active={!labelId} on:click={() => { labelId=''; updateFilters(); }}>All</button></div>{#each labels as label,index}<button class:active={labelId===label.id} on:click={() => { labelId=label.id; updateFilters(); }}><span><kbd>{index < 9 ? index + 1 : index === 9 ? 0 : ''}</kbd>{labelName(label)}</span><em>{label.annotation_count || 0}<small>human</small> {label.prediction_count || 0}<small>ML</small></em></button>{/each}</section>
+    <section class="label-tree">
+      <div class="section-title"><h3>{labelHierarchyExists ? 'Taxonomy' : 'Labels'}</h3><span><button class:active={!labelId} on:click={() => { labelId=''; updateFilters(); }}>All</button>{#if labelHierarchyExists}<button title="Expand or collapse the taxonomy" on:click={toggleAllLabelBranches}>{visibleLabelRows.length === labelTaxonomy.length ? 'Collapse' : 'Expand'}</button>{/if}</span></div>
+      {#each visibleLabelRows as row,index (row.label.id)}
+        <button class="taxonomy-row" class:active={labelId===row.label.id} style={`--depth:${row.depth}`} title={row.label.metadata?.label_dictionary ? `Standard concept: ${row.label.stable_concept_id || row.label.name}` : 'Project label'} on:click={() => { labelId=row.label.id; updateFilters(); }}>
+          <span class="taxonomy-label">
+            {#if row.hasChildren}<span class="tree-toggle" role="button" tabindex="0" aria-label={`${expandedLabelIds.has(row.label.id) ? 'Collapse' : 'Expand'} ${labelName(row.label)}`} on:click={(event)=>toggleLabelBranch(row.label.id,event)} on:keydown={(event)=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleLabelBranch(row.label.id,event);}}}>{expandedLabelIds.has(row.label.id)?'▾':'▸'}</span>{:else}<span class="tree-toggle" aria-hidden="true">·</span>{/if}
+            <kbd>{index < 9 ? index + 1 : index === 9 ? 0 : ''}</kbd><span>{labelName(row.label)}</span>
+          </span>
+          <em>{row.label.annotation_count || 0}<small>human</small> {row.label.prediction_count || 0}<small>ML</small></em>
+        </button>
+      {/each}
+    </section>
+    {#if options?.default_label_dictionary}<button class="default-labels" disabled={working} on:click={importDefaultLabels}>Load {options.default_label_dictionary.vocabulary.name} defaults</button>{/if}
     <div class="new-label"><input bind:value={newLabel} on:keydown={(event) => event.key === 'Enter' && createLabel()} placeholder="New project label" /><button disabled={!newLabel.trim() || working} on:click={createLabel}>Add</button></div>
 
-    <section class="inference-panel"><h3>Classification inference</h3><label>Oracle model<select bind:value={modelRef}>{#each options?.models ?? [] as model}<option value={model.alias}>{model.alias}</option>{/each}{#if modelRef && !(options?.models ?? []).some((model) => model.alias===modelRef)}<option value={modelRef}>{modelRef}</option>{/if}</select></label><small class:unavailable={options?.oracle.status !== 'ready'}>Oracle: {options?.oracle.status || 'unknown'}</small><div><button disabled={working || !targets().length} on:click={() => runInference(true)}>Run selected</button><button disabled={working} on:click={() => runInference(false)}>Run all</button></div></section>
+    <section class="inference-panel">
+      <div class="model-heading"><h3>Classification models</h3><span class:unavailable={!availableModels.length}>{availableModels.length}/{oracleModels.length} available</span></div>
+      {#if availableModels.length}
+        <label>Model to use<select bind:value={modelRef}>{#each availableModels as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label>
+      {:else}
+        <p class="muted">No usable classification model is currently available.</p>
+      {/if}
+      <div class="model-catalog" aria-label="Oracle Builder classification models">
+        {#each oracleModels as model (model.alias)}
+          <article class:unavailable={!model.available} class:selected={model.alias === modelRef}>
+            <header><strong>{model.alias}</strong><span>{model.available ? 'Ready' : 'Unavailable'}</span></header>
+            <p>{modelArchitecture(model)}{#if modelClassCount(model)} · {modelClassCount(model)} classes{/if}</p>
+            {#if modelFeatures(model).length}<p>{modelFeatures(model).join(' · ')}</p>{/if}
+            {#if model.model?.artifact_id}<code title={model.model.artifact_id}>artifact {shortIdentity(model.model.artifact_id)}</code>{/if}
+            {#if model.load_error}<small title={model.load_error}>{model.load_error}</small>{/if}
+          </article>
+        {/each}
+      </div>
+      <small class:unavailable={options?.oracle.status !== 'ready'}>Oracle: {options?.oracle.status || 'unknown'}{#if options?.oracle.error} · {options.oracle.error}{/if}</small>
+      {#if selectedModel}<small>Selected: {selectedModel.alias} · artifact {shortIdentity(selectedModel.model?.artifact_id)}</small>{/if}
+      <div class="inference-actions"><button disabled={working || !targets().length || !selectedModel} on:click={() => runInference(true)}>Run selected</button><button disabled={working || !selectedModel} on:click={() => runInference(false)}>Run all</button></div>
+      {#if visibleClassificationJobs.length}
+        <div class="classification-progress" aria-live="polite">
+          {#each visibleClassificationJobs as job (job.id)}
+            <article class:failed={job.status === 'failed' || job.status === 'dead_lettered'}>
+              <header><strong>{jobPhase(job)}</strong><span>{jobProgressPercent(job) === null ? job.status : `${jobProgressPercent(job)?.toFixed(0)}%`}</span></header>
+              <div class:indeterminate={jobProgressPercent(job) === null && isActiveJob(job)} class="classification-progress-track"><i style={`width:${jobProgressPercent(job) ?? 0}%`}></i></div>
+              <p>{job.progress?.message || job.summary || 'Classification job queued'}</p>
+              <small>{jobProgressCount(job)} · job {shortIdentity(job.id)}</small>
+              {#if job.error_message}<small class="job-error">{job.error_message}</small>{/if}
+            </article>
+          {/each}
+        </div>
+      {/if}
+      {#if classificationError}<small class="job-error">Progress unavailable: {classificationError}</small>{/if}
+    </section>
   </aside>
 
   <main class="curation-gallery panel">
     <header><div><p class="eyebrow">Refined ROI workspace</p><h2>{total.toLocaleString()} curatable ROIs</h2></div><div><strong>{selected.size}</strong> selected <button on:click={() => selected=new Set(items.map((item)=>item.id))}>Select page</button><button on:click={() => selected=new Set()}>Clear</button></div></header>
-    <div class="gallery-grid" aria-label="Curatable ROI gallery">{#each items as item (item.id)}<button class="roi-tile" class:selected={selected.has(item.id)} class:focused={focusedId===item.id} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:disagreement={consensusSummary(item)==='Evidence disagreement'} on:click={(event)=>choose(item,event)}><span class="roi-image">{#if imageUrl(item)}<img loading="lazy" src={imageUrl(item)} alt="ROI" />{/if}</span><span class="human-label">{item.label_display_name || 'Unlabeled'}</span>{#if item.evidence_id}<span class="prediction"><b>{item.predicted_label_name || 'Prediction'}</b><em>{percent(item.confidence)}</em></span>{/if}</button>{/each}{#if !loading && !items.length}<div class="empty">No refined ROIs match this queue.</div>{/if}</div>
+    <div class="gallery-grid" aria-label="Curatable ROI gallery">{#each items as item (item.id)}<button class="roi-tile" class:selected={selected.has(item.id)} class:focused={focusedId===item.id} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:disagreement={consensusSummary(item)==='Evidence disagreement'} on:click={(event)=>choose(item,event)}><span class="roi-image">{#if imageUrl(item)}<AuthenticatedImage src={imageUrl(item)} alt="ROI" imageClass="curation-roi-image" invert={$imageInversionEnabled} />{/if}</span><span class="human-label">{item.label_display_name || 'Unlabeled'}</span>{#if item.evidence_id}<span class="prediction"><b>{item.predicted_label_name || 'Prediction'}</b><em>{percent(item.confidence)}</em></span>{/if}</button>{/each}{#if !loading && !items.length}<div class="empty">No refined ROIs match this queue.</div>{/if}</div>
     <footer><button disabled={page===0 || loading} on:click={() => {page--;load();}}>Previous</button><span>{total ? `${page*pageSize+1}–${Math.min(total,(page+1)*pageSize)} of ${total}` : '0 ROIs'}</span><button disabled={(page+1)*pageSize>=total || loading} on:click={() => {page++;load();}}>Next</button></footer>
   </main>
 
   <aside class="curation-inspector panel">
     <div class="inspector-heading"><p class="eyebrow">Focused ROI</p><h2>Inspector</h2></div>
-    {#if detail}<img class="inspect-image" src={imageUrl(detail)} alt="Focused ROI" /><code>{detail.id}</code>
-      <section><h3>Human ground truth</h3><strong class="current-label">{detail.label_display_name || 'Unlabeled'}</strong><p>{detail.review_decision ? detail.review_decision.replace('_',' ') : detail.annotation_id ? 'Unverified' : 'No assertion'}</p><div class="review-actions"><button disabled={!detail.annotation_id || working} on:click={()=>review('verified')}>✓ Verify</button><button disabled={!detail.annotation_id || working} on:click={()=>review('needs_review')}>⚑ Flag</button><button disabled={!detail.annotation_id || working} on:click={()=>review('rejected')}>× Reject</button></div><label>Assign label<select value="" on:change={(event)=>{const label=labels.find((value)=>value.id===(event.currentTarget as HTMLSelectElement).value);if(label)assign(label);(event.currentTarget as HTMLSelectElement).value='';}}><option value="">Choose project label…</option>{#each labels as label}<option value={label.id}>{labelName(label)}</option>{/each}</select></label><button class="clear-label" disabled={!detail.annotation_id || working} on:click={clearLabel}>Clear current label</button></section>
+    {#if detail}<AuthenticatedImage src={imageUrl(detail)} alt="Focused ROI" imageClass="inspect-image" eager invert={$imageInversionEnabled} /><code>{detail.id}</code>
+      <section><h3>Human ground truth</h3><strong class="current-label">{detail.label_display_name || 'Unlabeled'}</strong><p>{detail.review_decision ? detail.review_decision.replace('_',' ') : detail.annotation_id ? 'Unverified' : 'No assertion'}</p><div class="review-actions"><button disabled={!detail.annotation_id || working} on:click={()=>review('verified')}>✓ Verify</button><button disabled={!detail.annotation_id || working} on:click={()=>review('needs_review')}>⚑ Flag</button><button disabled={!detail.annotation_id || working} on:click={()=>review('rejected')}>× Reject</button></div><label>Assign label<select value="" on:change={(event)=>{const label=labels.find((value)=>value.id===(event.currentTarget as HTMLSelectElement).value);if(label)assign(label);(event.currentTarget as HTMLSelectElement).value='';}}><option value="">Choose project label…</option>{#each labelTaxonomy as row}<option value={row.label.id}>{taxonomyOptionName(row.depth,row.label)}</option>{/each}</select></label><button class="clear-label" disabled={!detail.annotation_id || working} on:click={clearLabel}>Clear current label</button></section>
 
       <section class:warning={consensus==='Evidence disagreement'}><h3>Evidence consensus</h3><strong>{consensus}</strong>{#if detail.evidence_id}<p>Neural: {detail.predicted_label_name || classLabel(detail.predicted_class_index ?? -1)} · Prototype: {classLabel(detail.prototype_class_index ?? -1)} · KNN: {classLabel(detail.knn_class_index ?? -1)}</p><button class="primary" disabled={!detail.predicted_label_id || working} on:click={acceptPrediction}>Accept prediction as human label</button>{:else}<p>No classification run has produced evidence for this ROI.</p>{/if}</section>
 
@@ -348,11 +546,12 @@
   .rail-heading h2,.inspector-heading h2,.curation-gallery h2{margin:0 0 12px}.eyebrow{margin:0;color:var(--muted,#667);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
   label{display:grid;gap:4px;margin:9px 0;font-size:11px;font-weight:650;color:var(--muted,#667)}select,input,button{font:inherit}select,input{min-width:0;padding:7px;border:1px solid var(--border,#bac5ca);border-radius:5px;background:var(--surface,#fff);color:inherit}button{border:1px solid var(--border,#bac5ca);border-radius:5px;background:var(--surface,#fff);color:inherit;padding:6px 8px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button.primary{background:var(--accent,#197997);color:#fff;border-color:var(--accent,#197997);width:100%}
   .search-row,.new-label{display:flex}.search-row input,.new-label input{flex:1}.search-row button,.new-label button{border-radius:0 5px 5px 0;margin-left:-1px}
-  .label-tree{margin:15px -5px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:0 5px}.label-tree h3,.inference-panel h3,.curation-inspector h3{margin:8px 0;font-size:12px}.label-tree>button{width:100%;border:0;border-bottom:1px solid var(--border,#dde4e6);border-radius:0;display:flex;justify-content:space-between;text-align:left;background:transparent}.label-tree>button.active{background:color-mix(in srgb,var(--accent,#197997) 14%,transparent)}.label-tree span{display:flex;align-items:center;gap:5px}.label-tree em{font-style:normal;font-size:10px}.label-tree small{color:var(--muted,#778)}kbd{font:9px ui-monospace;border:1px solid var(--border,#ccd);padding:1px 3px}
-  .inference-panel{border-top:1px solid var(--border,#ccd);margin-top:16px;padding-top:8px}.inference-panel>div{display:flex}.inference-panel>div button{flex:1}.inference-panel small{display:block;margin:7px 0;color:#28724d}.inference-panel small.unavailable{color:#a14f3d}
+  .label-tree{margin:15px -5px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:0 5px}.section-title>span{display:flex}.section-title button{padding:3px 5px}.label-tree h3,.inference-panel h3,.curation-inspector h3{margin:8px 0;font-size:12px}.label-tree>.taxonomy-row{width:100%;border:0;border-bottom:1px solid var(--border,#dde4e6);border-radius:0;display:flex;justify-content:space-between;text-align:left;background:transparent;padding-left:calc(5px + var(--depth,0) * 13px)}.label-tree>.taxonomy-row.active{background:color-mix(in srgb,var(--accent,#197997) 14%,transparent)}.taxonomy-label{display:flex;align-items:center;gap:4px;min-width:0}.taxonomy-label>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-toggle{width:12px;flex:0 0 12px;display:inline-grid;place-items:center;color:var(--muted,#667)}.tree-toggle[role="button"]{cursor:pointer}.label-tree em{font-style:normal;font-size:10px;white-space:nowrap}.label-tree small{color:var(--muted,#778)}kbd{font:9px ui-monospace;border:1px solid var(--border,#ccd);padding:1px 3px}
+  .inference-panel{border-top:1px solid var(--border,#ccd);margin-top:16px;padding-top:8px}.model-heading{display:flex;align-items:center;justify-content:space-between}.model-heading span{font-size:9px;color:#28724d}.model-heading span.unavailable,.inference-panel small.unavailable{color:#a14f3d}.model-catalog{display:grid;gap:5px;max-height:230px;overflow:auto;margin:8px 0}.model-catalog article{padding:6px;border:1px solid var(--border,#ccd);border-left:3px solid #3f8b6c;border-radius:4px;background:color-mix(in srgb,var(--surface,#fff) 92%,var(--accent,#197997))}.model-catalog article.unavailable{border-left-color:#a14f3d;opacity:.82}.model-catalog article.selected{box-shadow:0 0 0 1px var(--accent,#197997)}.model-catalog header{display:flex;justify-content:space-between;gap:5px;font-size:10px}.model-catalog header span{font-size:8px;text-transform:uppercase;letter-spacing:.05em}.model-catalog p{margin:3px 0;font-size:9px;color:var(--muted,#667)}.model-catalog code{display:block;font-size:8px}.model-catalog small{display:-webkit-box;overflow:hidden;line-clamp:2;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:#a14f3d}.inference-panel>small{display:block;margin:7px 0;color:#28724d}.inference-actions{display:flex}.inference-actions button{flex:1}
+  .classification-progress{display:grid;gap:6px;margin-top:9px}.classification-progress article{padding:7px;border:1px solid var(--border,#ccd);border-radius:5px;background:color-mix(in srgb,var(--surface,#fff) 94%,var(--accent,#197997))}.classification-progress article.failed{border-color:#a14f3d}.classification-progress header{display:flex;justify-content:space-between;text-transform:capitalize;font-size:10px}.classification-progress p{margin:5px 0;font-size:9px;line-height:1.3}.classification-progress small{display:block;margin:2px 0;color:var(--muted,#667)}.classification-progress-track{height:6px;margin-top:5px;border-radius:4px;overflow:hidden;background:var(--border,#d9e0e2)}.classification-progress-track i{display:block;height:100%;background:var(--accent,#197997);transition:width .25s ease}.classification-progress-track.indeterminate i{width:35%!important;animation:classification-pulse 1.2s ease-in-out infinite}.job-error{color:#a14f3d!important;overflow-wrap:anywhere}@keyframes classification-pulse{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
   .curation-gallery{display:flex;flex-direction:column;min-height:0}.curation-gallery header,.curation-gallery footer{padding:12px;display:flex;align-items:center;justify-content:space-between;gap:10px}.curation-gallery header{border-bottom:1px solid var(--border,#ccd)}.curation-gallery footer{border-top:1px solid var(--border,#ccd)}
-  .gallery-grid{padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(135px,1fr));gap:8px;align-content:start;overflow:auto;flex:1}.roi-tile{position:relative;padding:4px;display:flex;flex-direction:column;text-align:left;min-height:175px;background:var(--surface,#fff);border:2px solid var(--border,#ccd)}.roi-tile.selected{border-color:var(--accent,#197997)}.roi-tile.focused{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#197997) 25%,transparent)}.roi-tile.verified{border-bottom-color:#3f8b6c}.roi-tile.needs-review{border-bottom-color:#ba7b35}.roi-tile.disagreement:after{content:'!';position:absolute;top:6px;right:6px;width:19px;height:19px;display:grid;place-items:center;border-radius:50%;background:#ba6b35;color:white;font-weight:800}.roi-image{height:125px;display:grid;place-items:center;background:#162329;overflow:hidden}.roi-image img{max-width:100%;max-height:100%;object-fit:contain}.human-label{font-weight:700;padding:5px 2px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.prediction{display:flex;justify-content:space-between;color:var(--muted,#667);font-size:10px}.prediction b{font-weight:500;overflow:hidden;text-overflow:ellipsis}.prediction em{font-style:normal}
-  .inspect-image{width:100%;max-height:230px;object-fit:contain;background:#162329;border-radius:6px}.curation-inspector>code{display:block;margin:5px 0 12px;overflow:hidden;text-overflow:ellipsis;font-size:9px}.curation-inspector section{border-top:1px solid var(--border,#ccd);padding:9px 0}.curation-inspector section.warning{border-left:4px solid #ba6b35;padding-left:8px}.current-label{font-size:18px}.review-actions{display:flex}.review-actions button{flex:1;padding:5px 2px}.evidence-bar{display:grid;grid-template-columns:minmax(80px,1fr)80px 45px;gap:5px;align-items:center;font-size:10px;margin:5px 0}.evidence-bar i{height:7px;background:var(--border,#d9e0e2);border-radius:4px;overflow:hidden}.evidence-bar i b{display:block;height:100%;background:var(--accent,#197997)}.evidence-bar em{text-align:right;font-style:normal}dl{display:grid;grid-template-columns:90px minmax(0,1fr);font-size:10px;margin:7px 0}dt{color:var(--muted,#667)}dd{margin:0;overflow-wrap:anywhere}.neighbor-list>div{display:grid;grid-template-columns:24px 1fr 42px;gap:4px;padding:4px 0;border-bottom:1px solid var(--border,#dde4e6);font-size:10px}.neighbor-list code{grid-column:2/4;overflow:hidden;text-overflow:ellipsis}.history{display:flex;justify-content:space-between;font-size:10px;padding:5px 0;border-bottom:1px solid var(--border,#dde4e6)}.empty{padding:25px;color:var(--muted,#667);text-align:center}
+  .gallery-grid{padding:10px;display:grid;grid-template-columns:repeat(auto-fill,minmax(135px,1fr));gap:8px;align-content:start;overflow:auto;flex:1}.roi-tile{position:relative;padding:4px;display:flex;flex-direction:column;text-align:left;min-height:175px;background:var(--surface,#fff);border:2px solid var(--border,#ccd)}.roi-tile.selected{border-color:var(--accent,#197997)}.roi-tile.focused{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent,#197997) 25%,transparent)}.roi-tile.verified{border-bottom-color:#3f8b6c}.roi-tile.needs-review{border-bottom-color:#ba7b35}.roi-tile.disagreement:after{content:'!';position:absolute;top:6px;right:6px;width:19px;height:19px;display:grid;place-items:center;border-radius:50%;background:#ba6b35;color:white;font-weight:800}.roi-image{height:125px;display:grid;place-items:center;background:#162329;overflow:hidden}.roi-image :global(.curation-roi-image){max-width:100%;max-height:100%;object-fit:contain}.human-label{font-weight:700;padding:5px 2px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.prediction{display:flex;justify-content:space-between;color:var(--muted,#667);font-size:10px}.prediction b{font-weight:500;overflow:hidden;text-overflow:ellipsis}.prediction em{font-style:normal}
+  :global(.inspect-image){width:100%;max-height:230px;object-fit:contain;background:#162329;border-radius:6px}.default-labels{width:100%;margin-top:6px}.curation-inspector>code{display:block;margin:5px 0 12px;overflow:hidden;text-overflow:ellipsis;font-size:9px}.curation-inspector section{border-top:1px solid var(--border,#ccd);padding:9px 0}.curation-inspector section.warning{border-left:4px solid #ba6b35;padding-left:8px}.current-label{font-size:18px}.review-actions{display:flex}.review-actions button{flex:1;padding:5px 2px}.evidence-bar{display:grid;grid-template-columns:minmax(80px,1fr)80px 45px;gap:5px;align-items:center;font-size:10px;margin:5px 0}.evidence-bar i{height:7px;background:var(--border,#d9e0e2);border-radius:4px;overflow:hidden}.evidence-bar i b{display:block;height:100%;background:var(--accent,#197997)}.evidence-bar em{text-align:right;font-style:normal}dl{display:grid;grid-template-columns:90px minmax(0,1fr);font-size:10px;margin:7px 0}dt{color:var(--muted,#667)}dd{margin:0;overflow-wrap:anywhere}.neighbor-list>div{display:grid;grid-template-columns:24px 1fr 42px;gap:4px;padding:4px 0;border-bottom:1px solid var(--border,#dde4e6);font-size:10px}.neighbor-list code{grid-column:2/4;overflow:hidden;text-overflow:ellipsis}.history{display:flex;justify-content:space-between;font-size:10px;padding:5px 0;border-bottom:1px solid var(--border,#dde4e6)}.empty{padding:25px;color:var(--muted,#667);text-align:center}
   .toast{position:fixed;right:20px;bottom:20px;z-index:10;padding:10px 12px;border-radius:6px;color:#fff;box-shadow:0 5px 20px #0004}.toast.error{background:#9b3d37}.toast.notice{background:#286f55}.toast button{border:0;background:transparent;color:inherit}.loading-line{position:fixed;left:0;right:0;top:0;height:3px;background:var(--accent,#197997);z-index:20}
   @media(max-width:1050px){.curation-workspace{grid-template-columns:220px 1fr}.curation-inspector{grid-column:1/-1;max-height:none}}@media(max-width:700px){.curation-workspace{display:block}.curation-rail,.curation-gallery,.curation-inspector{margin-bottom:10px;max-height:none}.gallery-grid{max-height:65vh}}
 </style>
