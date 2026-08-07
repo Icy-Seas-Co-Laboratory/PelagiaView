@@ -1061,16 +1061,9 @@ export type SegmentationCapabilities = {
 export type RoiRefinementOptions = {
   detection_ids?: string[];
   model_ref?: string | null;
-  model_kind?: string | null;
-  model_run_dir?: string | null;
-  model_artifact?: string | null;
-  batch_size?: number | null;
-  tile_size?: number | null;
-  overlap_fraction?: number | null;
   max_iterations?: number | null;
   expansion_pixels?: number | null;
   edge_touch_margin?: number | null;
-  output_threshold?: number | null;
   encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | 'auto' | null;
   allow_frame_expansion?: boolean | null;
   store?: boolean | null;
@@ -1080,9 +1073,10 @@ export type RoiRefinementOptions = {
 export type RoiRefinementCapabilities = {
   pipeline_stage_order?: string[];
   supported?: {
-    model_kinds?: string[];
     model_refs?: string[];
-    model_artifacts?: Array<Record<string, unknown>>;
+    models?: Array<Record<string, unknown>>;
+    inference_backend?: string;
+    oracle?: { enabled?: boolean; status?: string; error?: string };
     roi_encoding_options?: string[];
   };
   defaults?: {

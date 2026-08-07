@@ -176,17 +176,9 @@
   let maskDifferenceUrls = new Map<string, string>();
   let maskDifferenceKey = '';
   let maskDifferenceSerial = 0;
-  let refinementModelKind = 'identity';
   let refinementModelRef = '';
-  let refinementModelRunDir = '';
-  let refinementModelArtifact = 'auto';
-  let refinementModelKinds = ['identity', 'keras_artifact', 'oracle_builder_unet'];
   let refinementModelRefs: string[] = [];
-  let refinementModelArtifacts = ['auto', 'keras', 'savedmodel'];
-  let refinementTileSize = 256;
-  let refinementOverlapFraction = 0.25;
-  let refinementModelBatchSize: number | null = null;
-  let refinementOutputThreshold = 0.5;
+  let oracleStatus = 'unknown';
   let refinementAllowFrameExpansion = true;
   let refinementMaxIterations = 3;
   let refinementExpansionPixels: number | null = null;
@@ -336,14 +328,7 @@
     showCandidateMasks: boolean;
     showRefinedMasks: boolean;
     showMaskDifferences: boolean;
-    refinementModelKind: string;
     refinementModelRef: string;
-    refinementModelRunDir: string;
-    refinementModelArtifact: string;
-    refinementTileSize: number;
-    refinementOverlapFraction: number;
-    refinementModelBatchSize: number | null;
-    refinementOutputThreshold: number;
     refinementAllowFrameExpansion: boolean;
     refinementMaxIterations: number;
     refinementExpansionPixels: number | null;
@@ -646,14 +631,7 @@
       showCandidateMasks,
       showRefinedMasks,
       showMaskDifferences,
-      refinementModelKind,
       refinementModelRef,
-      refinementModelRunDir,
-      refinementModelArtifact,
-      refinementTileSize,
-      refinementOverlapFraction,
-      refinementModelBatchSize,
-      refinementOutputThreshold,
       refinementAllowFrameExpansion,
       refinementMaxIterations,
       refinementExpansionPixels,
@@ -733,14 +711,7 @@
       storeRoiPayloadMinWidth,
       storeRoiPayloadMinHeight,
       storeRoiPayloadMinWidthPlusHeight,
-      refinementModelKind,
       refinementModelRef,
-      refinementModelRunDir,
-      refinementModelArtifact,
-      refinementTileSize,
-      refinementOverlapFraction,
-      refinementModelBatchSize,
-      refinementOutputThreshold,
       refinementAllowFrameExpansion,
       refinementMaxIterations,
       refinementExpansionPixels,
@@ -834,14 +805,7 @@
     if ('storeRoiPayloadMinWidth' in settings) storeRoiPayloadMinWidth = nullablePreferenceNumber(settings.storeRoiPayloadMinWidth, storeRoiPayloadMinWidth);
     if ('storeRoiPayloadMinHeight' in settings) storeRoiPayloadMinHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
     if ('storeRoiPayloadMinWidthPlusHeight' in settings) storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(settings.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
-    if ('refinementModelKind' in settings) refinementModelKind = stringPreference(settings.refinementModelKind, refinementModelKind);
     if ('refinementModelRef' in settings) refinementModelRef = stringPreference(settings.refinementModelRef, refinementModelRef);
-    if ('refinementModelRunDir' in settings) refinementModelRunDir = stringPreference(settings.refinementModelRunDir, refinementModelRunDir);
-    if ('refinementModelArtifact' in settings) refinementModelArtifact = stringPreference(settings.refinementModelArtifact, refinementModelArtifact);
-    if ('refinementTileSize' in settings) refinementTileSize = numberPreference(settings.refinementTileSize, refinementTileSize);
-    if ('refinementOverlapFraction' in settings) refinementOverlapFraction = numberPreference(settings.refinementOverlapFraction, refinementOverlapFraction);
-    if ('refinementModelBatchSize' in settings) refinementModelBatchSize = nullablePreferenceNumber(settings.refinementModelBatchSize, refinementModelBatchSize);
-    if ('refinementOutputThreshold' in settings) refinementOutputThreshold = numberPreference(settings.refinementOutputThreshold, refinementOutputThreshold);
     if ('refinementAllowFrameExpansion' in settings) refinementAllowFrameExpansion = booleanPreference(settings.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
     if ('refinementMaxIterations' in settings) refinementMaxIterations = numberPreference(settings.refinementMaxIterations, refinementMaxIterations);
     if ('refinementExpansionPixels' in settings) refinementExpansionPixels = nullablePreferenceNumber(settings.refinementExpansionPixels, refinementExpansionPixels);
@@ -997,14 +961,7 @@
     showCandidateMasks = booleanPreference(preferences.showCandidateMasks, showCandidateMasks);
     showRefinedMasks = booleanPreference(preferences.showRefinedMasks, showRefinedMasks);
     showMaskDifferences = booleanPreference(preferences.showMaskDifferences, showMaskDifferences);
-    refinementModelKind = stringPreference(preferences.refinementModelKind, refinementModelKind);
     refinementModelRef = stringPreference(preferences.refinementModelRef, refinementModelRef);
-    refinementModelRunDir = stringPreference(preferences.refinementModelRunDir, refinementModelRunDir);
-    refinementModelArtifact = stringPreference(preferences.refinementModelArtifact, refinementModelArtifact);
-    refinementTileSize = numberPreference(preferences.refinementTileSize, refinementTileSize);
-    refinementOverlapFraction = numberPreference(preferences.refinementOverlapFraction, refinementOverlapFraction);
-    refinementModelBatchSize = nullablePreferenceNumber(preferences.refinementModelBatchSize, refinementModelBatchSize);
-    refinementOutputThreshold = numberPreference(preferences.refinementOutputThreshold, refinementOutputThreshold);
     refinementAllowFrameExpansion = booleanPreference(preferences.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
     refinementMaxIterations = numberPreference(preferences.refinementMaxIterations, refinementMaxIterations);
     refinementExpansionPixels = nullablePreferenceNumber(preferences.refinementExpansionPixels, refinementExpansionPixels);
@@ -1041,16 +998,13 @@
       ? capabilities.supported.roi_assembly_methods
       : roiAssemblyMethods;
     imageCodecAvailability = systemCapabilities?.supported?.image_codec_availability ?? {};
-    refinementModelKinds = refinementCapabilities?.supported?.model_kinds?.length
-      ? refinementCapabilities.supported.model_kinds
-      : refinementModelKinds;
     refinementModelRefs = refinementCapabilities?.supported?.model_refs ?? refinementModelRefs;
+    oracleStatus = refinementCapabilities?.supported?.oracle?.status ?? 'unknown';
     refinementEncodingOptions = uniqueCodecOptions(
       refinementCapabilities?.supported?.roi_encoding_options?.length
         ? refinementCapabilities.supported.roi_encoding_options
         : refinementEncodingOptions
     );
-    refinementModelArtifacts = modelArtifactOptions(refinementCapabilities);
 
     thresholdMethod = stringDefault(thresholding, 'method', thresholdMethod);
     manualThreshold = numberDefault(thresholding, 'manual_threshold', manualThreshold);
@@ -1119,17 +1073,10 @@
     storeRoiPayloadMinHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_height', storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
 
-    refinementModelKind = stringDefault(roiRefinement, 'model_kind', refinementModelKind);
     refinementModelRef = stringDefault(roiRefinement, 'model_ref', refinementModelRef);
-    refinementModelRunDir = stringDefault(roiRefinement, 'model_run_dir', refinementModelRunDir);
-    refinementModelArtifact = stringDefault(roiRefinement, 'model_artifact', refinementModelArtifact);
-    refinementTileSize = numberDefault(roiRefinement, 'tile_size', refinementTileSize);
-    refinementOverlapFraction = numberDefault(roiRefinement, 'overlap_fraction', refinementOverlapFraction);
     refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
     refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
-    refinementOutputThreshold = numberDefault(roiRefinement, 'output_threshold', refinementOutputThreshold);
-    refinementModelBatchSize = nullableNumberDefault(roiRefinement, 'batch_size', refinementModelBatchSize);
     refinementEncoding = ensureAvailableCodec(
       stringDefault(roiRefinement, 'encoding', refinementEncoding),
       refinementEncodingOptions,
@@ -1137,14 +1084,6 @@
       'auto'
     );
     globalDefaultProcessingSettings = currentPageProcessingSettings();
-  }
-
-  function modelArtifactOptions(capabilities: RoiRefinementCapabilities | null): string[] {
-    const fieldOptions = capabilities?.fields?.model_selection
-      ?.find((field) => field.key === 'model_artifact')
-      ?.options;
-    if (Array.isArray(fieldOptions)) return fieldOptions.map(String).filter(Boolean);
-    return refinementModelArtifacts;
   }
 
   function enforceCodecAvailability() {
@@ -1324,14 +1263,7 @@
 
   function roiRefinementOptions(): Record<string, unknown> {
     return {
-      model_kind: refinementModelKind,
       model_ref: refinementModelRef || undefined,
-      model_run_dir: refinementModelRunDir || undefined,
-      model_artifact: refinementModelArtifact || undefined,
-      tile_size: refinementTileSize,
-      overlap_fraction: refinementOverlapFraction,
-      batch_size: refinementModelBatchSize,
-      output_threshold: refinementOutputThreshold,
       allow_frame_expansion: refinementAllowFrameExpansion,
       max_iterations: refinementMaxIterations,
       expansion_pixels: refinementExpansionPixels,
@@ -3967,17 +3899,7 @@
         </label>
       </div>
 
-      <label class:has-field-override={fieldChanged('refinementModelKind', refinementModelKind)}>
-        <span class="field-label-row">
-          Model kind
-          <HelpChip topic="refinement-models" label="Open ROI refinement help" />
-        </span>
-        <select bind:value={refinementModelKind}>
-          {#each refinementModelKinds as kind}
-            <option value={kind}>{kind}</option>
-          {/each}
-        </select>
-      </label>
+      <p class="muted">Oracle Builder status: {oracleStatus}</p>
       {#if refinementModelRefs.length}
         <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
           Model reference
@@ -3994,44 +3916,6 @@
           <input bind:value={refinementModelRef} placeholder="default" />
         </label>
       {/if}
-      {#if refinementModelKind === 'oracle_builder_unet'}
-        <label class:has-field-override={fieldChanged('refinementModelRunDir', refinementModelRunDir)}>
-          Model run directory
-          <input bind:value={refinementModelRunDir} placeholder="oracle-builder run path" />
-        </label>
-      {/if}
-      {#if refinementModelKind === 'keras_artifact'}
-        <label class:has-field-override={fieldChanged('refinementModelArtifact', refinementModelArtifact)}>
-          Model artifact
-          <select bind:value={refinementModelArtifact}>
-            {#each refinementModelArtifacts as artifact}
-              <option value={artifact}>{artifact}</option>
-            {/each}
-          </select>
-        </label>
-      {/if}
-
-      <div class="form-grid compact-grid">
-        <label class:has-field-override={fieldChanged('refinementTileSize', refinementTileSize)}>
-          Tile size
-          <input type="number" min="1" step="1" bind:value={refinementTileSize} />
-        </label>
-        <label class:has-field-override={fieldChanged('refinementModelBatchSize', refinementModelBatchSize)}>
-          Model batch size
-          <input type="number" min="1" bind:value={refinementModelBatchSize} placeholder="default" />
-        </label>
-        <label class:has-field-override={fieldChanged('refinementOutputThreshold', refinementOutputThreshold)}>
-          Output threshold
-          <input type="range" min="0" max="1" step="0.01" bind:value={refinementOutputThreshold} />
-          <span class="range-value">{Number(refinementOutputThreshold).toFixed(2)}</span>
-        </label>
-        <label class:has-field-override={fieldChanged('refinementOverlapFraction', refinementOverlapFraction)}>
-          Overlap fraction
-          <input type="range" min="0" max="0.99" step="0.01" bind:value={refinementOverlapFraction} />
-          <span class="range-value">{Number(refinementOverlapFraction).toFixed(2)}</span>
-        </label>
-      </div>
-
       <details class="control-details">
         <summary class:has-active-settings={refinementStorageAdvancedActive}>Expansion and storage</summary>
         <label class="check-row" class:has-field-override={fieldChanged('refinementAllowFrameExpansion', refinementAllowFrameExpansion)}>

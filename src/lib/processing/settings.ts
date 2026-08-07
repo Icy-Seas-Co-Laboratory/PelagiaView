@@ -70,14 +70,7 @@ export type ProcessingSettings = {
   storeRoiPayloadMinWidth?: number | null;
   storeRoiPayloadMinHeight?: number | null;
   storeRoiPayloadMinWidthPlusHeight?: number | null;
-  refinementModelKind?: string;
   refinementModelRef?: string;
-  refinementModelRunDir?: string;
-  refinementModelArtifact?: string;
-  refinementTileSize?: number;
-  refinementOverlapFraction?: number;
-  refinementModelBatchSize?: number | null;
-  refinementOutputThreshold?: number;
   refinementAllowFrameExpansion?: boolean;
   refinementMaxIterations?: number;
   refinementExpansionPixels?: number | null;
@@ -252,14 +245,7 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   copyIfPresentValue('storeRoiPayloadMinHeight');
   copyIfPresentValue('storeRoiPayloadMinWidthPlusHeight');
 
-  copy('refinementModelKind');
   copyIfPresentValue('refinementModelRef');
-  if (settings.refinementModelKind === 'oracle_builder_unet') copyIfPresentValue('refinementModelRunDir');
-  if (settings.refinementModelKind === 'keras_artifact') copyIfPresentValue('refinementModelArtifact');
-  copy('refinementTileSize');
-  copy('refinementOverlapFraction');
-  copy('refinementModelBatchSize');
-  copy('refinementOutputThreshold');
   copy('refinementAllowFrameExpansion');
   if (settings.refinementAllowFrameExpansion) {
     copy('refinementMaxIterations');

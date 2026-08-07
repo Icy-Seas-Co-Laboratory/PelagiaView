@@ -247,14 +247,7 @@ function settingGroupForKey(key: string): string {
   }
   if (
     [
-      'refinementModelKind',
       'refinementModelRef',
-      'refinementModelRunDir',
-      'refinementModelArtifact',
-      'refinementTileSize',
-      'refinementOverlapFraction',
-      'refinementModelBatchSize',
-      'refinementOutputThreshold',
       'refinementAllowFrameExpansion',
       'refinementMaxIterations',
       'refinementExpansionPixels',

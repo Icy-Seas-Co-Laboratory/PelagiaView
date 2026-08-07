@@ -817,7 +817,7 @@ export class PelagiaApiClient {
     refined_count?: number;
     stored_count?: number;
     resolved_options?: Record<string, unknown>;
-    model_kind?: string | null;
+    inference_backend?: string | null;
     model_ref?: string | null;
     refinement_method?: string | null;
     refined_detections?: DetectionSummary[];
