@@ -42,7 +42,8 @@
     ingestion: 'extract_frames',
     preprocessing: 'preprocess_frames',
     segmentation: 'segment',
-    roi_refinement: 'roi_refinement'
+    roi_refinement: 'roi_refinement',
+    classification: 'classify'
   };
 
   $: stageAliases = stages ?? (stage ? jobStageAliases[stage] : null);

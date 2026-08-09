@@ -464,7 +464,7 @@
           </select>
         </label>
         <label>
-          Frame quality
+            Frame quality (0–100)
           <input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={creatingProject || $session.connecting} />
         </label>
         <label>

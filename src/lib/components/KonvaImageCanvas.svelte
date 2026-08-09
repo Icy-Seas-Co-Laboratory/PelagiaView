@@ -82,7 +82,7 @@
     spec?.display?.maxHeight ?? '',
     spec?.display?.allowUpscale ? 'upscale' : '',
     layerSignature(spec?.layers ?? []),
-    mode === 'viewer' ? availableWidth : ''
+    availableWidth
   ].join('|');
   $: if (mounted && renderSignature !== lastRenderSignature) void render(spec, renderSignature);
   $: if (mounted) void syncZoomPreview(activePanel, spec?.image?.url ?? '');
@@ -103,6 +103,7 @@
             layer.colorMode ?? '',
             layer.blendMode ?? '',
             layer.opacity ?? '',
+            layer.invert ? 'inverted' : 'normal',
             layer.compositeOperation ?? '',
             layer.coordinateSpace ?? ''
           ].join(':');
@@ -174,10 +175,12 @@
       metadataText = `${Math.round(sourceWidth)} x ${Math.round(sourceHeight)} px · 8-bit grayscale · ${formatBytes(composed.byteSize)}`;
       setZoomPreviewSize(composed.width, composed.height);
       const requestedMaxWidth = _spec.display?.maxWidth ?? sourceWidth;
-      const maxWidth =
-        mode === 'viewer' && availableWidth > 0
-          ? Math.min(requestedMaxWidth, availableWidth)
-          : requestedMaxWidth;
+      // Size the Konva stage to its real container before rendering.  Letting
+      // CSS shrink an already-rendered static stage can make the inspector
+      // appear to clip an ROI at narrow column widths.
+      const maxWidth = availableWidth > 0
+        ? Math.min(requestedMaxWidth, availableWidth)
+        : requestedMaxWidth;
       const maxHeight = _spec.display?.maxHeight ?? sourceHeight;
       const imageScale = displayScale(sourceWidth, sourceHeight, maxWidth, maxHeight, Boolean(_spec.display?.allowUpscale));
       const imageWidth = Math.max(1, Math.round(sourceWidth * imageScale));
@@ -349,7 +352,8 @@
       imageData.data[index] = color.r;
       imageData.data[index + 1] = color.g;
       imageData.data[index + 2] = color.b;
-      imageData.data[index + 3] = Math.round(sourceAlpha * (luminance / 255) * 255);
+      const maskStrength = luminance / 255;
+      imageData.data[index + 3] = Math.round(sourceAlpha * (mask.invert ? 1 - maskStrength : maskStrength) * 255);
     }
     context.putImageData(imageData, 0, 0);
     return canvas;

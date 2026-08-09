@@ -1,10 +1,13 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
+  import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
+  import InspectorImageControls from '$lib/components/InspectorImageControls.svelte';
+  import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
   import { authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
@@ -18,10 +21,18 @@
   } from '$lib/utils/frameDisplay';
   import { formatBytes } from '$lib/utils/format';
   import { projectPreferenceKey } from '$lib/utils/preferences';
+  import {
+    buildOriginalGalleryLayout,
+    fitTileSize,
+    visibleGridRange,
+    visibleOriginalEntries
+  } from '$lib/utils/roiGallery';
   import { createZipBlob, downloadBlob } from '$lib/utils/zipDownload';
   import type { ImageInfoSpec, ImageLayer, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   type RoiViewMode = 'candidate' | 'refined';
+  type GalleryScaleMode = 'fit' | 'original';
+  const fitGalleryTileBasePx = 150;
 
   let assets: RawAsset[] = [];
   let collectionOptions: string[] = [];
@@ -42,17 +53,29 @@
   const imageFormat = 'jpg';
   let invertImages = false;
   let applyRoiMask = false;
+  let inspectorApplyMask = false;
+  let inspectorShowMaskOverlay = false;
+  let inspectorShowScaleBar = true;
   let roiViewMode: RoiViewMode = 'candidate';
   let sortBy: 'area' | 'byte_size' | 'id' | 'asset_frame' = 'asset_frame';
   let sortDir: 'asc' | 'desc' = 'desc';
-  let nextOffset = 0;
-  let hasMore = true;
+  let galleryScaleMode: GalleryScaleMode = 'fit';
+  let galleryScale = 1;
+  let browserPage = 0;
+  let browserHasNextPage = false;
+  let gallery: HTMLDivElement;
+  let galleryWidth = 900;
+  let galleryHeight = 600;
+  let galleryScrollTop = 0;
+  let filterRailWidth = 272;
+  let inspectorWidth = 320;
   let loading = false;
   let error: string | null = null;
   let detailError: string | null = null;
   let requestSerial = 0;
   let preferencesReady = false;
   let selectedDetection: DetectionSummary | null = null;
+  let roiDetailModalOpen = false;
   let selectedParentAsset: RawAsset | null = null;
   let selectedParentFrame: FrameSummary | null = null;
   let selectedFrameContext: FrameContextResponse | null = null;
@@ -74,10 +97,6 @@
   let lastDetailFrameUrl = '';
   let lastFrameModalUrl = '';
   let fullResolutionTileKeys = new Set<string>();
-  let tileScroller: HTMLElement;
-  let loadMoreSentinel: HTMLElement;
-  let pageScroller: HTMLElement | null = null;
-  let lastRequestedAppendOffset: number | null = null;
   const pageSize = 120;
   const frameDetectionBatchSize = 100;
   const roiDisplayMaxWidth = 220;
@@ -93,6 +112,21 @@
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
   $: visibleCount = detections.filter(hasRoiImageData).length;
+  $: galleryTileSize = fitTileSize(galleryScale, fitGalleryTileBasePx);
+  $: galleryColumns = Math.max(1, Math.floor((galleryWidth - 16) / (galleryTileSize + 10)));
+  $: galleryRowHeight = galleryTileSize + 38;
+  $: galleryGridRange = visibleGridRange(selectableBrowserDetections.length, galleryColumns, galleryRowHeight, galleryScrollTop, galleryHeight);
+  $: visibleBrowserDetections = galleryScaleMode === 'fit'
+    ? selectableBrowserDetections.slice(galleryGridRange.start, galleryGridRange.end)
+    : [];
+  $: originalBrowserLayout = buildOriginalGalleryLayout(
+    selectableBrowserDetections.map((detection) => ({ width: roiImageSourceWidth(detection), height: roiImageSourceHeight(detection) })),
+    galleryWidth,
+    galleryScale
+  );
+  $: visibleOriginalBrowserEntries = galleryScaleMode === 'original'
+    ? visibleOriginalEntries(originalBrowserLayout, galleryScrollTop, galleryHeight)
+    : [];
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
   $: frameModalPayloadKind = payloadKindForDisplay(frameModalDisplayMode);
   $: invertImages = $imageInversionEnabled;
@@ -135,7 +169,6 @@
   $: selectedBrowserRoiCount = selectableBrowserDetections.filter((detection) => detection.id && selectedBrowserRoiIds.has(detection.id)).length;
   $: resetFrameContextImage(detailFrameUrl);
   $: resetFrameModalImage(frameModalUrl);
-  $: syncPageScrollListener(tileScroller);
   $: advancedSearchActive = Boolean(
     selectedAssetId ||
       selectedFrameId ||
@@ -167,7 +200,11 @@
     applyRoiMask,
     roiViewMode,
     sortBy,
-    sortDir
+    sortDir,
+    galleryScaleMode,
+    galleryScale,
+    filterRailWidth,
+    inspectorWidth
   };
   $: if (preferencesReady) persistPreferences(roiPreferenceSnapshot);
 
@@ -191,34 +228,24 @@
     }
   });
 
-  onDestroy(() => {
-    detachPageScrollListener();
-  });
-
   async function loadDetections(reset = false) {
     const client = getClient();
-    if (!client || loading || (!reset && !hasMore)) return;
-    const offset = reset ? 0 : nextOffset;
-    if (!reset && offset === lastRequestedAppendOffset) return;
+    if (!client || loading) return;
+    if (reset) browserPage = 0;
+    const offset = browserPage * pageSize;
     loading = true;
     error = null;
     const serial = ++requestSerial;
-    if (reset) {
-      fullResolutionTileKeys = new Set();
-      lastRequestedAppendOffset = null;
-      selectedBrowserRoiIds = new Set();
-    } else {
-      lastRequestedAppendOffset = offset;
-    }
+    fullResolutionTileKeys = new Set();
+    selectedBrowserRoiIds = new Set();
+    galleryScrollTop = 0;
     try {
       const response = await client.searchDetectionsPage(currentFilters(offset));
-      const page = response.detections ?? [];
+      const resultPage = response.detections ?? [];
       if (serial !== requestSerial) return;
-      detections = reset ? page : [...detections, ...withoutDuplicateDetections(page)];
-      nextOffset = response.page?.next_offset ?? offset + page.length;
-      hasMore = response.page?.next_offset !== null && response.page?.next_offset !== undefined;
+      detections = resultPage;
+      browserHasNextPage = response.page?.next_offset !== null && response.page?.next_offset !== undefined;
     } catch (err) {
-      if (!reset) lastRequestedAppendOffset = null;
       error = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
@@ -240,6 +267,7 @@
       max_area: maxArea,
       min_perimeter: minPerimeter,
       max_perimeter: maxPerimeter,
+      has_roi_payload: true,
       refinement_state: roiViewMode === 'refined' ? 'refined' : undefined,
       sort_by: sortBy,
       sort_dir: sortDir,
@@ -262,10 +290,15 @@
     maxBBoxW = null;
     minBBoxH = null;
     maxBBoxH = null;
-    nextOffset = 0;
-    hasMore = true;
     fullResolutionTileKeys = new Set();
     void loadDetections(true);
+  }
+
+  function changeBrowserPage(direction: -1 | 1) {
+    const next = browserPage + direction;
+    if (next < 0 || (direction > 0 && !browserHasNextPage)) return;
+    browserPage = next;
+    void loadDetections();
   }
 
   type RoiPreferences = typeof roiPreferenceSnapshot;
@@ -292,6 +325,10 @@
       roiViewMode = roiViewModePreference(preferences.roiViewMode, roiViewMode);
       sortBy = sortByPreference(preferences.sortBy, sortBy);
       sortDir = sortDirPreference(preferences.sortDir, sortDir);
+      galleryScaleMode = galleryScaleModePreference(preferences.galleryScaleMode, galleryScaleMode);
+      galleryScale = boundedNumberPreference(preferences.galleryScale, galleryScale, 0.5, 3);
+      filterRailWidth = boundedNumberPreference(preferences.filterRailWidth, filterRailWidth, 200, 480);
+      inspectorWidth = boundedNumberPreference(preferences.inspectorWidth, inspectorWidth, 240, 520);
       return true;
     } catch {
       return false;
@@ -355,11 +392,18 @@
     return value === 'candidate' || value === 'refined' ? value : fallback;
   }
 
+  function galleryScaleModePreference(value: unknown, fallback: GalleryScaleMode): GalleryScaleMode {
+    return value === 'fit' || value === 'original' ? value : fallback;
+  }
+
+  function boundedNumberPreference(value: unknown, fallback: number, min: number, max: number): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+  }
+
   function setRoiViewMode(mode: RoiViewMode) {
     if (roiViewMode === mode) return;
     roiViewMode = mode;
-    nextOffset = 0;
-    hasMore = true;
     closeRoiDetail();
     void loadDetections(true);
   }
@@ -370,39 +414,19 @@
     return Number.isFinite(parsed) ? parsed : fallback;
   }
 
-  function maybeLoadMore(event: Event) {
-    const scroller = event.currentTarget as HTMLElement;
-    if (!scroller || loading || !hasMore) return;
-    const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    if (remaining < 700) {
-      void loadDetections(false);
-    }
-  }
-
-  function maybeLoadMoreFromPageScroll(event: Event) {
-    const scroller = event.currentTarget as HTMLElement;
-    if (!scroller || loading || !hasMore || !loadMoreSentinel) return;
-    const remaining = loadMoreSentinel.getBoundingClientRect().top - scroller.getBoundingClientRect().bottom;
-    if (remaining < 700) {
-      void loadDetections(false);
-    }
-  }
-
-  function syncPageScrollListener(scroller: HTMLElement | undefined) {
-    const nextScroller = scroller?.closest('.page-scroll-content') as HTMLElement | null;
-    if (nextScroller === pageScroller) return;
-    detachPageScrollListener();
-    pageScroller = nextScroller;
-    pageScroller?.addEventListener('scroll', maybeLoadMoreFromPageScroll, { passive: true });
-  }
-
-  function detachPageScrollListener() {
-    pageScroller?.removeEventListener('scroll', maybeLoadMoreFromPageScroll);
-    pageScroller = null;
+  function observeGallery(node: HTMLDivElement) {
+    const update = () => {
+      galleryWidth = Math.max(1, Math.floor(node.clientWidth));
+      galleryHeight = Math.max(1, Math.floor(node.clientHeight));
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(node);
+    update();
+    return { destroy: () => observer.disconnect() };
   }
 
   function scrollToTop() {
-    tileScroller?.scrollTo({ top: 0, behavior: 'smooth' });
+    gallery?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function openRoiDetail(detection: DetectionSummary) {
@@ -453,6 +477,11 @@
     }
   }
 
+  async function openRoiDetailModal(detection: DetectionSummary) {
+    roiDetailModalOpen = true;
+    await openRoiDetail(detection);
+  }
+
   async function loadFrameDetectionBatches(detection: DetectionSummary, serial: number, startOffset = 0) {
     const client = getClient();
     if (!client || !detection.asset_id || !detection.frame_id) return;
@@ -489,6 +518,10 @@
   }
 
   function closeRoiDetail() {
+    roiDetailModalOpen = false;
+  }
+
+  function clearRoiInspector() {
     frameDetectionLoadSerial += 1;
     closeFrameDetailModal();
     selectedDetection = null;
@@ -621,10 +654,16 @@
     format = imageFormat,
     maskEnabled = applyRoiMask,
     inverted = invertImages,
-    proxyMaxDimension: number | null = null
+    proxyMaxDimension: number | null = null,
+    inspectorOptions?: {
+      showScaleBar?: boolean;
+      showExcludedMask?: boolean;
+    }
   ): ImageRenderSpec {
     const sourceWidth = roiImageSourceWidth(detection);
     const sourceHeight = roiImageSourceHeight(detection);
+    const maskUrl = roiImageMaskUrl(detection, viewMode, proxyMaxDimension);
+    const showExcludedMask = Boolean(inspectorOptions?.showExcludedMask && maskUrl && sourceWidth && sourceHeight);
     return {
       key: roiCanvasKey(detection, viewMode, format, maskEnabled, inverted, proxyMaxDimension),
       image: {
@@ -635,14 +674,28 @@
         sourceHeight
       },
       baseMask: {
-        url: roiImageMaskUrl(detection, viewMode, proxyMaxDimension),
+        url: maskUrl,
         enabled: maskEnabled,
         outsideColor: 'black',
         applyBeforeInvert: true
       },
-      layers: [],
+      layers: showExcludedMask
+        ? [{
+            kind: 'mask-overlay',
+            id: 'excluded-mask',
+            imageUrl: maskUrl,
+            x: 0,
+            y: 0,
+            w: sourceWidth!,
+            h: sourceHeight!,
+            tint: '#ff2020',
+            colorMode: 'red',
+            opacity: 0.42,
+            invert: true
+          }]
+        : [],
       scaleBar: {
-        enabled: true,
+        enabled: inspectorOptions?.showScaleBar ?? true,
         placement: exportControls === 'none' ? 'below' : 'inside',
         lengths: scaleBarLengths,
         maxPercent: exportControls === 'none' ? 55 : 48
@@ -714,6 +767,16 @@
     if (checked) next.add(detection.id);
     else next.delete(detection.id);
     selectedBrowserRoiIds = next;
+  }
+
+  function chooseBrowserRoi(detection: DetectionSummary, event: MouseEvent) {
+    if (!detection.id) return;
+    if (event.metaKey || event.ctrlKey) {
+      toggleBrowserRoiSelection(detection, !selectedBrowserRoiIds.has(detection.id));
+    } else {
+      selectedBrowserRoiIds = new Set([detection.id]);
+    }
+    void openRoiDetail(detection);
   }
 
   function toggleAllBrowserRois(checked: boolean) {
@@ -819,12 +882,35 @@
       roiViewMode,
       imageFormat,
       applyRoiMask ? 'masked' : 'plain',
-      invertImages ? 'inverted' : 'normal'
+      invertImages ? 'inverted' : 'normal',
+      galleryScaleMode,
+      galleryScale
     ].join(':');
   }
 
   function roiTileProxyForRender(detection: DetectionSummary): number | null {
+    if (galleryScaleMode === 'original') return null;
     return fullResolutionTileKeys.has(roiTileKey(detection)) ? null : roiTileProxyMaxDimension(detection);
+  }
+
+  function roiGalleryDimensions(detection: DetectionSummary): { width: number; height: number } {
+    if (galleryScaleMode === 'fit') return { width: galleryTileSize, height: galleryTileSize };
+    const width = roiImageSourceWidth(detection) ?? 128;
+    const height = roiImageSourceHeight(detection) ?? 128;
+    return {
+      width: Math.max(1, Math.round(width * galleryScale)),
+      height: Math.max(1, Math.round(height * galleryScale))
+    };
+  }
+
+  function roiGalleryTileStyle(detection: DetectionSummary): string {
+    const dimensions = roiGalleryDimensions(detection);
+    return `--gallery-image-width:${dimensions.width}px;--gallery-image-height:${dimensions.height}px`;
+  }
+
+  function roiGalleryImageUrl(detection: DetectionSummary): string {
+    const proxyMaxDimension = galleryScaleMode === 'original' ? null : 384;
+    return imageUrl(detection, roiViewMode, imageFormat, applyRoiMask, proxyMaxDimension);
   }
 
   function frameRoiThumbnailSize(detection: DetectionSummary): { width: number; height: number } {
@@ -1440,7 +1526,10 @@
   }
 </script>
 
-<div class="roi-browser-layout browser-top-layout">
+<div
+  class="roi-browser-layout browser-top-layout resizable-browser-workspace"
+  style={`--browser-filter-width:${filterRailWidth}px;--browser-inspector-width:${inspectorWidth}px`}
+>
   <section class="panel roi-filter-panel browser-filter-bar">
     <div class="panel-heading">
       <div>
@@ -1501,7 +1590,7 @@
           </span>
           <select bind:value={sortBy}>
             <option value="asset_frame">Asset + frame</option>
-            <option value="area">Area</option>
+            <option value="area">Area (px²)</option>
             <option value="byte_size">Byte size</option>
             <option value="id">Random ID</option>
           </select>
@@ -1556,43 +1645,51 @@
       </label>
 
       <label>
-        Min area
+        Min area (px²)
         <input type="number" min="0" bind:value={minArea} />
       </label>
       <label>
-        Max area
+        Max area (px²)
         <input type="number" min="0" bind:value={maxArea} />
       </label>
 
       <label>
-        Min perimeter
+        Min perimeter (px)
         <input type="number" min="0" bind:value={minPerimeter} />
       </label>
       <label>
-        Max perimeter
+        Max perimeter (px)
         <input type="number" min="0" bind:value={maxPerimeter} />
       </label>
 
       <label>
-        Min width
+        Min width (px)
         <input type="number" min="0" bind:value={minBBoxW} />
       </label>
       <label>
-        Max width
+        Max width (px)
         <input type="number" min="0" bind:value={maxBBoxW} />
       </label>
 
       <label>
-        Min height
+        Min height (px)
         <input type="number" min="0" bind:value={minBBoxH} />
       </label>
       <label>
-        Max height
+        Max height (px)
         <input type="number" min="0" bind:value={maxBBoxH} />
       </label>
       </div>
     </details>
   </section>
+
+  <WorkspaceResizeHandle
+    label="Resize ROI filters"
+    value={filterRailWidth}
+    min={200}
+    max={480}
+    onResize={(value) => (filterRailWidth = value)}
+  />
 
   <section class="panel roi-results-panel">
     <div class="panel-heading">
@@ -1601,6 +1698,15 @@
         <h2>ROI Tiles</h2>
       </div>
       <div class="browser-selection-actions">
+        <fieldset class="gallery-scale-modes" aria-label="ROI image scaling">
+          <label><input type="radio" bind:group={galleryScaleMode} value="fit" />Fit tiles</label>
+          <label><input type="radio" bind:group={galleryScaleMode} value="original" />Original pixels</label>
+        </fieldset>
+        <label class="gallery-scale-control">
+          <span>Scale</span>
+          <input aria-label="ROI gallery scale" type="range" min="0.5" max="3" step="0.1" bind:value={galleryScale} />
+          <output>{galleryScale.toFixed(1)}×</output>
+        </label>
         <label class="selection-master-toggle">
           <input
             type="checkbox"
@@ -1621,63 +1727,96 @@
 
     {#if error}<p class="form-error">{error}</p>{/if}
 
-    <div class="roi-tile-scroll" bind:this={tileScroller} on:scroll={maybeLoadMore}>
+    <div class="roi-gallery-viewport browser-gallery-viewport" bind:this={gallery} use:observeGallery on:scroll={() => (galleryScrollTop = gallery.scrollTop)}>
       {#if detections.length}
-        <div class="roi-tile-grid">
-          {#each detections as detection}
-            {#if detection.id && detection.roi_payload_bytes}
-              {@const proxyMaxDimension = roiTileProxyForRender(detection)}
-              <div class="roi-tile" class:tile-selected={selectedBrowserRoiIds.has(detection.id)}>
-                <div class="roi-image-frame">
-                  <label class="tile-selection-toggle" aria-label="Select ROI tile">
-                    <input
-                      type="checkbox"
-                      checked={selectedBrowserRoiIds.has(detection.id)}
-                      on:change={(event) => toggleBrowserRoiSelection(detection, (event.currentTarget as HTMLInputElement).checked)}
-                    />
-                  </label>
-                  {#key roiCanvasKey(detection, roiViewMode, imageFormat, applyRoiMask, invertImages, proxyMaxDimension)}
-                    <KonvaImageCanvas
-                      spec={roiRenderSpec(detection, roiDisplayMaxWidth, roiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages, proxyMaxDimension)}
-                      mode="thumbnail"
-                      onImageLoad={() => promoteRoiTileToFullResolution(detection, proxyMaxDimension)}
-                      onMoreAction={() => openRoiDetail(detection)}
-                    />
-                  {/key}
-                </div>
-                <div class="roi-tile-meta">
-                  <strong>{detection.asset_filename ?? detection.asset_id ?? 'Unknown asset'}</strong>
-                  <span>Frame {detection.frame_index ?? detection.frame_id ?? 'unknown'} / ROI {detection.roi_index ?? 'unknown'}</span>
-                  <code>{bboxLabel(detection)}</code>
-                  <small>
-                    {#if detection.area !== undefined}area={Math.round(detection.area)}{/if}
-                    {#if detection.area !== undefined && detection.perimeter !== undefined} · {/if}
-                    {#if detection.perimeter !== undefined}perimeter={Math.round(detection.perimeter)}{/if}
-                    {#if detection.roi_payload_bytes !== undefined}
-                      {detection.area !== undefined || detection.perimeter !== undefined ? ' · ' : ''}
-                      {formatBytes(detection.roi_payload_bytes)}
-                    {/if}
-                  </small>
-                </div>
-              </div>
-            {/if}
-          {/each}
-        </div>
-        {#if loading}<p class="soft loading-row">Loading more ROIs</p>{/if}
-        {#if !loading && !hasMore}<p class="soft loading-row">All matching ROIs loaded.</p>{/if}
-        <div class="load-sentinel" bind:this={loadMoreSentinel} aria-hidden="true"></div>
+        {#if galleryScaleMode === 'original'}
+          <div class="roi-gallery-spacer roi-gallery-original-spacer" style={`height:${originalBrowserLayout.height}px;width:${originalBrowserLayout.width}px`}>
+            {#each visibleOriginalBrowserEntries as placement (selectableBrowserDetections[placement.index].id)}
+              {@const detection = selectableBrowserDetections[placement.index]}
+              <button class="roi-tile native-roi-tile original-roi-tile" class:selected={detection.id && selectedBrowserRoiIds.has(detection.id)} class:focused={selectedDetection?.id === detection.id} class:compact={!placement.showLabel} style={`left:${placement.x}px;top:${placement.y}px;width:${placement.width}px;height:${placement.height}px`} on:click={(event) => chooseBrowserRoi(detection, event)}>
+                <span class="native-roi-image original-roi-image" style={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`}>
+                  {#if roiGalleryImageUrl(detection)}<AuthenticatedImage src={roiGalleryImageUrl(detection)} alt={roiImageAlt(detection)} imageClass="native-roi-image-element" invert={invertImages} />{/if}
+                </span>
+                {#if placement.showLabel}<span class="native-roi-meta">ROI {detection.roi_index ?? '—'} · {bboxLabel(detection)}</span>{/if}
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <div class="roi-gallery-spacer" style={`height:${galleryGridRange.totalHeight}px`}>
+            <div class="native-roi-grid browser-native-roi-grid" style={`--gallery-tile-size:${galleryTileSize}px;--gallery-columns:${galleryColumns};transform:translateY(${Math.floor(galleryGridRange.start / galleryColumns) * galleryRowHeight}px)`}>
+              {#each visibleBrowserDetections as detection (detection.id)}
+                <button class="roi-tile native-roi-tile browser-native-roi-tile" class:selected={detection.id && selectedBrowserRoiIds.has(detection.id)} class:focused={selectedDetection?.id === detection.id} on:click={(event) => chooseBrowserRoi(detection, event)}>
+                  <span class="native-roi-image">{#if roiGalleryImageUrl(detection)}<AuthenticatedImage src={roiGalleryImageUrl(detection)} alt={roiImageAlt(detection)} imageClass="native-roi-image-element fit-roi-image" invert={invertImages} />{/if}</span>
+                  <span class="native-roi-meta">Frame {detection.frame_index ?? '—'} · ROI {detection.roi_index ?? '—'}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
       {:else if loading}
         <p class="empty">Loading ROI detections.</p>
       {:else}
         <p class="empty">No ROI detections match the current filters.</p>
       {/if}
     </div>
+    <div class="gallery-page-controls">
+      <button class="ghost compact-action" type="button" disabled={browserPage === 0 || loading} on:click={() => changeBrowserPage(-1)}>← Previous</button>
+      <span>Page {browserPage + 1} · {visibleCount} ROIs</span>
+      <button class="ghost compact-action" type="button" disabled={!browserHasNextPage || loading} on:click={() => changeBrowserPage(1)}>Next →</button>
+    </div>
   </section>
+
+  <WorkspaceResizeHandle
+    label="Resize ROI inspector"
+    value={inspectorWidth}
+    min={240}
+    max={520}
+    direction={-1}
+    position="right"
+    onResize={(value) => (inspectorWidth = value)}
+  />
+
+  <aside class="panel browser-inspector-panel">
+    <div class="panel-heading"><div><p class="eyebrow">Selection</p><h2>ROI Inspector</h2></div>{#if selectedDetection}<button class="ghost compact-action" type="button" on:click={clearRoiInspector}>Clear</button>{/if}</div>
+    {#if selectedDetection}
+      <div class="browser-inspector-preview">
+        {#key `inspector:${roiCanvasKey(selectedDetection, roiViewMode, imageFormat, inspectorApplyMask, invertImages)}:${inspectorShowScaleBar}:${inspectorShowMaskOverlay}`}
+          <KonvaImageCanvas spec={roiRenderSpec(selectedDetection, 300, 280, 'none', roiViewMode, imageFormat, inspectorApplyMask, invertImages, null, { showScaleBar: inspectorShowScaleBar, showExcludedMask: inspectorShowMaskOverlay })} mode="static" />
+        {/key}
+      </div>
+      <InspectorImageControls
+        bind:showScaleBar={inspectorShowScaleBar}
+        bind:applyMask={inspectorApplyMask}
+        bind:showExcludedMask={inspectorShowMaskOverlay}
+        includeMaskControls={true}
+      />
+      <strong class="browser-inspector-title">{selectedDetection.asset_filename ?? selectedDetection.asset_id ?? 'Unknown asset'}</strong>
+      <dl class="browser-inspector-data">
+        <div><dt>Detection ID</dt><dd><code>{selectedDetection.id ?? 'unknown'}</code></dd></div>
+        <div><dt>Asset ID</dt><dd><code>{selectedDetection.asset_id ?? 'unknown'}</code></dd></div>
+        <div><dt>Frame</dt><dd>{selectedDetection.frame_index ?? selectedDetection.frame_id ?? 'unknown'}</dd></div>
+        <div><dt>ROI</dt><dd>{selectedDetection.roi_index ?? 'unknown'}</dd></div>
+        <div><dt>Bounding box (px)</dt><dd><code>{bboxLabel(selectedDetection)}</code></dd></div>
+        <div><dt>Crop size (px)</dt><dd>{roiImageSourceWidth(selectedDetection) ?? 'unknown'} × {roiImageSourceHeight(selectedDetection) ?? 'unknown'}</dd></div>
+        <div><dt>Area (px²)</dt><dd>{selectedDetection.area === undefined ? 'unknown' : Math.round(selectedDetection.area)}</dd></div>
+        <div><dt>Perimeter (px)</dt><dd>{selectedDetection.perimeter === undefined ? 'unknown' : Math.round(selectedDetection.perimeter)}</dd></div>
+        <div><dt>Payload</dt><dd>{selectedDetection.roi_payload_bytes === undefined ? 'unknown' : formatBytes(selectedDetection.roi_payload_bytes)}</dd></div>
+        <div><dt>Mask payload</dt><dd>{selectedDetection.mask_payload_bytes === undefined ? 'unavailable' : formatBytes(selectedDetection.mask_payload_bytes)}</dd></div>
+        <div><dt>Encoding</dt><dd>{selectedDetection.roi_format ?? selectedDetection.roi_encoding ?? 'unknown'}</dd></div>
+        {#if selectedDetection.refinement_relationship}<div><dt>Refinement</dt><dd>{selectedDetection.refinement_relationship}</dd></div>{/if}
+        {#if selectedDetection.refinement_method}<div><dt>Method</dt><dd>{selectedDetection.refinement_method}</dd></div>{/if}
+      </dl>
+      {#if detailError}<p class="form-error">{detailError}</p>{/if}
+      <button type="button" on:click={() => (roiDetailModalOpen = true)}>Open full provenance</button>
+    {:else}
+      <div class="browser-inspector-empty"><span>⌖</span><strong>Select an ROI</strong><p>Choose a tile to inspect its measurements, source frame, and provenance without leaving the gallery.</p></div>
+    {/if}
+  </aside>
 
   <button class="scroll-top-button" type="button" aria-label="Scroll to top" on:click={scrollToTop}></button>
 </div>
 
-{#if selectedDetection}
+{#if selectedDetection && roiDetailModalOpen}
   <div class="modal-backdrop">
     <div class="roi-detail-modal" role="dialog" aria-modal="true" aria-label="ROI details">
       <div class="panel-heading">
@@ -1716,15 +1855,15 @@
               <dd>{selectedDetection.frame_index ?? selectedDetection.frame_id ?? 'unknown'}</dd>
             </div>
             <div>
-              <dt>Bounding box</dt>
+              <dt>Bounding box (px)</dt>
               <dd><code>{bboxLabel(selectedDetection)}</code></dd>
             </div>
             <div>
-              <dt>Area</dt>
+              <dt>Area (px²)</dt>
               <dd>{selectedDetection.area === undefined ? 'unknown' : Math.round(selectedDetection.area)}</dd>
             </div>
             <div>
-              <dt>Perimeter</dt>
+              <dt>Perimeter (px)</dt>
               <dd>{selectedDetection.perimeter === undefined ? 'unknown' : Math.round(selectedDetection.perimeter)}</dd>
             </div>
             <div>
@@ -1785,7 +1924,7 @@
               <dd>{formatDateTime(selectedParentFrame?.created_at)}</dd>
             </div>
             <div>
-              <dt>Dimensions</dt>
+              <dt>Dimensions (px)</dt>
               <dd>{frameDimensionsLabel()}</dd>
             </div>
             <div>
@@ -1878,7 +2017,7 @@
               <dd>{formatDateTime(selectedParentFrame?.created_at)}</dd>
             </div>
             <div>
-              <dt>Dimensions</dt>
+              <dt>Dimensions (px)</dt>
               <dd>{frameDimensionsLabel()}</dd>
             </div>
             <div>

@@ -9,6 +9,9 @@ import type {
   AnalyzeIngestionRequest,
   AnalyzeIngestionResponse,
   CollectionSummary,
+  ClassificationJobResponse,
+  ClassificationTargetPreview,
+  ClassificationTargetSelection,
   CurationLabel,
   CurationLabelImportResult,
   CurationOptions,
@@ -449,13 +452,13 @@ export class PelagiaApiClient {
     return response.worker;
   }
 
-  async listAssets(kind?: string, limit = 200): Promise<RawAsset[]> {
-    const response = await this.get<{ assets: RawAsset[] }>('/assets', { kind, limit }, 2500);
+  async listAssets(kind?: string, limit = 200, offset = 0): Promise<RawAsset[]> {
+    const response = await this.get<{ assets: RawAsset[] }>('/assets', { kind, limit, offset }, 2500);
     return response.assets ?? [];
   }
 
-  async listCollections(limit = 200): Promise<CollectionSummary[]> {
-    const response = await this.get<{ collections: CollectionSummary[] }>('/collections', { limit }, 5000);
+  async listCollections(limit = 200, offset = 0): Promise<CollectionSummary[]> {
+    const response = await this.get<{ collections: CollectionSummary[] }>('/collections', { limit, offset }, 5000);
     return response.collections ?? [];
   }
 
@@ -882,9 +885,18 @@ export class PelagiaApiClient {
   async queueClassificationJob(body: {
     roi_ids?: string[];
     model_ref?: string | null;
+    selection?: ClassificationTargetSelection | null;
     priority?: number | null;
-  }): Promise<{ job: Job; model_ref: string }> {
+  }): Promise<ClassificationJobResponse> {
     return this.post('/curation/classification-jobs', compact(body));
+  }
+
+  async previewClassificationTargets(body: {
+    roi_ids?: string[];
+    model_ref?: string | null;
+    selection?: ClassificationTargetSelection | null;
+  }): Promise<ClassificationTargetPreview> {
+    return this.post('/curation/classification-targets/preview', compact(body));
   }
 
   async listRawDirectory(path = '.'): Promise<DirectoryListing> {

@@ -611,7 +611,7 @@
         </label>
         <label>
           <span class="field-label-row">
-            Frame quality
+            Frame quality (0–100)
             <InfoChip
               label="Frame quality help"
               text="Quality setting for lossy frame codecs. Lossless codecs may ignore this value."
@@ -686,7 +686,7 @@
           </label>
           <label class="inline-role-select project-storage-field">
             <span class="field-label-row">
-              Quality
+              Quality (0–100)
               <InfoChip
                 label="Project frame quality help"
                 text="Lossy frame codec quality. Lossless codecs may ignore this setting."

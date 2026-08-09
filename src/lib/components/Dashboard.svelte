@@ -2,25 +2,24 @@
   import { page } from '$app/stores';
   import { onMount } from 'svelte';
   import AdministrationPage from './AdministrationPage.svelte';
+  import AppHeader from './AppHeader.svelte';
   import AppSidebar from './AppSidebar.svelte';
+  import AppStatusBar from './AppStatusBar.svelte';
   import AssetsPage from './AssetsPage.svelte';
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
   import CurationPage from './CurationPage.svelte';
-  import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
-  import HeaderProcessingPresetSelect from './HeaderProcessingPresetSelect.svelte';
   import IngestionPage from './IngestionPage.svelte';
+  import MlEvidencePage from './MlEvidencePage.svelte';
   import FrameBrowserPage from './FrameBrowserPage.svelte';
   import PreferencesModal from './PreferencesModal.svelte';
   import RoiBrowserPage from './RoiBrowserPage.svelte';
   import ExplorerPage from './ExplorerPage.svelte';
   import StatusPage from './StatusPage.svelte';
-  import SystemPressureIndicator from './SystemPressureIndicator.svelte';
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
     dashboardViewDefinition,
-    dashboardViewHref,
-    dashboardViewFromParam,
+    dashboardViewFromUrl,
     defaultDashboardView,
     type DashboardView
   } from '$lib/utils/dashboardNavigation';
@@ -30,10 +29,10 @@
   let preferencesOpen = false;
   let preferencesReady = false;
   let projectSwitchError: string | null = null;
-  const sidebarPreferenceKey = 'pelagia-view:sidebar-collapsed';
-  $: activeTab = dashboardViewFromParam($page.url.searchParams.get('view'));
+  const sidebarPreferenceKey = 'pelagia-view:process-sidebar-collapsed';
+  $: activeTab = dashboardViewFromUrl($page.url);
   $: activeDefinition = dashboardViewDefinition(activeTab);
-  $: nextDefinition = activeDefinition.nextView ? dashboardViewDefinition(activeDefinition.nextView) : null;
+  $: hasProcessSidebar = activeDefinition.group === 'workflow' || activeDefinition.group === 'explorer';
   $: if (preferencesReady && typeof localStorage !== 'undefined') {
     localStorage.setItem(sidebarPreferenceKey, sidebarCollapsed ? 'true' : 'false');
   }
@@ -43,58 +42,39 @@
     preferencesReady = true;
   });
 
-  function toggleSidebar() {
-    sidebarCollapsed = !sidebarCollapsed;
-  }
-
   async function selectProject(event: Event) {
     const projectId = (event.currentTarget as HTMLSelectElement).value;
     const previousProjectId = $session.project?.id ?? '';
     projectSwitchError = null;
     try {
       await switchSessionProject(projectId);
-      if (projectId && projectId !== previousProjectId && typeof window !== 'undefined') {
-        window.location.reload();
-      }
+      if (projectId && projectId !== previousProjectId && typeof window !== 'undefined') window.location.reload();
     } catch (error) {
       projectSwitchError = error instanceof Error ? error.message : String(error);
     }
   }
 </script>
 
-<main class="app-shell" class:sidebar-is-collapsed={sidebarCollapsed}>
-  <AppSidebar
+<main class="app-shell-v2" class:workflow-active={hasProcessSidebar} class:workflow-collapsed={hasProcessSidebar && sidebarCollapsed}>
+  <AppHeader
     activeView={activeTab}
     currentUrl={$page.url}
-    collapsed={sidebarCollapsed}
     user={$session.user}
     project={$session.project}
     projects={$session.projects}
     switchingProject={$session.switchingProject}
     {projectSwitchError}
-    onToggle={toggleSidebar}
     onProjectChange={selectProject}
     onPreferences={() => (preferencesOpen = true)}
     onDisconnect={disconnectSession}
   />
 
-  <div class="app-workspace">
-    <header class="topbar">
-      <div class="dashboard-brand">
-        <div>
-          <p class="eyebrow">{activeDefinition.group} · {activeDefinition.detail}</p>
-          <h1>{activeDefinition.label}</h1>
-        </div>
-      </div>
-      <div class="session-controls">
-        <SystemPressureIndicator />
-        <HeaderProcessingPresetSelect />
-        <HeaderImageInversionToggle />
-      </div>
-    </header>
-
-    <section class="dashboard-surface">
-      <div class="page-scroll-content">
+  <div class="section-workspace" class:workflow-layout={hasProcessSidebar} class:system-layout={activeDefinition.group === 'system'} class:analysis-layout={activeDefinition.group === 'analysis'}>
+    {#if hasProcessSidebar}
+      <AppSidebar mode={activeDefinition.group === 'explorer' ? 'explorer' : 'workflow'} activeView={activeTab} currentUrl={$page.url} collapsed={sidebarCollapsed} onToggle={() => (sidebarCollapsed = !sidebarCollapsed)} />
+    {/if}
+    <section class="dashboard-surface section-surface">
+      <div class="page-scroll-content" class:browser-page={['rois', 'frames', 'curation'].includes(activeTab)} class:workbench-page={activeTab === 'explorer'}>
         {#if activeTab === 'status'}
           <StatusPage />
         {:else if activeTab === 'assets'}
@@ -107,6 +87,8 @@
           <DatasetQueuePage mode="segmentation" />
         {:else if activeTab === 'roi_refinement'}
           <DatasetQueuePage mode="roi_refinement" />
+        {:else if activeTab === 'ml_evidence'}
+          <MlEvidencePage />
         {:else if activeTab === 'explorer'}
           <ExplorerPage />
         {:else if activeTab === 'rois'}
@@ -124,5 +106,6 @@
     </section>
   </div>
 
+  <AppStatusBar currentUrl={$page.url} />
   <PreferencesModal open={preferencesOpen} onClose={() => (preferencesOpen = false)} />
 </main>

@@ -47,6 +47,8 @@ export type ImageMaskOverlayLayer = {
   colorMode?: ImageOverlayColorMode;
   blendMode?: ImageOverlayBlendMode;
   opacity?: number;
+  /** Use the transparent/black portion of a binary mask as the overlay. */
+  invert?: boolean;
   compositeOperation?: GlobalCompositeOperation;
   coordinateSpace?: ImageCoordinateSpace;
 };

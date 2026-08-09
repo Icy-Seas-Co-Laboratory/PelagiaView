@@ -1,7 +1,7 @@
 import type { Job } from '$lib/api/types';
 
 export type JobAction = 'pause' | 'resume' | 'retry';
-export type JobStageKey = 'ingestion' | 'preprocessing' | 'segmentation' | 'roi_refinement';
+export type JobStageKey = 'ingestion' | 'preprocessing' | 'segmentation' | 'roi_refinement' | 'classification';
 
 export type JobStatusCounts = {
   total: number;
@@ -17,7 +17,8 @@ export const jobStageAliases: Record<JobStageKey, string[]> = {
   ingestion: ['ingest', 'ingestion', 'ingest_run', 'video_ingest', 'frame_ingest', 'extract_frames', 'frame_extraction'],
   preprocessing: ['preprocess', 'preprocessing', 'frame_preprocess', 'frame_preprocessing', 'preprocess_frames'],
   segmentation: ['segment', 'segmentation', 'candidate', 'candidates', 'detection', 'detection-candidate', 'candidate-generation'],
-  roi_refinement: ['roi_refinement', 'refinement', 'refine', 'refined_roi', 'roi_refine']
+  roi_refinement: ['roi_refinement', 'refinement', 'refine', 'refined_roi', 'roi_refine'],
+  classification: ['classify', 'classification', 'ml_evidence']
 };
 
 export function normalizedJobStatus(job: Job): string {

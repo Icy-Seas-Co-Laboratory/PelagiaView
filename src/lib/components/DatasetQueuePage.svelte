@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import HelpChip from '$lib/components/HelpChip.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
+  import LiveFilterSelect from '$lib/components/LiveFilterSelect.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type {
@@ -26,6 +27,7 @@
     stringDefault
   } from '$lib/utils/configDefaults';
   import { formatCount } from '$lib/utils/format';
+  import type { LiveFilterOption } from '$lib/types/liveFilters';
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
     PROCESSING_PRESET_APPLIED_EVENT,
@@ -76,8 +78,6 @@
     refinementState?: string;
   };
 
-  type FilterGroup = 'asset' | 'collection' | 'preprocess' | 'detection' | 'refinement';
-
   let datasets: Dataset[] = [];
   let collectionOptions: string[] = [];
   let assetOptionFrameCounts = new Map<string, number>();
@@ -94,6 +94,11 @@
   let selectedPreprocessStates = new Set<string>();
   let selectedDetectionStates = new Set<string>();
   let selectedRefinementStates = new Set<string>();
+  let assetFilterOptions: LiveFilterOption[] = [];
+  let collectionFilterOptions: LiveFilterOption[] = [];
+  let preprocessFilterOptions: LiveFilterOption[] = [];
+  let detectionFilterOptions: LiveFilterOption[] = [];
+  let refinementFilterOptions: LiveFilterOption[] = [];
   let loading = true;
   let queueing = false;
   let message: string | null = null;
@@ -319,7 +324,9 @@
   );
   $: selectedCollectionArray = [...selectedCollections];
   $: selectedAssetArray = [...selectedAssetIds];
-  $: filteredDatasets = datasets.filter((dataset) => datasetMatchesFilters(dataset));
+  $: filteredDatasets = datasets.filter((dataset) =>
+    datasetMatchesFilters(dataset, selectedAssetIds, selectedCollections)
+  );
   $: preprocessStateOptions = statusOptions();
   $: detectionStateOptions = statusOptions();
   $: refinementStateOptions = [
@@ -331,6 +338,35 @@
   $: preprocessFrameCounts = preprocessOptionFrameCounts;
   $: detectionFrameCounts = detectionOptionFrameCounts;
   $: refinementRoiCounts = refinementOptionRoiCounts;
+  $: assetFilterOptions = datasets.map((dataset) => ({
+    id: dataset.asset.id,
+    label: dataset.asset.filename ?? dataset.asset.id,
+    detail: dataset.collections.length ? dataset.collections.join(', ') : 'No collection tags',
+    count: countFor(assetFrameCounts, dataset.asset.id),
+    countLabel: 'frames',
+    keywords: [dataset.asset.path ?? '', dataset.asset.id]
+  }));
+  $: collectionFilterOptions = collectionOptions.map((collection) => ({
+    id: collection,
+    label: collection,
+    count: countFor(collectionFrameCounts, collection),
+    countLabel: 'frames'
+  }));
+  $: preprocessFilterOptions = preprocessStateOptions.map((option) => ({
+    ...option,
+    count: countFor(preprocessFrameCounts, option.id),
+    countLabel: 'frames'
+  }));
+  $: detectionFilterOptions = detectionStateOptions.map((option) => ({
+    ...option,
+    count: countFor(detectionFrameCounts, option.id),
+    countLabel: 'frames'
+  }));
+  $: refinementFilterOptions = refinementStateOptions.map((option) => ({
+    ...option,
+    count: countFor(refinementRoiCounts, option.id),
+    countLabel: 'ROIs'
+  }));
   $: assetAnyFrameCount = statusFrameCount(activeStatusSummary);
   $: collectionAnyFrameCount = statusFrameCount(activeStatusSummary);
   $: preprocessAnyFrameCount = statusFrameCount(activeStatusSummary);
@@ -948,9 +984,13 @@
     );
   }
 
-  function datasetMatchesFilters(dataset: Dataset): boolean {
-    if (selectedAssetIds.size && !selectedAssetIds.has(dataset.asset.id)) return false;
-    if (selectedCollections.size && !dataset.collections.some((collection) => selectedCollections.has(collection))) return false;
+  function datasetMatchesFilters(
+    dataset: Dataset,
+    assetIds: ReadonlySet<string>,
+    collectionIds: ReadonlySet<string>
+  ): boolean {
+    if (assetIds.size && !assetIds.has(dataset.asset.id)) return false;
+    if (collectionIds.size && !dataset.collections.some((collection) => collectionIds.has(collection))) return false;
     return true;
   }
 
@@ -1112,41 +1152,6 @@
 
   function countFor(counts: Map<string, number>, value: string): number {
     return counts.get(value) ?? 0;
-  }
-
-  function toggleAsset(assetId: string) {
-    selectedAssetIds = toggled(selectedAssetIds, assetId);
-  }
-
-  function toggleCollection(collection: string) {
-    selectedCollections = toggled(selectedCollections, collection);
-  }
-
-  function togglePreprocessState(state: string) {
-    selectedPreprocessStates = toggled(selectedPreprocessStates, state);
-  }
-
-  function toggleDetectionState(state: string) {
-    selectedDetectionStates = toggled(selectedDetectionStates, state);
-  }
-
-  function toggleRefinementState(state: string) {
-    selectedRefinementStates = toggled(selectedRefinementStates, state);
-  }
-
-  function toggled(values: Set<string>, value: string): Set<string> {
-    const next = new Set(values);
-    if (next.has(value)) next.delete(value);
-    else next.add(value);
-    return next;
-  }
-
-  function clearGroup(group: FilterGroup) {
-    if (group === 'asset') selectedAssetIds = new Set();
-    if (group === 'collection') selectedCollections = new Set();
-    if (group === 'preprocess') selectedPreprocessStates = new Set();
-    if (group === 'detection') selectedDetectionStates = new Set();
-    if (group === 'refinement') selectedRefinementStates = new Set();
   }
 
   async function queueJobs() {
@@ -1457,125 +1462,42 @@
     </div>
 
     <div class="queue-filter-grid">
-      <div class="filter-group">
-        <div class="section-heading">
-          <p class="eyebrow">Asset</p>
-          <strong>Original file name</strong>
-        </div>
-        <div class="compact-select-list">
-          <button class="wildcard-filter" class:active={selectedAssetIds.size === 0} type="button" on:click={() => clearGroup('asset')}>
-            <span>Any asset</span>
-            <small>{formatCount(assetAnyFrameCount)} frames</small>
-          </button>
-          {#each datasets as dataset}
-            <button
-              class:active={selectedAssetIds.has(dataset.asset.id)}
-              type="button"
-              on:click={() => toggleAsset(dataset.asset.id)}
-            >
-              <span>{dataset.asset.filename ?? dataset.asset.id}</span>
-              <small>{formatCount(countFor(assetFrameCounts, dataset.asset.id))} frames</small>
-            </button>
-          {/each}
-        </div>
-      </div>
+      <LiveFilterSelect
+        eyebrow="Asset"
+        title="Original file"
+        options={assetFilterOptions}
+        selected={selectedAssetIds}
+        allLabel="Any asset"
+        allDetail="No asset restriction"
+        allCount={assetAnyFrameCount}
+        allCountLabel="frames"
+        searchPlaceholder="Search filenames or collections"
+        onChange={(next) => (selectedAssetIds = next)}
+      />
 
-      <div class="filter-group">
-        <div class="section-heading">
-          <p class="eyebrow">Collection</p>
-          <strong>Collection tags</strong>
-        </div>
-        <div class="compact-select-list">
-          <button class="wildcard-filter" class:active={selectedCollections.size === 0} type="button" on:click={() => clearGroup('collection')}>
-            <span>Any collection</span>
-            <small>{formatCount(collectionAnyFrameCount)} frames</small>
-          </button>
-          {#each collectionOptions as collection}
-            <button
-              class:active={selectedCollections.has(collection)}
-              type="button"
-              on:click={() => toggleCollection(collection)}
-            >
-              <span>{collection}</span>
-              <small>{formatCount(countFor(collectionFrameCounts, collection))} frames</small>
-            </button>
-          {/each}
-        </div>
-      </div>
+      <LiveFilterSelect
+        eyebrow="Collection"
+        title="Collection tags"
+        options={collectionFilterOptions}
+        selected={selectedCollections}
+        allLabel="Any collection"
+        allDetail="No collection restriction"
+        allCount={collectionAnyFrameCount}
+        allCountLabel="frames"
+        searchPlaceholder="Search collections"
+        onChange={(next) => (selectedCollections = next)}
+      />
 
       {#if mode === 'preprocessing'}
-        <div class="filter-group">
-          <div class="section-heading">
-            <p class="eyebrow">State</p>
-            <strong>Preprocessing state</strong>
-          </div>
-          <div class="compact-select-list">
-            <button class="wildcard-filter" class:active={selectedPreprocessStates.size === 0} type="button" on:click={() => clearGroup('preprocess')}>
-              <span>Any preprocessing state</span>
-              <small>{formatCount(preprocessAnyFrameCount)} frames</small>
-            </button>
-            {#each preprocessStateOptions as option}
-              <button
-                class:active={selectedPreprocessStates.has(option.id)}
-                type="button"
-                on:click={() => togglePreprocessState(option.id)}
-              >
-                <span>{option.label}</span>
-                <small>{formatCount(countFor(preprocessFrameCounts, option.id))} frames</small>
-              </button>
-            {/each}
-          </div>
-        </div>
+        <LiveFilterSelect eyebrow="State" title="Preprocessing state" options={preprocessFilterOptions} selected={selectedPreprocessStates} allLabel="Any preprocessing state" allCount={preprocessAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedPreprocessStates = next)} />
       {/if}
 
       {#if mode === 'segmentation'}
-        <div class="filter-group">
-          <div class="section-heading">
-            <p class="eyebrow">State</p>
-            <strong>Detection state</strong>
-          </div>
-          <div class="compact-select-list">
-            <button class="wildcard-filter" class:active={selectedDetectionStates.size === 0} type="button" on:click={() => clearGroup('detection')}>
-              <span>Any detection state</span>
-              <small>{formatCount(detectionAnyFrameCount)} frames</small>
-            </button>
-            {#each detectionStateOptions as option}
-              <button
-                class:active={selectedDetectionStates.has(option.id)}
-                type="button"
-                on:click={() => toggleDetectionState(option.id)}
-              >
-                <span>{option.label}</span>
-                <small>{formatCount(countFor(detectionFrameCounts, option.id))} frames</small>
-              </button>
-            {/each}
-          </div>
-        </div>
+        <LiveFilterSelect eyebrow="State" title="Detection state" options={detectionFilterOptions} selected={selectedDetectionStates} allLabel="Any detection state" allCount={detectionAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedDetectionStates = next)} />
       {/if}
 
       {#if mode === 'roi_refinement'}
-        <div class="filter-group">
-          <div class="section-heading">
-            <p class="eyebrow">State</p>
-            <strong>ROI refinement state</strong>
-          </div>
-          <div class="compact-select-list">
-            <button class="wildcard-filter" class:active={selectedRefinementStates.size === 0} type="button" on:click={() => clearGroup('refinement')}>
-              <span>Default: unrefined ROIs</span>
-              <small>{formatCount(refinementAnyRoiCount)} ROIs</small>
-            </button>
-            {#each refinementStateOptions as option}
-              <button
-                class:active={selectedRefinementStates.has(option.id)}
-                type="button"
-                on:click={() => toggleRefinementState(option.id)}
-              >
-                <span>{option.label}</span>
-                <small>{formatCount(countFor(refinementRoiCounts, option.id))} ROIs</small>
-              </button>
-            {/each}
-          </div>
-        </div>
+        <LiveFilterSelect eyebrow="State" title="ROI refinement state" options={refinementFilterOptions} selected={selectedRefinementStates} allLabel="Default: unrefined ROIs" allDetail="Safe workflow default" allCount={refinementAnyRoiCount} allCountLabel="ROIs" searchable={false} onChange={(next) => (selectedRefinementStates = next)} />
       {/if}
     </div>
     
@@ -1605,7 +1527,7 @@
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('minFieldValue', minFieldValue)}>
             <span class="field-label-row">
-              Min field value
+              Min field value (DN)
               <InfoChip
                 label="Minimum field value help"
                 text="Correction-field pixels below this mean sensor value are treated as invalid and replaced with the fallback mean value, usually 255."
@@ -1616,7 +1538,7 @@
           </label>
           <label class:has-field-override={fieldChanged('maxFieldValue', maxFieldValue)}>
             <span class="field-label-row">
-              Max field value
+              Max field value (DN)
               <InfoChip
                 label="Maximum field value help"
                 text="Correction-field pixels above this mean sensor value are treated as invalid and replaced with the fallback mean value, usually 255."
@@ -1641,19 +1563,19 @@
         </label>
         <div class="form-grid compact-grid">
           <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropX', cropX)}>
-            Crop x
+            Crop x (px)
             <input type="number" min="0" bind:value={cropX} disabled={!cropEnabled} />
           </label>
           <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropY', cropY)}>
-            Crop y
+            Crop y (px)
             <input type="number" min="0" bind:value={cropY} disabled={!cropEnabled} />
           </label>
           <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropW', cropW)}>
-            Crop width
+            Crop width (px)
             <input type="number" min="1" bind:value={cropW} disabled={!cropEnabled} />
           </label>
           <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropH', cropH)}>
-            Crop height
+            Crop height (px)
             <input type="number" min="1" bind:value={cropH} disabled={!cropEnabled} />
           </label>
         </div>
@@ -1693,11 +1615,11 @@
             </select>
           </label>
           <label class:has-field-override={fieldChanged('minWidth', minWidth)}>
-            Min width
+            Min width (px)
             <input type="number" min="0" bind:value={minWidth} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('minHeight', minHeight)}>
-            Min height
+            Min height (px)
             <input type="number" min="0" bind:value={minHeight} placeholder="none" />
           </label>
         </div>
@@ -1715,7 +1637,7 @@
           <summary class:has-active-settings={thresholdAdvancedActive}>Threshold</summary>
         {#if thresholdMethod === 'manual'}
           <label class:has-field-override={fieldChanged('manualThreshold', manualThreshold)}>
-            Manual threshold
+            Manual threshold (DN)
             <InfoChip
               label="Manual threshold help"
               text="Pixels at or above this value enter the foreground mask before optional mask augmentation."
@@ -1725,7 +1647,7 @@
         {/if}
         {#if usesThresholdMaximum(thresholdMethod)}
           <label class:has-field-override={fieldChanged('thresholdingMaximumValue', thresholdingMaximumValue)}>
-            Maximum threshold
+            Maximum threshold (DN)
             <InfoChip
               label="Maximum threshold help"
               text="Optional upper intensity clamp for methods that produce a threshold value. Leave empty when no upper clamp is needed."
@@ -1735,7 +1657,7 @@
         {/if}
         {#if usesBoundedOtsu(thresholdMethod)}
           <label class:has-field-override={fieldChanged('boundedOtsuMinContrast', boundedOtsuMinContrast)}>
-            Minimum contrast
+            Minimum contrast (DN)
             <InfoChip
               label="Minimum contrast help"
               text="Rejects weak threshold masks when foreground and background are not separated by at least this intensity difference."
@@ -1744,7 +1666,7 @@
             <span class="range-value">{boundedOtsuMinContrast}</span>
           </label>
           <label class:has-field-override={fieldChanged('boundedOtsuMaxForegroundFraction', boundedOtsuMaxForegroundFraction)}>
-            Max foreground fraction
+            Max foreground fraction (0–1)
             <InfoChip
               label="Maximum foreground fraction help"
               text="Rejects masks that classify too much of the frame as foreground, which usually indicates a bad threshold."
@@ -1762,15 +1684,15 @@
         {#if usesCanny(thresholdMethod)}
           <div class="form-grid compact-grid">
             <label class:has-field-override={fieldChanged('cannyLowThreshold', cannyLowThreshold)}>
-              Canny low
+              Canny low (DN)
               <input type="number" min="0" max="255" bind:value={cannyLowThreshold} />
             </label>
             <label class:has-field-override={fieldChanged('cannyHighThreshold', cannyHighThreshold)}>
-              Canny high
+              Canny high (DN)
               <input type="number" min="0" max="255" bind:value={cannyHighThreshold} />
             </label>
             <label class:has-field-override={fieldChanged('cannyBlurKernel', cannyBlurKernel)}>
-              Blur kernel
+              Blur kernel (px)
               <input type="number" min="1" step="2" bind:value={cannyBlurKernel} />
             </label>
           </div>
@@ -1778,23 +1700,23 @@
         {#if thresholdMethod === 'adaptive_mean' || thresholdMethod === 'adaptive_gaussian'}
           <div class="form-grid compact-grid">
             <label class:has-field-override={fieldChanged('adaptiveBlockSize', adaptiveBlockSize)}>
-              Block size
+              Block size (px)
               <input type="number" min="3" step="2" bind:value={adaptiveBlockSize} />
             </label>
             <label class:has-field-override={fieldChanged('adaptiveC', adaptiveC)}>
-              C offset
+              C offset (DN)
               <input type="number" bind:value={adaptiveC} />
             </label>
           </div>
         {/if}
         {#if thresholdMethod === 'percentile_background'}
           <label class:has-field-override={fieldChanged('percentileBackgroundPercentile', percentileBackgroundPercentile)}>
-            Background percentile
+            Background percentile (%)
             <input type="range" min="0" max="100" step="1" bind:value={percentileBackgroundPercentile} />
             <span class="range-value">{percentileBackgroundPercentile}</span>
           </label>
           <label class:has-field-override={fieldChanged('percentileMinContrast', percentileMinContrast)}>
-            Minimum contrast
+            Minimum contrast (DN)
             <input type="range" min="0" max="255" step="1" bind:value={percentileMinContrast} />
             <span class="range-value">{percentileMinContrast}</span>
           </label>
@@ -1802,11 +1724,11 @@
         {#if thresholdMethod === 'hysteresis'}
           <div class="form-grid compact-grid">
             <label class:has-field-override={fieldChanged('hysteresisLowThreshold', hysteresisLowThreshold)}>
-              Low threshold
+              Low threshold (DN)
               <input type="number" min="0" max="255" bind:value={hysteresisLowThreshold} />
             </label>
             <label class:has-field-override={fieldChanged('hysteresisHighThreshold', hysteresisHighThreshold)}>
-              High threshold
+              High threshold (DN)
               <input type="number" min="0" max="255" bind:value={hysteresisHighThreshold} />
             </label>
             <label class:has-field-override={fieldChanged('hysteresisConnectivity', hysteresisConnectivity)}>
@@ -1825,12 +1747,12 @@
               <input type="number" bind:value={sobelThreshold} placeholder="percentile" />
             </label>
             <label class:has-field-override={fieldChanged('sobelPercentile', sobelPercentile)}>
-              Percentile
+              Percentile (%)
               <input type="range" min="0" max="100" step="1" bind:value={sobelPercentile} />
               <span class="range-value">{sobelPercentile}</span>
             </label>
             <label class:has-field-override={fieldChanged('sobelKernelSize', sobelKernelSize)}>
-              Kernel size
+              Kernel size (px)
               <input type="number" min="1" step="2" bind:value={sobelKernelSize} />
             </label>
           </div>
@@ -1862,11 +1784,11 @@
           </div>
           <div class="form-grid compact-grid">
             <label class:has-field-override={fieldChanged('dilateKernelW', dilateKernelW)}>
-              Dilate width
+              Dilate width (px)
               <input type="number" min="1" bind:value={dilateKernelW} />
             </label>
             <label class:has-field-override={fieldChanged('dilateKernelH', dilateKernelH)}>
-              Dilate height
+              Dilate height (px)
               <input type="number" min="1" bind:value={dilateKernelH} />
             </label>
             <label class:has-field-override={fieldChanged('dilateIterations', dilateIterations)}>
@@ -1874,11 +1796,11 @@
               <input type="number" min="1" bind:value={dilateIterations} />
             </label>
             <label class:has-field-override={fieldChanged('erodeKernelW', erodeKernelW)}>
-              Erode width
+              Erode width (px)
               <input type="number" min="1" bind:value={erodeKernelW} />
             </label>
             <label class:has-field-override={fieldChanged('erodeKernelH', erodeKernelH)}>
-              Erode height
+              Erode height (px)
               <input type="number" min="1" bind:value={erodeKernelH} />
             </label>
             <label class:has-field-override={fieldChanged('erodeIterations', erodeIterations)}>
@@ -1890,11 +1812,11 @@
             <summary>Additional mask controls</summary>
             <div class="form-grid compact-grid">
               <label class:has-field-override={fieldChanged('openKernelW', openKernelW)}>
-                Open width
+                Open width (px)
                 <input type="number" min="1" bind:value={openKernelW} />
               </label>
               <label class:has-field-override={fieldChanged('openKernelH', openKernelH)}>
-                Open height
+                Open height (px)
                 <input type="number" min="1" bind:value={openKernelH} />
               </label>
               <label class:has-field-override={fieldChanged('openIterations', openIterations)}>
@@ -1902,11 +1824,11 @@
                 <input type="number" min="1" bind:value={openIterations} />
               </label>
               <label class:has-field-override={fieldChanged('closeKernelW', closeKernelW)}>
-                Close width
+                Close width (px)
                 <input type="number" min="1" bind:value={closeKernelW} />
               </label>
               <label class:has-field-override={fieldChanged('closeKernelH', closeKernelH)}>
-                Close height
+                Close height (px)
                 <input type="number" min="1" bind:value={closeKernelH} />
               </label>
               <label class:has-field-override={fieldChanged('closeIterations', closeIterations)}>
@@ -1914,7 +1836,7 @@
                 <input type="number" min="1" bind:value={closeIterations} />
               </label>
               <label class:has-field-override={fieldChanged('minComponentArea', minComponentArea)}>
-                Min component area
+                Min component area (px²)
                 <input type="number" min="0" bind:value={minComponentArea} />
               </label>
             </div>
@@ -1949,7 +1871,7 @@
             </select>
           </label>
           <label class:has-field-override={fieldChanged('minArea', minArea)}>
-            Min area
+            Min area (px²)
             <InfoChip
               label="Minimum area help"
               text="Drops candidate ROIs whose foreground area is smaller than this value."
@@ -1957,31 +1879,31 @@
             <input type="number" min="0" bind:value={minArea} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('maxArea', maxArea)}>
-            Max area
+            Max area (px²)
             <input type="number" min="0" bind:value={maxArea} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('minPerimeter', minPerimeter)}>
-            Min perimeter
+            Min perimeter (px)
             <input type="number" min="0" bind:value={minPerimeter} />
           </label>
           <label class:has-field-override={fieldChanged('maxPerimeter', maxPerimeter)}>
-            Max perimeter
+            Max perimeter (px)
             <input type="number" min="0" bind:value={maxPerimeter} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('maxWidth', maxWidth)}>
-            Max width
+            Max width (px)
             <input type="number" min="0" bind:value={maxWidth} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('maxHeight', maxHeight)}>
-            Max height
+            Max height (px)
             <input type="number" min="0" bind:value={maxHeight} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('minWidthPlusHeight', minWidthPlusHeight)}>
-            Min width + height
+            Min width + height (px)
             <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('maxWidthPlusHeight', maxWidthPlusHeight)}>
-            Max width + height
+            Max width + height (px)
             <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
           </label>
         </div>
@@ -1995,7 +1917,7 @@
             </span>
           </summary>
         <label class:has-field-override={fieldChanged('padding', padding)}>
-          Padding
+          Padding (px)
           <InfoChip
             label="ROI padding help"
             text="Extra pixels added around each candidate crop before storing the ROI image payload."
@@ -2005,19 +1927,19 @@
         </label>
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinArea', storeRoiPayloadMinArea)}>
-            Store payload min area
+            Store payload min area (px²)
             <input type="number" min="0" bind:value={storeRoiPayloadMinArea} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinWidth', storeRoiPayloadMinWidth)}>
-            Store payload min width
+            Store payload min width (px)
             <input type="number" min="0" bind:value={storeRoiPayloadMinWidth} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinHeight', storeRoiPayloadMinHeight)}>
-            Store payload min height
+            Store payload min height (px)
             <input type="number" min="0" bind:value={storeRoiPayloadMinHeight} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinWidthPlusHeight', storeRoiPayloadMinWidthPlusHeight)}>
-            Store payload min width + height
+            Store payload min width + height (px)
             <input type="number" min="0" bind:value={storeRoiPayloadMinWidthPlusHeight} placeholder="none" />
           </label>
         </div>
@@ -2082,11 +2004,11 @@
             <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
           </label>
           <label class:has-field-override={fieldChanged('refinementExpansionPixels', refinementExpansionPixels)}>
-            Expansion pixels
+            Expansion step (px)
             <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
           </label>
           <label class:has-field-override={fieldChanged('refinementEdgeTouchMargin', refinementEdgeTouchMargin)}>
-            Edge touch margin
+            Edge touch margin (px)
             <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
           </label>
         </details>

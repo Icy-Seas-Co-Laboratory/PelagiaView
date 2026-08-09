@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { session } from '$lib/stores/session';
+  import { imageInversionEnabled, themePreference, type ThemePreference } from '$lib/stores/displayPreferences';
   import {
     clearPreference,
     clearPreferences,
@@ -107,6 +108,12 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
+
+  function setTheme(theme: ThemePreference) {
+    $themePreference = theme;
+    statusMessage = `Applied ${theme === 'system' ? 'system' : theme} appearance.`;
+    refreshEntries();
+  }
 </script>
 
 {#if open}
@@ -143,6 +150,16 @@
         </div>
       </div>
 
+      <section class="appearance-preferences" aria-labelledby="appearance-title">
+        <div><p class="eyebrow">Interface</p><h3 id="appearance-title">Appearance</h3><span>Choose a calm scientific canvas and shared image behavior.</span></div>
+        <div class="theme-options" aria-label="Color theme">
+          {#each ['system', 'light', 'dark'] as theme}
+            <button class:active={$themePreference === theme} class="ghost" type="button" on:click={() => setTheme(theme as ThemePreference)}>{theme}</button>
+          {/each}
+        </div>
+        <label class="appearance-invert"><span><strong>Invert scientific imagery</strong><small>Apply the shared inversion setting to ROI and frame viewers.</small></span><input type="checkbox" bind:checked={$imageInversionEnabled} /></label>
+      </section>
+
       {#if statusMessage}
         <p class="preferences-status" class:requires-reload={needsReload}>
           {statusMessage}
@@ -159,31 +176,26 @@
         <button class="ghost danger" type="button" on:click={resetAll}>Reset all</button>
       </div>
 
-      <div class="preferences-grid">
-        {#each categories as category}
-          <section class="preferences-section">
-            <h3>{category.label}</h3>
-            {#each entriesForCategory(category.id) as entry}
-              <article class="preference-card" class:missing={!entry.present}>
-                <div>
-                  <strong>{entry.label}</strong>
-                  <p>{entry.description}</p>
-                  <small>{entry.key}</small>
-                </div>
-                <div class="preference-card-meta">
-                  <span>{entry.present ? formatBytes(entry.bytes) : 'Not saved'}</span>
-                  {#if entry.updatedAt}
-                    <span>{entry.updatedAt}</span>
-                  {:else if entry.valuePreview}
-                    <span>{entry.valuePreview}</span>
-                  {/if}
-                  <button class="ghost" type="button" disabled={!entry.present} on:click={() => resetOne(entry)}>Reset</button>
-                </div>
-              </article>
-            {/each}
-          </section>
-        {/each}
-      </div>
+      <details class="advanced-preferences">
+        <summary>Saved state and diagnostics</summary>
+        <div class="preferences-grid">
+          {#each categories as category}
+            <section class="preferences-section">
+              <h3>{category.label}</h3>
+              {#each entriesForCategory(category.id) as entry}
+                <article class="preference-card" class:missing={!entry.present}>
+                  <div><strong>{entry.label}</strong><p>{entry.description}</p><small>{entry.key}</small></div>
+                  <div class="preference-card-meta">
+                    <span>{entry.present ? formatBytes(entry.bytes) : 'Not saved'}</span>
+                    {#if entry.updatedAt}<span>{entry.updatedAt}</span>{:else if entry.valuePreview}<span>{entry.valuePreview}</span>{/if}
+                    <button class="ghost" type="button" disabled={!entry.present} on:click={() => resetOne(entry)}>Reset</button>
+                  </div>
+                </article>
+              {/each}
+            </section>
+          {/each}
+        </div>
+      </details>
 
       <section class="preferences-import">
         <div class="panel-heading">

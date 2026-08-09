@@ -846,6 +846,8 @@ export type DetectionFilters = {
   max_perimeter?: number | null;
   roi_encoding?: string | null;
   roi_format?: string | null;
+  /** Restrict results by whether a non-empty stored ROI image payload is available. */
+  has_roi_payload?: boolean | null;
   sort_by?: 'area' | 'byte_size' | 'id' | 'asset_frame' | null;
   sort_dir?: 'asc' | 'desc' | null;
   refinement_state?: 'any' | 'refined' | 'unrefined' | null;
@@ -1201,6 +1203,30 @@ export type CurationOptions = {
   labels: CurationLabel[];
   default_label_dictionary: CurationLabelDictionary;
   ownership: Record<string, string>;
+};
+
+export type ClassificationTargetSelection = {
+  asset_ids?: string[];
+  collections?: string[];
+  annotation_state?: 'all' | 'labeled' | 'unlabeled';
+  review_state?: 'all' | 'unreviewed' | 'verified' | 'rejected' | 'needs_review';
+  evidence_state?: 'all' | 'missing_model' | 'available_model' | 'missing_any' | 'available_any' | 'disagreement';
+  label_id?: string | null;
+  label_source?: 'any' | 'human' | 'prediction';
+  min_area?: number | null;
+  max_area?: number | null;
+  search?: string | null;
+};
+
+export type ClassificationTargetPreview = {
+  model_ref: string;
+  selection: ClassificationTargetSelection;
+  target_count: number;
+  explicit_roi_count: number;
+};
+
+export type ClassificationJobResponse = ClassificationTargetPreview & {
+  job: Job;
 };
 
 export type CurationRoiPage = {

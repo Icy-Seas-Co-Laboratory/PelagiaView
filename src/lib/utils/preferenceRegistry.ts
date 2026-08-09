@@ -34,11 +34,30 @@ export const preferenceDefinitions: PreferenceDefinition[] = [
     category: 'connection'
   },
   {
-    key: 'pelagia-view:sidebar-collapsed',
-    label: 'Sidebar layout',
-    description: 'Whether the dashboard navigation sidebar is collapsed.',
+    key: 'pelagia-view:process-sidebar-collapsed',
+    label: 'Process rail',
+    description: 'Whether the sequential Workflow and Explorer navigation rail is collapsed.',
     category: 'interface',
     resetWithUiState: true
+  },
+  {
+    key: 'pelagia-view:last-section-views',
+    label: 'Section history',
+    description: 'The last page visited in Analysis, Explorer, Workflow, and System.',
+    category: 'interface',
+    resetWithUiState: true
+  },
+  {
+    key: 'pelagia-view:theme',
+    label: 'Application theme',
+    description: 'Use the system appearance or a fixed scientific light or dark theme.',
+    category: 'interface'
+  },
+  {
+    key: 'pelagia-view:display-preferences:v1',
+    label: 'Image display',
+    description: 'Shared image inversion preference used across imagery workspaces.',
+    category: 'image'
   },
   {
     key: preferenceKey('status'),

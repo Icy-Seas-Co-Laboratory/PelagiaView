@@ -36,6 +36,7 @@
   let error: string | null = null;
   let preferencesReady = false;
   let selectedFrame: FrameRow | null = null;
+  let frameDetailModalOpen = false;
   let selectedFrameContext: FrameContextResponse | null = null;
   let selectedRoiDetection: DetectionSummary | null = null;
   let frameModalPayloadKind: FramePayloadKind = 'preprocessed';
@@ -130,6 +131,7 @@
     if (reset) {
       frames = [];
       selectedFrame = null;
+      frameDetailModalOpen = false;
       selectedBrowserFrameIds = new Set();
       nextOffset = 0;
       hasMore = true;
@@ -215,7 +217,16 @@
     void loadFrameDetail(frame, frameModalPayloadKind);
   }
 
+  function openFrameDetailModal(frame: FrameRow) {
+    frameDetailModalOpen = true;
+    openFrameDetail(frame);
+  }
+
   function closeFrameDetail() {
+    frameDetailModalOpen = false;
+  }
+
+  function clearFrameInspector() {
     frameModalLoadSerial += 1;
     selectedFrame = null;
     selectedRoiDetection = null;
@@ -1258,7 +1269,7 @@
                     <KonvaImageCanvas
                       {spec}
                       mode="thumbnail"
-                      onMoreAction={() => openFrameDetail(frame)}
+                      onMoreAction={() => openFrameDetailModal(frame)}
                     />
                   {/key}
                 {:else}
@@ -1292,10 +1303,30 @@
     </div>
   </section>
 
+  <aside class="panel browser-inspector-panel">
+    <div class="panel-heading"><div><p class="eyebrow">Selection</p><h2>Frame Inspector</h2></div>{#if selectedFrame}<button class="ghost compact-action" type="button" on:click={clearFrameInspector}>Clear</button>{/if}</div>
+    {#if selectedFrame}
+      {@const inspectorSpec = frameRenderSpec(selectedFrame, 300, 260, tilePreviewMaxDimensionPx, 'none')}
+      <div class="browser-inspector-preview">{#if inspectorSpec}<KonvaImageCanvas spec={inspectorSpec} mode="static" />{:else}<div class="frame-unavailable">Image unavailable</div>{/if}</div>
+      <strong class="browser-inspector-title">{selectedFrame.asset_filename ?? selectedFrame.asset_id ?? 'Unknown asset'}</strong>
+      <dl class="browser-inspector-data">
+        <div><dt>Frame</dt><dd>{frameNumberLabel(selectedFrame)}</dd></div>
+        <div><dt>Dimensions (px)</dt><dd>{dimensionsLabel(selectedFrame)}</dd></div>
+        <div><dt>ROIs</dt><dd>{countsLabel(selectedFrame)}</dd></div>
+        <div><dt>Preprocessed</dt><dd>{selectedFrame.has_preprocessed_payload ? 'available' : 'not available'}</dd></div>
+        <div><dt>Captured</dt><dd>{formatDateTime(selectedFrame.captured_at)}</dd></div>
+      </dl>
+      {#if frameModalError}<p class="form-error">{frameModalError}</p>{/if}
+      <button type="button" on:click={() => (frameDetailModalOpen = true)}>Open frame context</button>
+    {:else}
+      <div class="browser-inspector-empty"><span>⌗</span><strong>Select a frame</strong><p>Choose a tile to inspect processing state, associated ROIs, and frame provenance.</p></div>
+    {/if}
+  </aside>
+
   <button class="scroll-top-button" type="button" aria-label="Scroll to top" on:click={scrollToTop}></button>
 </div>
 
-{#if selectedFrame}
+{#if selectedFrame && frameDetailModalOpen}
   {@const detailSpec = frameModalRenderSpec(selectedFrame)}
   <div class="modal-backdrop frame-context-backdrop">
     <div class="roi-detail-modal frame-context-modal" role="dialog" aria-modal="true" aria-label="Frame details">
@@ -1369,7 +1400,7 @@
               <dd>{formatDateTime(selectedFrameContext?.frame?.captured_at ?? selectedFrame.captured_at)}</dd>
             </div>
             <div>
-              <dt>Dimensions</dt>
+              <dt>Dimensions (px)</dt>
               <dd>{dimensionsLabel(selectedFrame)}</dd>
             </div>
             <div>
@@ -1493,15 +1524,15 @@
               <dd>{selectedFrame ? frameNumberLabel(selectedFrame) : selectedRoiDetection.frame_index ?? selectedRoiDetection.frame_id ?? 'unknown'}</dd>
             </div>
             <div>
-              <dt>Bounding box</dt>
+              <dt>Bounding box (px)</dt>
               <dd><code>{bboxLabel(selectedRoiDetection)}</code></dd>
             </div>
             <div>
-              <dt>Area</dt>
+              <dt>Area (px²)</dt>
               <dd>{selectedRoiDetection.area === undefined ? 'unknown' : Math.round(selectedRoiDetection.area)}</dd>
             </div>
             <div>
-              <dt>Perimeter</dt>
+              <dt>Perimeter (px)</dt>
               <dd>{selectedRoiDetection.perimeter === undefined ? 'unknown' : Math.round(selectedRoiDetection.perimeter)}</dd>
             </div>
             <div>
@@ -1533,7 +1564,7 @@
               <dd>{formatDateTime(selectedFrameContext?.frame?.captured_at ?? selectedFrame?.captured_at)}</dd>
             </div>
             <div>
-              <dt>Dimensions</dt>
+              <dt>Dimensions (px)</dt>
               <dd>{selectedFrame ? dimensionsLabel(selectedFrame) : 'unknown'}</dd>
             </div>
           </dl>

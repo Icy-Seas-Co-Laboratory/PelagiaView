@@ -146,6 +146,61 @@
     }
   ];
 
+  const settingUnits: Record<string, string> = {
+    ingestionTileCount: 'frames',
+    ingestionBackgroundWindowWidth: 'frames',
+    ingestionBackgroundWindowStride: 'frames',
+    ingestionFlatfieldWindowWidth: 'frames',
+    ingestionFlatfieldWindowStride: 'frames',
+    minFieldValue: 'DN',
+    maxFieldValue: 'DN',
+    cropX: 'px',
+    cropY: 'px',
+    cropW: 'px',
+    cropH: 'px',
+    manualThreshold: 'DN',
+    thresholdingMaximumValue: 'DN',
+    boundedOtsuMinContrast: 'DN',
+    boundedOtsuMaxForegroundFraction: '0–1',
+    cannyLowThreshold: 'DN',
+    cannyHighThreshold: 'DN',
+    cannyBlurKernel: 'px',
+    adaptiveBlockSize: 'px',
+    adaptiveC: 'DN',
+    percentileBackgroundPercentile: '%',
+    percentileMinContrast: 'DN',
+    hysteresisLowThreshold: 'DN',
+    hysteresisHighThreshold: 'DN',
+    sobelPercentile: '%',
+    sobelKernelSize: 'px',
+    dilateKernelW: 'px',
+    dilateKernelH: 'px',
+    erodeKernelW: 'px',
+    erodeKernelH: 'px',
+    openKernelW: 'px',
+    openKernelH: 'px',
+    closeKernelW: 'px',
+    closeKernelH: 'px',
+    minComponentArea: 'px²',
+    minArea: 'px²',
+    maxArea: 'px²',
+    minPerimeter: 'px',
+    maxPerimeter: 'px',
+    minWidth: 'px',
+    maxWidth: 'px',
+    minHeight: 'px',
+    maxHeight: 'px',
+    minWidthPlusHeight: 'px',
+    maxWidthPlusHeight: 'px',
+    padding: 'px',
+    storeRoiPayloadMinArea: 'px²',
+    storeRoiPayloadMinWidth: 'px',
+    storeRoiPayloadMinHeight: 'px',
+    storeRoiPayloadMinWidthPlusHeight: 'px',
+    refinementExpansionPixels: 'px',
+    refinementEdgeTouchMargin: 'px'
+  };
+
   async function applyPreset() {
     if (!selectedPreset) return;
     await onApply?.(selectedPreset);
@@ -188,12 +243,13 @@
   }
 
   function settingLabel(key: string): string {
-    return key
+    const label = key
       .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
       .replace(/Roi/g, 'ROI')
       .replace(/Bbox/g, 'BBox')
       .replace(/Zstd/g, 'Zstd')
       .replace(/^./, (value) => value.toUpperCase());
+    return settingUnits[key] ? `${label} (${settingUnits[key]})` : label;
   }
 
   function settingValue(value: unknown): string {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { page } from '$app/stores';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
   import HelpChip from '$lib/components/HelpChip.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
@@ -72,6 +73,7 @@
     uniqueCodecOptions,
     type CodecAvailability
   } from '$lib/utils/codecs';
+  import { explorerStageFromUrl, type ExplorerStage } from '$lib/utils/dashboardNavigation';
 
   let assets: RawAsset[] = [];
   let frames: FrameSummary[] = [];
@@ -250,15 +252,8 @@
   let presetsLoading = false;
   let lastProcessingPresetSessionKey = '';
 
-  type ExplorerTab = 'preprocessing' | 'threshold' | 'detection' | 'refinement' | 'presets';
-  const explorerTabs: Array<{ id: ExplorerTab; label: string }> = [
-    { id: 'preprocessing', label: 'Preprocessing' },
-    { id: 'threshold', label: 'Threshold' },
-    { id: 'detection', label: 'Candidate Detection' },
-    { id: 'refinement', label: 'Refinement' },
-    { id: 'presets', label: 'Presets' }
-  ];
-  let activeExplorerTab: ExplorerTab = 'preprocessing';
+  let activeExplorerTab: ExplorerStage = 'preprocessing';
+  $: activeExplorerTab = explorerStageFromUrl($page.url);
 
   type ExplorerPreferences = {
     selectedAssetId: string;
@@ -1567,7 +1562,7 @@
   }
 
   function scheduleThresholdAutoPreview(
-    tab: ExplorerTab,
+    tab: ExplorerStage,
     frameId: string,
     preprocessingKey: string,
     thresholdKey: string
@@ -3067,13 +3062,13 @@
     return width && height ? { width, height } : null;
   }
 
-  function activeFrameCaption(tab: ExplorerTab): string {
+  function activeFrameCaption(tab: ExplorerStage): string {
     if (tab === 'threshold') return `${frameCaption(frameDisplayMode)} with threshold mask`;
     if (tab === 'detection') return `${frameCaption(frameDisplayMode)} with candidate ROI boxes`;
     return frameCaption(frameDisplayMode);
   }
 
-  function activeFrameAlt(tab: ExplorerTab): string {
+  function activeFrameAlt(tab: ExplorerStage): string {
     if (tab === 'threshold') return 'Selected frame with threshold mask overlay';
     if (tab === 'detection') return 'Selected frame with candidate ROI overlays';
     return 'Selected frame';
@@ -3098,7 +3093,7 @@
     ];
   }
 
-  function activeImageLayers(tab: ExplorerTab): ImageLayer[] {
+  function activeImageLayers(tab: ExplorerStage): ImageLayer[] {
     if (tab === 'threshold') return imageLayersForFrame([], thresholdMaskOverlays());
     if (tab === 'detection') {
       return imageLayersForFrame(frameCanvasOverlays(boxes, targetBoxes, bboxCoordinateBasis), []);
@@ -3106,7 +3101,7 @@
     return [];
   }
 
-  function frameRenderSpec(tab: ExplorerTab = activeExplorerTab): ImageRenderSpec {
+  function frameRenderSpec(tab: ExplorerStage = activeExplorerTab): ImageRenderSpec {
     const sourceDimensions = frameRenderSourceDimensions();
     return {
       key: [
@@ -3198,25 +3193,9 @@
   }
 </script>
 
-<div class="explorer-tabs" role="tablist" aria-label="Explorer workflow sections">
-    {#each explorerTabs as tab}
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeExplorerTab === tab.id}
-        class:active={activeExplorerTab === tab.id}
-        on:click={() => (activeExplorerTab = tab.id)}
-      >
-        {tab.label}
-      </button>
-    {/each}
-  </div>
-<section class="panel explorer-nav-panel">
-  
-
-
-  {#if activeExplorerTab === 'preprocessing'}
-    <div class="asset-row">
+<section class="explorer-workbench">
+  {#if activeExplorerTab !== 'presets'}
+    <div class="asset-row explorer-toolbar" aria-label="Explorer source selection">
       <label>
         Asset
         <select bind:value={selectedAssetId} on:change={loadFrames}>
@@ -3239,8 +3218,6 @@
       <span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span>
     </div>
   {/if}
-
-
 <div
   class:segmentation-layout={activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'}
   class:single-panel-layout={activeExplorerTab === 'refinement'}
@@ -3296,7 +3273,7 @@
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Options</p>
-        <h2>Explorer controls</h2>
+        <h2>Controls</h2>
       </div>
     </div>
     {#if activeExplorerTab === 'preprocessing'}
@@ -3348,7 +3325,7 @@
       <div class="form-grid compact-grid">
         <label class:has-field-override={fieldChanged('minFieldValue', minFieldValue)}>
           <span class="field-label-row">
-            Min field value
+            Min field value (DN)
             <InfoChip
               label="Minimum field value help"
               text="Correction-field pixels below this mean sensor value are treated as invalid and replaced with the fallback mean value, usually 255."
@@ -3359,7 +3336,7 @@
         </label>
         <label class:has-field-override={fieldChanged('maxFieldValue', maxFieldValue)}>
           <span class="field-label-row">
-            Max field value
+            Max field value (DN)
             <InfoChip
               label="Maximum field value help"
               text="Correction-field pixels above this mean sensor value are treated as invalid and replaced with the fallback mean value, usually 255."
@@ -3384,19 +3361,19 @@
       </label>
       <div class="form-grid compact-grid">
         <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropX', cropX)}>
-          Crop x
+          Crop x (px)
           <input type="number" min="0" bind:value={cropX} disabled={!cropEnabled} />
         </label>
         <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropY', cropY)}>
-          Crop y
+          Crop y (px)
           <input type="number" min="0" bind:value={cropY} disabled={!cropEnabled} />
         </label>
         <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropW', cropW)}>
-          Crop width
+          Crop width (px)
           <input type="number" min="1" bind:value={cropW} disabled={!cropEnabled} />
         </label>
         <label class:field-disabled={!cropEnabled} class:has-field-override={fieldChanged('cropH', cropH)}>
-          Crop height
+          Crop height (px)
           <input type="number" min="1" bind:value={cropH} disabled={!cropEnabled} />
         </label>
       </div>
@@ -3432,7 +3409,7 @@
       </label>
       {#if thresholdMethod === 'manual'}
         <label class:has-field-override={fieldChanged('manualThreshold', manualThreshold)}>
-          Manual threshold
+          Manual threshold (DN)
           <InfoChip
             label="Manual threshold help"
             text="Pixels at or above this value enter the foreground mask before optional mask augmentation."
@@ -3442,7 +3419,7 @@
       {/if}
       {#if usesThresholdMaximum(thresholdMethod)}
         <label class:has-field-override={fieldChanged('thresholdingMaximumValue', thresholdingMaximumValue)}>
-          Maximum threshold
+          Maximum threshold (DN)
           <InfoChip
             label="Maximum threshold help"
             text="Optional upper intensity clamp for threshold methods that support bounded foreground selection."
@@ -3452,7 +3429,7 @@
       {/if}
       {#if usesBoundedOtsu(thresholdMethod)}
         <label class:has-field-override={fieldChanged('boundedOtsuMinContrast', boundedOtsuMinContrast)}>
-          Minimum contrast
+          Minimum contrast (DN)
           <InfoChip
             label="Minimum contrast help"
             text="Rejects weak masks unless foreground and background are separated by at least this contrast."
@@ -3461,7 +3438,7 @@
           <span class="range-value">{boundedOtsuMinContrast}</span>
         </label>
         <label class:has-field-override={fieldChanged('boundedOtsuMaxForegroundFraction', boundedOtsuMaxForegroundFraction)}>
-          Max foreground fraction
+          Max foreground fraction (0–1)
           <InfoChip
             label="Maximum foreground fraction help"
             text="Rejects threshold masks that classify too much of the frame as foreground."
@@ -3479,15 +3456,15 @@
       {#if usesCanny(thresholdMethod)}
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('cannyLowThreshold', cannyLowThreshold)}>
-            Canny low
+            Canny low (DN)
             <input type="number" min="0" max="255" bind:value={cannyLowThreshold} />
           </label>
           <label class:has-field-override={fieldChanged('cannyHighThreshold', cannyHighThreshold)}>
-            Canny high
+            Canny high (DN)
             <input type="number" min="0" max="255" bind:value={cannyHighThreshold} />
           </label>
           <label class:has-field-override={fieldChanged('cannyBlurKernel', cannyBlurKernel)}>
-            Blur kernel
+            Blur kernel (px)
             <input type="number" min="1" step="2" bind:value={cannyBlurKernel} />
           </label>
         </div>
@@ -3495,23 +3472,23 @@
       {#if thresholdMethod === 'adaptive_mean' || thresholdMethod === 'adaptive_gaussian'}
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('adaptiveBlockSize', adaptiveBlockSize)}>
-            Block size
+            Block size (px)
             <input type="number" min="3" step="2" bind:value={adaptiveBlockSize} />
           </label>
           <label class:has-field-override={fieldChanged('adaptiveC', adaptiveC)}>
-            C offset
+            C offset (DN)
             <input type="number" bind:value={adaptiveC} />
           </label>
         </div>
       {/if}
       {#if thresholdMethod === 'percentile_background'}
         <label class:has-field-override={fieldChanged('percentileBackgroundPercentile', percentileBackgroundPercentile)}>
-          Background percentile
+          Background percentile (%)
           <input type="range" min="0" max="100" step="1" bind:value={percentileBackgroundPercentile} />
           <span class="range-value">{percentileBackgroundPercentile}</span>
         </label>
         <label class:has-field-override={fieldChanged('percentileMinContrast', percentileMinContrast)}>
-          Minimum contrast
+          Minimum contrast (DN)
           <input type="range" min="0" max="255" step="1" bind:value={percentileMinContrast} />
           <span class="range-value">{percentileMinContrast}</span>
         </label>
@@ -3519,11 +3496,11 @@
       {#if thresholdMethod === 'hysteresis'}
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('hysteresisLowThreshold', hysteresisLowThreshold)}>
-            Low threshold
+            Low threshold (DN)
             <input type="number" min="0" max="255" bind:value={hysteresisLowThreshold} />
           </label>
           <label class:has-field-override={fieldChanged('hysteresisHighThreshold', hysteresisHighThreshold)}>
-            High threshold
+            High threshold (DN)
             <input type="number" min="0" max="255" bind:value={hysteresisHighThreshold} />
           </label>
           <label class:has-field-override={fieldChanged('hysteresisConnectivity', hysteresisConnectivity)}>
@@ -3542,12 +3519,12 @@
             <input type="number" bind:value={sobelThreshold} placeholder="percentile" />
           </label>
           <label class:has-field-override={fieldChanged('sobelPercentile', sobelPercentile)}>
-            Percentile
+            Percentile (%)
             <input type="range" min="0" max="100" step="1" bind:value={sobelPercentile} />
             <span class="range-value">{sobelPercentile}</span>
           </label>
           <label class:has-field-override={fieldChanged('sobelKernelSize', sobelKernelSize)}>
-            Kernel size
+            Kernel size (px)
             <input type="number" min="1" step="2" bind:value={sobelKernelSize} />
           </label>
         </div>
@@ -3580,11 +3557,11 @@
         </div>
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('dilateKernelW', dilateKernelW)}>
-            Dilate width
+            Dilate width (px)
             <input type="number" min="1" bind:value={dilateKernelW} />
           </label>
           <label class:has-field-override={fieldChanged('dilateKernelH', dilateKernelH)}>
-            Dilate height
+            Dilate height (px)
             <input type="number" min="1" bind:value={dilateKernelH} />
           </label>
           <label class:has-field-override={fieldChanged('dilateIterations', dilateIterations)}>
@@ -3592,11 +3569,11 @@
             <input type="number" min="1" bind:value={dilateIterations} />
           </label>
           <label class:has-field-override={fieldChanged('erodeKernelW', erodeKernelW)}>
-            Erode width
+            Erode width (px)
             <input type="number" min="1" bind:value={erodeKernelW} />
           </label>
           <label class:has-field-override={fieldChanged('erodeKernelH', erodeKernelH)}>
-            Erode height
+            Erode height (px)
             <input type="number" min="1" bind:value={erodeKernelH} />
           </label>
           <label class:has-field-override={fieldChanged('erodeIterations', erodeIterations)}>
@@ -3608,11 +3585,11 @@
           <summary>Additional mask controls</summary>
           <div class="form-grid compact-grid">
             <label class:has-field-override={fieldChanged('openKernelW', openKernelW)}>
-              Open width
+              Open width (px)
               <input type="number" min="1" bind:value={openKernelW} />
             </label>
             <label class:has-field-override={fieldChanged('openKernelH', openKernelH)}>
-              Open height
+              Open height (px)
               <input type="number" min="1" bind:value={openKernelH} />
             </label>
             <label class:has-field-override={fieldChanged('openIterations', openIterations)}>
@@ -3620,11 +3597,11 @@
               <input type="number" min="1" bind:value={openIterations} />
             </label>
             <label class:has-field-override={fieldChanged('closeKernelW', closeKernelW)}>
-              Close width
+              Close width (px)
               <input type="number" min="1" bind:value={closeKernelW} />
             </label>
             <label class:has-field-override={fieldChanged('closeKernelH', closeKernelH)}>
-              Close height
+              Close height (px)
               <input type="number" min="1" bind:value={closeKernelH} />
             </label>
             <label class:has-field-override={fieldChanged('closeIterations', closeIterations)}>
@@ -3632,7 +3609,7 @@
               <input type="number" min="1" bind:value={closeIterations} />
             </label>
             <label class:has-field-override={fieldChanged('minComponentArea', minComponentArea)}>
-              Min component area
+              Min component area (px²)
               <input type="number" min="0" bind:value={minComponentArea} />
             </label>
           </div>
@@ -3694,7 +3671,7 @@
         </label>
         <label class="span-2">
           <span class="field-label-row">
-            Opacity
+            Opacity (0–1)
             <InfoChip
               label="Threshold overlay opacity help"
               text="Display opacity for the mask layer. Lower values reveal more frame texture beneath the mask."
@@ -3745,7 +3722,7 @@
         </label>
         <label class:has-field-override={fieldChanged('minArea', minArea)}>
           <span class="field-label-row">
-            Min area
+            Min area (px²)
             <InfoChip
               label="Minimum area help"
               text="Drops candidate ROIs whose foreground area is smaller than this value."
@@ -3754,15 +3731,15 @@
           <input type="number" min="0" bind:value={minArea} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('maxArea', maxArea)}>
-          Max area
+          Max area (px²)
           <input type="number" min="0" bind:value={maxArea} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('minWidthPlusHeight', minWidthPlusHeight)}>
-          Min width + height
+          Min width + height (px)
           <input type="number" min="0" bind:value={minWidthPlusHeight} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('maxWidthPlusHeight', maxWidthPlusHeight)}>
-          Max width + height
+          Max width + height (px)
           <input type="number" min="0" bind:value={maxWidthPlusHeight} placeholder="none" />
         </label>
       </div>
@@ -3791,34 +3768,34 @@
           </select>
         </label>
         <label class:has-field-override={fieldChanged('minPerimeter', minPerimeter)}>
-          Min perimeter
+          Min perimeter (px)
           <input type="number" min="0" bind:value={minPerimeter} />
         </label>
         <label class:has-field-override={fieldChanged('maxPerimeter', maxPerimeter)}>
-          Max perimeter
+          Max perimeter (px)
           <input type="number" min="0" bind:value={maxPerimeter} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('minWidth', minWidth)}>
-          Min width
+          Min width (px)
           <input type="number" min="0" bind:value={minWidth} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('maxWidth', maxWidth)}>
-          Max width
+          Max width (px)
           <input type="number" min="0" bind:value={maxWidth} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('minHeight', minHeight)}>
-          Min height
+          Min height (px)
           <input type="number" min="0" bind:value={minHeight} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('maxHeight', maxHeight)}>
-          Max height
+          Max height (px)
           <input type="number" min="0" bind:value={maxHeight} placeholder="none" />
         </label>
       </div>
 
       <label class:has-field-override={fieldChanged('padding', padding)}>
         <span class="field-label-row">
-          Padding
+          Padding (px)
           <InfoChip
             label="ROI padding help"
             text="Extra pixels included around the candidate ROI crop. Larger padding preserves surrounding context but increases payload size."
@@ -3836,19 +3813,19 @@
         </summary>
         <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinArea', storeRoiPayloadMinArea)}>
-            Min area
+            Min area (px²)
             <input type="number" min="0" bind:value={storeRoiPayloadMinArea} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinWidth', storeRoiPayloadMinWidth)}>
-            Min width
+            Min width (px)
             <input type="number" min="0" bind:value={storeRoiPayloadMinWidth} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinHeight', storeRoiPayloadMinHeight)}>
-            Min height
+            Min height (px)
             <input type="number" min="0" bind:value={storeRoiPayloadMinHeight} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('storeRoiPayloadMinWidthPlusHeight', storeRoiPayloadMinWidthPlusHeight)}>
-            Min width + height
+            Min width + height (px)
             <input type="number" min="0" bind:value={storeRoiPayloadMinWidthPlusHeight} placeholder="none" />
           </label>
         </div>
@@ -3895,7 +3872,7 @@
           </select>
         </label>
         <label>
-          Opacity
+          Opacity (0–1)
           <input type="range" min="0" max="1" step="0.01" bind:value={refinementMaskOverlayOpacity} />
           <span class="range-value">{Number(refinementMaskOverlayOpacity).toFixed(2)}</span>
         </label>
@@ -3944,11 +3921,11 @@
             <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
           </label>
           <label class:has-field-override={fieldChanged('refinementExpansionPixels', refinementExpansionPixels)}>
-            Expansion pixels
+            Expansion step (px)
             <input type="number" min="1" step="1" bind:value={refinementExpansionPixels} placeholder="tile stride" />
           </label>
           <label class:has-field-override={fieldChanged('refinementEdgeTouchMargin', refinementEdgeTouchMargin)}>
-            Edge touch margin
+            Edge touch margin (px)
             <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
           </label>
           {/if}
@@ -4002,24 +3979,24 @@
         <strong>{formatCount(refinementSummary.count)}</strong>
       </div>
       <div>
-        <span>Total ROI area</span>
+        <span>Total ROI area (px²)</span>
         <strong>{formatStat(refinementSummary.areaCount ? refinementSummary.totalArea : null)}</strong>
         <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} with area` : 'area unavailable'}</small>
       </div>
       <div>
-        <span>Mean area</span>
+        <span>Mean area (px²)</span>
         <strong>{formatStat(refinementSummary.meanArea)}</strong>
       </div>
       <div>
-        <span>Median area</span>
+        <span>Median area (px²)</span>
         <strong>{formatStat(refinementSummary.medianArea)}</strong>
       </div>
       <div>
-        <span>Area range</span>
+        <span>Area range (px²)</span>
         <strong>{formatStat(refinementSummary.minArea)}-{formatStat(refinementSummary.maxArea)}</strong>
       </div>
       <div>
-        <span>Total bbox area</span>
+        <span>Total bbox area (px²)</span>
         <strong>{formatStat(refinementSummary.totalBboxArea)}</strong>
         <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} boxes` : 'bbox unavailable'}</small>
       </div>
@@ -4139,24 +4116,24 @@
         <strong>{formatCount(refinementSummary.count)}</strong>
       </div>
       <div>
-        <span>Total ROI area</span>
+        <span>Total ROI area (px²)</span>
         <strong>{formatStat(refinementSummary.areaCount ? refinementSummary.totalArea : null)}</strong>
         <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} with area` : 'area unavailable'}</small>
       </div>
       <div>
-        <span>Mean area</span>
+        <span>Mean area (px²)</span>
         <strong>{formatStat(refinementSummary.meanArea)}</strong>
       </div>
       <div>
-        <span>Median area</span>
+        <span>Median area (px²)</span>
         <strong>{formatStat(refinementSummary.medianArea)}</strong>
       </div>
       <div>
-        <span>Area range</span>
+        <span>Area range (px²)</span>
         <strong>{formatStat(refinementSummary.minArea)}-{formatStat(refinementSummary.maxArea)}</strong>
       </div>
       <div>
-        <span>Total bbox area</span>
+        <span>Total bbox area (px²)</span>
         <strong>{formatStat(refinementSummary.totalBboxArea)}</strong>
         <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} boxes` : 'bbox unavailable'}</small>
       </div>

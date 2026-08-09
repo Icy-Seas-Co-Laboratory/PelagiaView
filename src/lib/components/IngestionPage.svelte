@@ -907,7 +907,7 @@
           <div class="advanced-search-grid">
             <label>
               <span class="field-label-row">
-                Tile count
+                Tile count (frames)
                 <InfoChip
                   label="Tile count help"
                   text="The number of frames to stitch together. Only suitable for Linescan frames that are continuously collected."
@@ -917,7 +917,7 @@
             </label>
             <label class:field-disabled={ingestionScanMode !== 'area_scan'}>
               <span class="field-label-row">
-                Background Window Width
+                Background window width (frames)
                 <InfoChip
                   label="Background Window Width help"
                   text="Number of frames used for each area-scan mean background. Must be a positive, odd value."
@@ -927,7 +927,7 @@
             </label>
             <label class:field-disabled={ingestionScanMode !== 'area_scan'}>
               <span class="field-label-row">
-                Background Window Stride
+                Background window stride (frames)
                 <InfoChip
                   label="Background Window Stride help"
                   text="Number of frames to advance before calculating the next background. Must be at least 1 and no larger than the background window width (typically equal to the window width)."
@@ -937,7 +937,7 @@
             </label>
             <label class:field-disabled={ingestionScanMode !== 'line_scan'}>
               <span class="field-label-row">
-                Flatfield Window Width
+                Flatfield window width (frames)
                 <InfoChip
                   label="Flatfield Window Width help"
                   text="Number of frames used for each line-scan flatfield profile. Must be a positive odd value."
@@ -947,7 +947,7 @@
             </label>
             <label class:field-disabled={ingestionScanMode !== 'line_scan'}>
               <span class="field-label-row">
-                Flatfield Window Stride
+                Flatfield window stride (frames)
                 <InfoChip
                   label="Flatfield Window Stride help"
                   text="Number of frames to advance before calculating the next line-scan profile. Must be at least 1 and no larger than the flatfield window width."
