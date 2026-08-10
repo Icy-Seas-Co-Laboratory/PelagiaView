@@ -1,14 +1,17 @@
+import { base } from '$app/paths';
 import type { ProcessingPreset, ProcessingPresetSaveRequest } from '$lib/processing/settings';
 
+const processingPresetsPath = `${base}/processing-presets`;
+
 export async function listProcessingPresets(): Promise<ProcessingPreset[]> {
-  const response = await fetch('/processing-presets');
+  const response = await fetch(processingPresetsPath);
   if (!response.ok) throw new Error(await presetErrorMessage(response));
   const payload = (await response.json()) as { presets?: ProcessingPreset[] };
   return payload.presets ?? [];
 }
 
 export async function saveProcessingPreset(request: ProcessingPresetSaveRequest): Promise<ProcessingPreset> {
-  const response = await fetch('/processing-presets', {
+  const response = await fetch(processingPresetsPath, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(request)
@@ -27,4 +30,3 @@ async function presetErrorMessage(response: Response): Promise<string> {
     return `Preset request failed with HTTP ${response.status}.`;
   }
 }
-

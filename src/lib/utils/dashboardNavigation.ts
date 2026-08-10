@@ -1,3 +1,5 @@
+import { base } from '$app/paths';
+
 export type DashboardSection = 'analysis' | 'explorer' | 'workflow' | 'system';
 
 export type ExplorerStage = 'preprocessing' | 'threshold' | 'detection' | 'refinement' | 'presets';
@@ -63,12 +65,23 @@ export const dashboardSections: Array<{ id: DashboardSection; label: string; det
 
 const dashboardViewIds = new Set<DashboardView>(dashboardViews.map((view) => view.id));
 
+function applicationPath(path: string): string {
+  const suffix = path.replace(/^\/+/, '');
+  return `${base}/${suffix}`.replace(/\/{2,}/g, '/');
+}
+
+function pathWithinApplication(pathname: string): string {
+  if (!base) return pathname;
+  if (pathname === base) return '/';
+  return pathname.startsWith(`${base}/`) ? pathname.slice(base.length) : pathname;
+}
+
 export function dashboardViewFromParam(value: string | null | undefined): DashboardView {
   return dashboardViewIds.has(value as DashboardView) ? (value as DashboardView) : defaultDashboardView;
 }
 
 export function dashboardViewFromUrl(url: URL): DashboardView {
-  const [section, path] = url.pathname.split('/').filter(Boolean);
+  const [section, path] = pathWithinApplication(url.pathname).split('/').filter(Boolean);
   const matched = dashboardViews.find((view) => view.group === section && view.path === path);
   return matched?.id ?? dashboardViewFromParam(url.searchParams.get('view'));
 }
@@ -88,7 +101,7 @@ export function dashboardViewHref(view: DashboardView, currentUrl?: URL): string
     url.search = '';
     url.hash = '';
   }
-  url.pathname = `/${definition.group}/${definition.path}`;
+  url.pathname = applicationPath(`${definition.group}/${definition.path}`);
   url.searchParams.delete('view');
   return `${url.pathname}${url.search}${url.hash}`;
 }

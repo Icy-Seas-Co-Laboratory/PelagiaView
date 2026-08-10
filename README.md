@@ -55,6 +55,8 @@ Run the development server:
 npm run dev -- --port 5173
 ```
 
+Open `http://127.0.0.1:5173/` for the default root-path development build.
+
 For access from other machines on the network:
 
 ```bash
@@ -79,10 +81,10 @@ npm run preview -- --port 5173
 Both values should omit a trailing slash. Because these settings affect the
 generated application paths, rebuild PelagiaView after changing them.
 
-Open:
+Open the prefixed build at:
 
 ```bash
-http://127.0.0.1:5173/
+http://127.0.0.1:5173/pelagiaview/
 ```
 
 Build for production:
