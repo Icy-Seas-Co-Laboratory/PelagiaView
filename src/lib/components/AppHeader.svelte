@@ -1,5 +1,6 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { base } from '$app/paths';
   import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
   import {
     dashboardSections,
@@ -51,7 +52,7 @@
 <header class="app-header">
   <div class="app-header-main">
     <a class="app-brand" href={dashboardViewHref('rois', currentUrl)} aria-label="Pelagia analysis home">
-      <img src="/brand/pelagia_icon.png" alt="" aria-hidden="true" />
+      <img src={`${base}/brand/pelagia_icon.png`} alt="" aria-hidden="true" />
       <span><strong>Pelagia</strong><small>Scientific image workspace</small></span>
     </a>
 

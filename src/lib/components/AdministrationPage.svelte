@@ -139,7 +139,7 @@
     projectFrameStorageEncoding = availableFrameStorageEncoding(projectFrameStorageEncoding);
     projectSmallRoiStorageEncoding = availableRoiStorageEncoding(projectSmallRoiStorageEncoding, 'zstd');
     projectLargeRoiStorageEncoding = availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg');
-    projectMaskStorageEncoding = availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd');
+    projectMaskStorageEncoding = availableMaskStorageEncoding(projectMaskStorageEncoding);
     kvstoreDefaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
     rememberKvstoreSuggestions([
       kvstoreDefaultDirectory,
@@ -219,7 +219,7 @@
           large_roi_encoding: availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg'),
           large_roi_min_pixels: normalizeRoiCutoff(projectLargeRoiMinPixels),
           roi_quality: normalizeFrameStorageQuality(projectRoiStorageQuality),
-          mask_encoding: availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd')
+          mask_encoding: availableMaskStorageEncoding(projectMaskStorageEncoding)
         });
       }
       projectMessage = `Created project ${projectLabel(response.project)} with project storage defaults.`;
@@ -282,7 +282,7 @@
         large_roi_encoding: availableRoiStorageEncoding(draft.largeRoiEncoding, 'jpg'),
         large_roi_min_pixels: normalizeRoiCutoff(draft.largeRoiMinPixels),
         roi_quality: normalizeFrameStorageQuality(draft.roiQuality),
-        mask_encoding: availableRoiStorageEncoding(draft.maskEncoding, 'zstd')
+        mask_encoding: availableMaskStorageEncoding(draft.maskEncoding)
       });
       projectMessage = `Updated storage defaults for ${projectLabel(response.project ?? project)}.`;
       await refreshProjects();
@@ -500,8 +500,11 @@
   }
 
   function availableRoiStorageEncoding(value: string, fallback: string): string {
-    const options = fallback === 'zstd' && ['zstd', 'png', 'raw'].includes(value) ? maskStorageOptions : roiStorageOptions;
-    return ensureAvailableCodec(normalizeRoiStorageEncoding(value, fallback), options, imageCodecAvailability, fallback);
+    return ensureAvailableCodec(normalizeRoiStorageEncoding(value, fallback), roiStorageOptions, imageCodecAvailability, fallback);
+  }
+
+  function availableMaskStorageEncoding(value: string): string {
+    return ensureAvailableCodec(normalizeRoiStorageEncoding(value, 'zstd'), maskStorageOptions, imageCodecAvailability, 'zstd');
   }
 
   function normalizeRoiCutoff(value: number): number {

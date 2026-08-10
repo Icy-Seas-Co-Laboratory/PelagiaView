@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { base } from '$app/paths';
   import { browser } from '$app/environment';
   import { get } from 'svelte/store';
   import { ApiError, PelagiaApiClient } from '$lib/api/client';
@@ -51,6 +52,7 @@
 
   $: frameStorageOptions = allowedStorageEncodings;
   $: roiStorageOptions = allowedStorageEncodings;
+  $: maskStorageOptions = allowedStorageEncodings.filter((encoding) => ['zstd', 'png', 'raw'].includes(encoding));
   $: if (!kvstoreNameTouched) kvstoreName = suggestedKvstoreName(projectKey);
 
   async function connect() {
@@ -131,7 +133,7 @@
       projectFrameStorageEncoding = availableFrameStorageEncoding(projectFrameStorageEncoding);
       projectSmallRoiStorageEncoding = availableRoiStorageEncoding(projectSmallRoiStorageEncoding, 'zstd');
       projectLargeRoiStorageEncoding = availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg');
-      projectMaskStorageEncoding = availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd');
+      projectMaskStorageEncoding = availableMaskStorageEncoding(projectMaskStorageEncoding);
       const defaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
       if (!kvstoreDirectoryTouched || !kvstoreDirectory.trim() || kvstoreDirectory === '.') {
         kvstoreDirectory = defaultDirectory;
@@ -163,7 +165,7 @@
         large_roi_encoding: availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg'),
         large_roi_min_pixels: Math.max(1, Math.round(projectLargeRoiMinPixels)),
         roi_quality: normalizeFrameStorageQuality(projectRoiStorageQuality),
-        mask_encoding: availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd')
+        mask_encoding: availableMaskStorageEncoding(projectMaskStorageEncoding)
       };
       if (pendingLogin?.token) {
         const bootstrapClient = new PelagiaApiClient(pendingLogin.baseUrl, { token: pendingLogin.token });
@@ -262,6 +264,10 @@
     return ensureAvailableCodec(normalizeRoiStorageEncoding(value, fallback), roiStorageOptions, imageCodecAvailability, fallback);
   }
 
+  function availableMaskStorageEncoding(value: string): string {
+    return ensureAvailableCodec(normalizeRoiStorageEncoding(value, 'zstd'), maskStorageOptions, imageCodecAvailability, 'zstd');
+  }
+
   function normalizeFrameStorageQuality(value: number): number {
     const next = Math.round(Number(value));
     if (!Number.isFinite(next)) return 90;
@@ -300,7 +306,7 @@
 <main class="landing">
   <section class="landing-panel">
     <div class="brand-lockup">
-      <img class="brand-logo" src="/brand/pelagia_logo.png" alt="Pelagia" />
+      <img class="brand-logo" src={`${base}/brand/pelagia_logo.png`} alt="Pelagia" />
       <div>
         <p class="eyebrow">PelagiaView</p>
         <h1>Connect to a Pelagia server</h1>
@@ -506,7 +512,7 @@
         <label>
           Mask codec
           <select bind:value={projectMaskStorageEncoding} disabled={creatingProject || $session.connecting}>
-            {#each roiStorageOptions as encoding}
+            {#each maskStorageOptions as encoding}
               <option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{encoding}</option>
             {/each}
           </select>

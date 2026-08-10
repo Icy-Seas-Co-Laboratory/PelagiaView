@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { env } from '$env/dynamic/public';
 import { get, writable } from 'svelte/store';
 import { PelagiaApiClient, normalizeBaseUrl, setActiveApiToken } from '$lib/api/client';
 import type { AuthLoginResponse, AuthUserSummary, HealthResponse, ProjectSummary, SystemStatus } from '$lib/api/types';
@@ -63,7 +64,8 @@ export type SessionState = {
 };
 
 const initialStoredSession = browser ? readStoredSession() : null;
-const initialBaseUrl = initialStoredSession?.baseUrl ?? 'http://127.0.0.1:8000';
+const defaultBaseUrl = env.PUBLIC_PELAGIA_API_URL || 'http://127.0.0.1:8000';
+const initialBaseUrl = initialStoredSession?.baseUrl ?? defaultBaseUrl;
 const initialShouldRestore = shouldRestoreStoredSession(initialStoredSession);
 
 export const session = writable<SessionState>({
@@ -614,7 +616,7 @@ function persistStoredSession(stored: StoredSession): void {
   localStorage.setItem(
     STORAGE_KEY,
     JSON.stringify({
-      baseUrl: stored.baseUrl ?? 'http://127.0.0.1:8000',
+      baseUrl: stored.baseUrl ?? defaultBaseUrl,
       token: stored.token ?? null,
       user: stored.user ?? null,
       project: stored.project ?? null,

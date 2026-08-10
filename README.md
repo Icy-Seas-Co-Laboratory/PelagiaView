@@ -61,6 +61,24 @@ For access from other machines on the network:
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
+### Reverse-proxy path prefixes
+
+PelagiaView can be built beneath a non-root URL and can default to a prefixed
+Pelagia API endpoint:
+
+```bash
+PELAGIAVIEW_BASE_PATH=/pelagiaview \
+PUBLIC_PELAGIA_API_URL=https://demo.pelagia.studio/pelagia-api \
+npm run build
+
+PELAGIAVIEW_BASE_PATH=/pelagiaview \
+PUBLIC_PELAGIA_API_URL=https://demo.pelagia.studio/pelagia-api \
+npm run preview -- --port 5173
+```
+
+Both values should omit a trailing slash. Because these settings affect the
+generated application paths, rebuild PelagiaView after changing them.
+
 Open:
 
 ```bash

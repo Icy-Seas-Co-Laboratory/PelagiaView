@@ -959,7 +959,7 @@ export class PelagiaApiClient {
   }
 
   private url(path: string, params?: Record<string, QueryParamValue>): string {
-    const url = new URL(path.startsWith('/') ? path : `/${path}`, `${this.baseUrl}/`);
+    const url = new URL(path.replace(/^\/+/, ''), `${this.baseUrl}/`);
     for (const [key, value] of Object.entries(params ?? {})) {
       if (Array.isArray(value)) {
         for (const item of value) {
