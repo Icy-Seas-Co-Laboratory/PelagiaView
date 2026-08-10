@@ -54,7 +54,7 @@
     padding: 0.28rem 0.5rem;
     color: var(--app-muted, #62746f);
     background: transparent;
-    font-size: 0.7rem;
+    font-size: var(--wb-font-caption, 0.75rem);
     font-weight: 750;
     line-height: 1;
     white-space: nowrap;

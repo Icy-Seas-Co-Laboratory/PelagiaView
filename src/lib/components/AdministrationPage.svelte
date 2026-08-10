@@ -875,7 +875,7 @@
   .admin-tab-list { display: flex; gap: .9rem; min-width: max-content; }
   .admin-tabs button { display: flex; gap: .35rem; align-items: center; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: .48rem .05rem .42rem; background: transparent; color: #60746c; white-space: nowrap; }
   .admin-tabs button.active { border-bottom-color: #17735c; color: #145b49; }
-  .admin-tabs button span { display: grid; min-width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 999px; background: #edf3f1; font-size: .66rem; }
+  .admin-tabs button span { display: grid; min-width: 1.15rem; height: 1.15rem; place-items: center; border-radius: 999px; background: #edf3f1; font-size: var(--wb-font-micro, .7rem); }
   .admin-tabs .compact-action { min-height: 1.8rem; border: 1px solid #cbdad5; border-radius: 4px; padding: .2rem .48rem; }
   .admin-overview { display: grid; gap: .7rem; padding: .8rem .9rem; }
   .attention-panel, .quick-actions { border: 1px solid #dbe7e2; background: #fff; }
@@ -883,7 +883,7 @@
   .section-title { display: flex; justify-content: space-between; gap: .7rem; align-items: flex-start; padding: .68rem .8rem; }
   .section-title h2, .section-title h3, .inspector-section h3 { margin: .12rem 0 0; }
   .section-title p { margin: .25rem 0 0; color: #60746c; }
-  .section-kicker { color: #60746c; font-size: .7rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+  .section-kicker { color: #60746c; font-size: var(--wb-font-micro, .7rem); font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
   .attention-count { display: grid; min-width: 1.8rem; height: 1.8rem; place-items: center; border-radius: 999px; background: #fff2dc; color: #8b5611; font-weight: 900; }
   .attention-list article { display: grid; grid-template-columns: .55rem 1fr; gap: .55rem; padding: .55rem .8rem; border-top: 1px solid #e2ebe7; }
   .attention-list p, .health-banner p { margin: .15rem 0 0; color: #60746c; }
@@ -928,7 +928,7 @@
   .definition-grid > div { min-width: 0; padding: .48rem .62rem; border-right: 1px solid #dbe7e2; border-bottom: 1px solid #dbe7e2; }
   .definition-grid > div:nth-child(2n) { border-right: 0; }
   .definition-grid > div:nth-last-child(-n + 2) { border-bottom: 0; }
-  .definition-grid dt { color: #60746c; font-size: .72rem; font-weight: 800; text-transform: uppercase; }
+  .definition-grid dt { color: #60746c; font-size: var(--wb-font-caption, .75rem); font-weight: 800; text-transform: uppercase; }
   .definition-grid dd { overflow-wrap: anywhere; margin: .1rem 0 0; font-weight: 700; }
   .storage-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem .65rem; }
   .storage-form label, .membership-editor label, .password-action label { display: grid; gap: .22rem; font-weight: 800; }

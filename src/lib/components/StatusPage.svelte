@@ -635,4 +635,12 @@
   @media(max-width:850px){.operations-header,.section-heading{align-items:stretch;flex-direction:column}.header-actions,.queue-controls{justify-content:space-between}.stage-menu>summary{grid-template-columns:minmax(0,1fr)auto 18px;gap:8px}.stage-menu .stage-name{grid-column:1}.stage-menu .stage-counts{grid-column:2;text-align:right}.stage-menu .aggregate-progress{grid-column:1/3}.stage-menu .stage-chevron{grid-column:3;grid-row:1/3;align-self:center}.stage-toolbar{align-items:flex-start;flex-direction:column}.row-actions{justify-content:flex-start}.stage-job-metadata{grid-template-columns:repeat(2,minmax(100px,1fr))}.job-metadata{grid-template-columns:repeat(2,minmax(100px,1fr))}.worker-table{overflow-x:auto}.worker-row{min-width:780px}}
   @media(max-width:560px){.pressure-strip,.indicator-list{grid-template-columns:repeat(2,1fr)}.pressure-strip article:nth-child(odd),.indicator-list article:nth-child(odd){border-left:0;border-right:1px solid var(--wb-divider)}.pressure-strip article:nth-child(n+3){border-top:1px solid var(--wb-divider)}.indicator-list article:nth-child(even){border-right:0}.stage-menu>summary{grid-template-columns:minmax(0,1fr)18px}.stage-menu .stage-name{grid-column:1}.stage-menu .stage-counts{grid-column:1;text-align:left}.stage-menu .aggregate-progress{grid-column:1}.stage-menu .stage-chevron{grid-column:2;grid-row:1/4}.stage-job>header,.job-card>header{align-items:flex-start;flex-direction:column}.job-actions{width:100%}.job-actions button{flex:1}.stage-job-metadata,.job-metadata{grid-template-columns:minmax(0,1fr)}.operations-page{gap:9px}.section-heading,.job-card{padding-left:10px;padding-right:10px}}
 
+  .stage-job-metadata small,.job-metadata small,.worker-head,.status-badge{
+    font-size:var(--wb-font-micro,.7rem)
+  }
+  .stage-name small,.stage-counts small,.throughput small,.aggregate-progress small,
+  .stage-toolbar,.worker-row,.worker-row code,.job-identity code{
+    font-size:var(--wb-font-caption,.75rem)
+  }
+
 </style>

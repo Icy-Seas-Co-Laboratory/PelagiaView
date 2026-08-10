@@ -104,7 +104,7 @@
   width: auto;
 }
 
-.project-switcher > span { color: var(--app-muted); font-size: 0.62rem; font-weight: 850; text-transform: uppercase; }
+.project-switcher > span { color: var(--app-muted); font-size: var(--wb-font-micro, 0.7rem); font-weight: 850; text-transform: uppercase; }
 .project-switcher select { min-height: 1.95rem; border-color: var(--app-border); padding: 0.25rem 0.45rem; background: var(--app-surface-raised); }
 .global-tools .header-invert-toggle { min-height: 1.95rem; border-color: var(--app-border); background: var(--app-surface-raised); }
 
@@ -112,7 +112,7 @@
 .account-menu summary { display: grid; width: 1.95rem; height: 1.95rem; place-items: center; border: 1px solid var(--app-border); border-radius: 999px; color: #fff; background: var(--app-accent); cursor: pointer; list-style: none; }
 .account-menu summary::-webkit-details-marker { display: none; }
 .account-menu > div { position: absolute; top: calc(100% + 0.55rem); right: 0; display: grid; gap: 0.45rem; width: 13rem; border: 1px solid var(--app-border); border-radius: 8px; padding: 0.75rem; background: var(--app-surface-raised); box-shadow: var(--app-shadow); }
-.account-menu p { margin: 0; color: var(--app-muted); font-size: 0.7rem; }
+.account-menu p { margin: 0; color: var(--app-muted); font-size: var(--wb-font-caption, 0.75rem); }
 .account-menu strong { overflow: hidden; margin-bottom: 0.25rem; text-overflow: ellipsis; }
 .account-menu button { width: 100%; min-height: 2.15rem; }
 
@@ -126,15 +126,15 @@
 }
 
 .page-identity { display: flex; gap: 0.45rem; align-items: baseline; min-width: 15rem; padding: 0.34rem 0; }
-.page-identity > span { color: var(--app-muted); font-size: 0.62rem; font-weight: 900; text-transform: uppercase; }
+.page-identity > span { color: var(--app-muted); font-size: var(--wb-font-micro, 0.7rem); font-weight: 900; text-transform: uppercase; }
 .page-identity > strong { font-size: 0.84rem; }
-.page-identity > small { overflow: hidden; color: var(--app-muted); font-size: 0.68rem; text-overflow: ellipsis; white-space: nowrap; }
+.page-identity > small { overflow: hidden; color: var(--app-muted); font-size: var(--wb-font-caption, 0.75rem); text-overflow: ellipsis; white-space: nowrap; }
 
 .secondary-navigation { display: flex; gap: 0.15rem; align-self: stretch; overflow-x: auto; }
-.secondary-navigation a { display: grid; min-width: max-content; place-items: center; border-bottom: 3px solid transparent; padding: 0.3rem 0.75rem 0.24rem; color: var(--app-muted); font-size: 0.76rem; font-weight: 800; text-decoration: none; }
+.secondary-navigation a { display: grid; min-width: max-content; place-items: center; border-bottom: 3px solid transparent; padding: 0.3rem 0.75rem 0.24rem; color: var(--app-muted); font-size: var(--wb-font-small, 0.8125rem); font-weight: 800; text-decoration: none; }
 .secondary-navigation a:hover { color: var(--app-text); background: var(--app-surface-soft); }
 .secondary-navigation a.active { color: var(--app-accent-strong); border-bottom-color: var(--app-accent); }
-.workflow-context { margin: 0 0 0.38rem; color: var(--app-muted); font-size: 0.72rem; }
+.workflow-context { margin: 0 0 0.38rem; color: var(--app-muted); font-size: var(--wb-font-caption, 0.75rem); }
 .header-error { margin: 0; padding: 0.35rem 0.9rem; color: var(--app-danger); background: color-mix(in srgb, var(--app-danger) 10%, transparent); font-size: 0.74rem; }
 
 .section-workspace { min-width: 0; min-height: 0; overflow: hidden; padding: 0.5rem; }
@@ -162,17 +162,17 @@
 .workflow-sidebar nav a { display: grid; grid-template-columns: 1.8rem minmax(0, 1fr); gap: 0.55rem; align-items: center; min-height: 3.25rem; border: 1px solid transparent; border-radius: 8px; padding: 0.42rem 0.5rem; color: var(--app-muted); text-decoration: none; }
 .workflow-sidebar nav a:hover { border-color: var(--app-border); background: var(--app-surface-soft); }
 .workflow-sidebar nav a.active { color: var(--app-accent-strong); border-color: color-mix(in srgb, var(--app-accent) 32%, var(--app-border)); background: var(--app-accent-soft); }
-.workflow-step-number { display: grid; width: 1.65rem; height: 1.65rem; place-items: center; border: 1px solid var(--app-border); border-radius: 999px; background: var(--app-surface-raised); font-size: 0.72rem; font-weight: 900; }
+.workflow-step-number { display: grid; width: 1.65rem; height: 1.65rem; place-items: center; border: 1px solid var(--app-border); border-radius: 999px; background: var(--app-surface-raised); font-size: var(--wb-font-caption, 0.75rem); font-weight: 900; }
 .workflow-sidebar a.active .workflow-step-number { color: #fff; border-color: var(--app-accent); background: var(--app-accent); }
 .workflow-step-copy { display: grid; min-width: 0; }
-.workflow-step-copy strong { color: inherit; font-size: 0.8rem; }
-.workflow-step-copy small { overflow: hidden; margin-top: 0.12rem; color: inherit; font-size: 0.64rem; text-overflow: ellipsis; white-space: nowrap; opacity: 0.78; }
+.workflow-step-copy strong { color: inherit; font-size: var(--wb-font-small, 0.8125rem); }
+.workflow-step-copy small { overflow: hidden; margin-top: 0.12rem; color: inherit; font-size: var(--wb-font-micro, 0.7rem); line-height: var(--wb-line-compact, 1.3); text-overflow: ellipsis; white-space: nowrap; opacity: 0.82; }
 .workflow-sidebar-footer { display: grid; gap: 0.65rem; border-top: 1px solid var(--app-border-soft); padding-top: 0.65rem; }
 .sidebar-preset .header-preset-select { grid-template-columns: 1fr; gap: 0.3rem; width: 100%; min-width: 0; }
 .sidebar-preset .header-preset-select select { width: 100%; min-height: 2.2rem; }
 .workflow-handoff { display: grid; gap: 0.22rem; border-top: 1px solid var(--app-border-soft); padding-top: 0.65rem; }
-.workflow-handoff span { color: var(--app-muted); font-size: 0.62rem; font-weight: 850; text-transform: uppercase; }
-.workflow-handoff a { color: var(--app-accent-strong); font-size: 0.75rem; font-weight: 800; text-decoration: none; }
+.workflow-handoff span { color: var(--app-muted); font-size: var(--wb-font-micro, 0.7rem); font-weight: 850; text-transform: uppercase; }
+.workflow-handoff a { color: var(--app-accent-strong); font-size: var(--wb-font-small, 0.8125rem); font-weight: 800; text-decoration: none; }
 .workflow-sidebar.collapsed-sidebar { padding-inline: 0.4rem; }
 .workflow-sidebar.collapsed-sidebar .workflow-sidebar-heading > div, .workflow-sidebar.collapsed-sidebar .workflow-step-copy, .workflow-sidebar.collapsed-sidebar .workflow-sidebar-footer { display: none; }
 .workflow-sidebar.collapsed-sidebar .workflow-sidebar-heading { justify-content: center; }
@@ -186,7 +186,7 @@
   border-top: 1px solid var(--app-border);
   color: var(--app-muted);
   background: var(--app-surface);
-  font-size: 0.65rem;
+  font-size: var(--wb-font-micro, 0.7rem);
 }
 .app-status-bar > div, .app-status-bar > a { display: flex; gap: 0.42rem; align-items: center; min-width: 0; border-right: 1px solid var(--app-border-soft); padding: 0.25rem 0.65rem; color: inherit; text-decoration: none; }
 .app-status-bar span, .app-status-bar strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -525,7 +525,7 @@ label.field-disabled .field-help-icon {
   color: #31584d;
   background: #edf6f3;
   cursor: help;
-  font-size: 0.66rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 900;
   line-height: 1;
   outline: none;
@@ -1185,7 +1185,7 @@ h2 {
   border-radius: 4px;
   color: #30443d;
   background: #dfe9e5;
-  font-size: 0.58rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 900;
   line-height: 1;
 }
@@ -1349,7 +1349,7 @@ h2 {
 
 .sidebar-section-eyebrow {
   color: #8da199;
-  font-size: 0.58rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 900;
   line-height: 1;
 }
@@ -1421,7 +1421,7 @@ h2 {
 .sidebar-group a small {
   overflow: hidden;
   color: inherit;
-  font-size: 0.66rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   opacity: 0.74;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1464,7 +1464,7 @@ h2 {
 .collapsed-sidebar .sidebar-section-label > span:last-child {
   max-width: none;
   overflow: visible;
-  font-size: 0.66rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   line-height: 1.12;
   text-align: left;
   text-overflow: clip;
@@ -1804,7 +1804,7 @@ h2 {
 
 .stage-card-metrics span {
   color: #60746c;
-  font-size: 0.66rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 850;
   text-transform: uppercase;
 }
@@ -1857,7 +1857,7 @@ h2 {
 
 .queue-progress-heading span {
   color: #60746c;
-  font-size: 0.66rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 850;
   text-transform: uppercase;
 }
@@ -1892,7 +1892,7 @@ h2 {
 
 .queue-progress-metrics span {
   color: #60746c;
-  font-size: 0.62rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 850;
   text-transform: uppercase;
 }
@@ -2369,7 +2369,7 @@ button.job-action-muted:hover:not(:disabled) {
 
 .ingestion-overall-progress-head span {
   color: #60746c;
-  font-size: 0.66rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 850;
   text-transform: uppercase;
 }
@@ -3450,7 +3450,7 @@ details[open] > summary.has-active-settings:not(.section-heading)::after {
 
 .konva-info-popover dt {
   color: #9fb5ad;
-  font-size: 0.64rem;
+  font-size: var(--wb-font-micro, 0.7rem);
   font-weight: 800;
   text-transform: uppercase;
 }
