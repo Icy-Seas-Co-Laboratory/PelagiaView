@@ -8,6 +8,8 @@
   export let imageClass = '';
   export let eager = false;
   export let invert = false;
+  /** Distance around the nearest image scroll viewport that should begin loading. */
+  export let preloadMargin = '1200px 800px';
 
   let element: HTMLImageElement;
   let objectUrl = '';
@@ -61,6 +63,10 @@
       visible = true;
       return;
     }
+    // ROI browsers scroll inside a bounded gallery rather than the document.
+    // Observing that gallery directly makes rootMargin useful for prefetching;
+    // a document-root observer remains available for images outside a gallery.
+    const scrollRoot = element.closest<HTMLElement>('[data-image-scroll-root]');
     observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) {
@@ -68,7 +74,7 @@
           observer?.disconnect();
         }
       },
-      { rootMargin: '240px' }
+      { root: scrollRoot, rootMargin: preloadMargin }
     );
     observer.observe(element);
   });

@@ -13,9 +13,7 @@
     gridMoveIndex,
     nextSelection,
     originalMoveIndex,
-    stickyClickSelection,
-    visibleGridRange,
-    visibleOriginalEntries
+    stickyClickSelection
   } from '$lib/utils/roiGallery';
   import {
     buildCurationTaxonomy,
@@ -59,7 +57,6 @@
   let gallery: HTMLDivElement;
   let galleryWidth = 900;
   let galleryHeight = 600;
-  let galleryScrollTop = 0;
   let selectionAnchor = '';
   let stickySelection = false;
   let stickyCandidate = '';
@@ -93,16 +90,18 @@
     : classificationJobs.slice(0, 1);
   $: galleryTileSize = fitTileSize(galleryScale, fitGalleryTileBasePx);
   $: galleryColumns = Math.max(1, Math.floor((galleryWidth - 16) / (galleryTileSize + 10)));
-  $: galleryRowHeight = galleryTileSize + 38;
-  $: galleryGridRange = visibleGridRange(items.length, galleryColumns, galleryRowHeight, galleryScrollTop, galleryHeight);
-  $: visibleGalleryItems = galleryScaleMode === 'fit' ? items.slice(galleryGridRange.start, galleryGridRange.end) : [];
+  $: galleryRowHeight = galleryTileSize + 46;
+  $: galleryTotalHeight = Math.ceil(items.length / galleryColumns) * galleryRowHeight;
+  // A curation page is deliberately bounded to 120 ROIs. Keep its tiles
+  // mounted so authenticated image blobs survive scrolling within the page.
+  $: renderedGalleryItems = galleryScaleMode === 'fit' ? items : [];
   $: originalGalleryLayout = buildOriginalGalleryLayout(
     items.map((item) => ({ width: item.roi_shape?.[1], height: item.roi_shape?.[0] })),
     galleryWidth,
     galleryScale
   );
-  $: visibleOriginalGalleryEntries = galleryScaleMode === 'original'
-    ? visibleOriginalEntries(originalGalleryLayout, galleryScrollTop, galleryHeight)
+  $: renderedOriginalGalleryEntries = galleryScaleMode === 'original'
+    ? originalGalleryLayout.entries
     : [];
   $: curationPreferenceSnapshot = {
     galleryScaleMode,
@@ -700,10 +699,10 @@
       <label class="gallery-sticky-selection"><input type="checkbox" bind:checked={stickySelection} /> Sticky selection</label>
       <div class="curation-selection-actions"><strong>{selected.size}</strong> selected <button on:click={() => selected=new Set(items.map((item)=>item.id))}>Select page</button><button on:click={() => selected=new Set()}>Clear</button></div>
     </header>
-    <div class="roi-gallery-viewport" bind:this={gallery} use:observeGallery on:scroll={() => (galleryScrollTop = gallery.scrollTop)} aria-label="Curatable ROI gallery">
+    <div class="roi-gallery-viewport" data-image-scroll-root bind:this={gallery} use:observeGallery aria-label="Curatable ROI gallery">
       {#if galleryScaleMode === 'original'}
         <div class="roi-gallery-spacer roi-gallery-original-spacer" style={`height:${originalGalleryLayout.height}px;width:${originalGalleryLayout.width}px`}>
-          {#each visibleOriginalGalleryEntries as placement (items[placement.index].id)}
+          {#each renderedOriginalGalleryEntries as placement (items[placement.index].id)}
             {@const item = items[placement.index]}
             <button
               class="roi-tile native-roi-tile original-roi-tile"
@@ -725,9 +724,9 @@
           {/each}
         </div>
       {:else}
-        <div class="roi-gallery-spacer" style={`height:${galleryGridRange.totalHeight}px`}>
-          <div class="native-roi-grid" style={`--gallery-tile-size:${galleryTileSize}px;--gallery-columns:${galleryColumns};transform:translateY(${Math.floor(galleryGridRange.start / galleryColumns) * galleryRowHeight}px)`}>
-            {#each visibleGalleryItems as item (item.id)}
+        <div class="roi-gallery-spacer" style={`height:${galleryTotalHeight}px`}>
+          <div class="native-roi-grid" style={`--gallery-tile-size:${galleryTileSize}px;--gallery-columns:${galleryColumns}`}>
+            {#each renderedGalleryItems as item (item.id)}
               <button class="roi-tile native-roi-tile" class:selected={selected.has(item.id)} class:focused={focusedId === item.id} class:verified={item.review_decision === 'verified'} class:needs-review={item.review_decision === 'needs_review'} class:disagreement={consensusSummary(item) === 'Evidence disagreement'} on:click={(event) => choose(item, event)}>
                 <span class="native-roi-image">{#if imageUrl(item)}<AuthenticatedImage src={imageUrl(item)} alt="ROI" imageClass="native-roi-image-element fit-roi-image" invert={$imageInversionEnabled} />{/if}{#if item.evidence_id}<small class="native-roi-score">ML {percent(item.confidence)}</small>{/if}</span>
                 <span class="native-roi-meta">{item.label_display_name || 'Unlabeled'}</span>

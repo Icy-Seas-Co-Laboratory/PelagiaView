@@ -23,9 +23,7 @@
   import { projectPreferenceKey } from '$lib/utils/preferences';
   import {
     buildOriginalGalleryLayout,
-    fitTileSize,
-    visibleGridRange,
-    visibleOriginalEntries
+    fitTileSize
   } from '$lib/utils/roiGallery';
   import { createZipBlob, downloadBlob } from '$lib/utils/zipDownload';
   import type { ImageInfoSpec, ImageLayer, ImageOverlayRect, ImageRenderSpec } from '$lib/utils/imageRenderSpec';
@@ -66,7 +64,6 @@
   let gallery: HTMLDivElement;
   let galleryWidth = 900;
   let galleryHeight = 600;
-  let galleryScrollTop = 0;
   let filterRailWidth = 272;
   let inspectorWidth = 320;
   let loading = false;
@@ -114,18 +111,20 @@
   $: visibleCount = detections.filter(hasRoiImageData).length;
   $: galleryTileSize = fitTileSize(galleryScale, fitGalleryTileBasePx);
   $: galleryColumns = Math.max(1, Math.floor((galleryWidth - 16) / (galleryTileSize + 10)));
-  $: galleryRowHeight = galleryTileSize + 38;
-  $: galleryGridRange = visibleGridRange(selectableBrowserDetections.length, galleryColumns, galleryRowHeight, galleryScrollTop, galleryHeight);
-  $: visibleBrowserDetections = galleryScaleMode === 'fit'
-    ? selectableBrowserDetections.slice(galleryGridRange.start, galleryGridRange.end)
+  $: galleryRowHeight = galleryTileSize + 46;
+  $: galleryTotalHeight = Math.ceil(selectableBrowserDetections.length / galleryColumns) * galleryRowHeight;
+  // Browser pages are bounded to 120 ROIs. Keeping the complete page mounted
+  // prevents AuthenticatedImage from revoking blobs as tiles leave the viewport.
+  $: renderedBrowserDetections = galleryScaleMode === 'fit'
+    ? selectableBrowserDetections
     : [];
   $: originalBrowserLayout = buildOriginalGalleryLayout(
     selectableBrowserDetections.map((detection) => ({ width: roiImageSourceWidth(detection), height: roiImageSourceHeight(detection) })),
     galleryWidth,
     galleryScale
   );
-  $: visibleOriginalBrowserEntries = galleryScaleMode === 'original'
-    ? visibleOriginalEntries(originalBrowserLayout, galleryScrollTop, galleryHeight)
+  $: renderedOriginalBrowserEntries = galleryScaleMode === 'original'
+    ? originalBrowserLayout.entries
     : [];
   $: detailFramePayloadKind = payloadKindForDisplay(detailFrameDisplayMode);
   $: frameModalPayloadKind = payloadKindForDisplay(frameModalDisplayMode);
@@ -238,7 +237,6 @@
     const serial = ++requestSerial;
     fullResolutionTileKeys = new Set();
     selectedBrowserRoiIds = new Set();
-    galleryScrollTop = 0;
     try {
       const response = await client.searchDetectionsPage(currentFilters(offset));
       const resultPage = response.detections ?? [];
@@ -1727,11 +1725,11 @@
 
     {#if error}<p class="form-error">{error}</p>{/if}
 
-    <div class="roi-gallery-viewport browser-gallery-viewport" bind:this={gallery} use:observeGallery on:scroll={() => (galleryScrollTop = gallery.scrollTop)}>
+    <div class="roi-gallery-viewport browser-gallery-viewport" data-image-scroll-root bind:this={gallery} use:observeGallery>
       {#if detections.length}
         {#if galleryScaleMode === 'original'}
           <div class="roi-gallery-spacer roi-gallery-original-spacer" style={`height:${originalBrowserLayout.height}px;width:${originalBrowserLayout.width}px`}>
-            {#each visibleOriginalBrowserEntries as placement (selectableBrowserDetections[placement.index].id)}
+            {#each renderedOriginalBrowserEntries as placement (selectableBrowserDetections[placement.index].id)}
               {@const detection = selectableBrowserDetections[placement.index]}
               <button class="roi-tile native-roi-tile original-roi-tile" class:selected={detection.id && selectedBrowserRoiIds.has(detection.id)} class:focused={selectedDetection?.id === detection.id} class:compact={!placement.showLabel} style={`left:${placement.x}px;top:${placement.y}px;width:${placement.width}px;height:${placement.height}px`} on:click={(event) => chooseBrowserRoi(detection, event)}>
                 <span class="native-roi-image original-roi-image" style={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`}>
@@ -1742,9 +1740,9 @@
             {/each}
           </div>
         {:else}
-          <div class="roi-gallery-spacer" style={`height:${galleryGridRange.totalHeight}px`}>
-            <div class="native-roi-grid browser-native-roi-grid" style={`--gallery-tile-size:${galleryTileSize}px;--gallery-columns:${galleryColumns};transform:translateY(${Math.floor(galleryGridRange.start / galleryColumns) * galleryRowHeight}px)`}>
-              {#each visibleBrowserDetections as detection (detection.id)}
+          <div class="roi-gallery-spacer" style={`height:${galleryTotalHeight}px`}>
+            <div class="native-roi-grid browser-native-roi-grid" style={`--gallery-tile-size:${galleryTileSize}px;--gallery-columns:${galleryColumns}`}>
+              {#each renderedBrowserDetections as detection (detection.id)}
                 <button class="roi-tile native-roi-tile browser-native-roi-tile" class:selected={detection.id && selectedBrowserRoiIds.has(detection.id)} class:focused={selectedDetection?.id === detection.id} on:click={(event) => chooseBrowserRoi(detection, event)}>
                   <span class="native-roi-image">{#if roiGalleryImageUrl(detection)}<AuthenticatedImage src={roiGalleryImageUrl(detection)} alt={roiImageAlt(detection)} imageClass="native-roi-image-element fit-roi-image" invert={invertImages} />{/if}</span>
                   <span class="native-roi-meta">Frame {detection.frame_index ?? '—'} · ROI {detection.roi_index ?? '—'}</span>

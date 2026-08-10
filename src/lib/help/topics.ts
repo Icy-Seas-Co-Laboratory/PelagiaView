@@ -1,12 +1,14 @@
 import maskAugmentation from './mask-augmentation.md?raw';
 import refinementModels from './refinement-models.md?raw';
 import roiStorage from './roi-storage.md?raw';
+import storagePolicy from './storage-policy.md?raw';
 import thresholdMethods from './threshold-methods.md?raw';
 
 export type HelpTopicId =
   | 'threshold-methods'
   | 'mask-augmentation'
   | 'roi-storage'
+  | 'storage-policy'
   | 'refinement-models';
 
 export type HelpTopic = {
@@ -30,6 +32,11 @@ export const helpTopics: Record<HelpTopicId, HelpTopic> = {
     id: 'roi-storage',
     title: 'ROI Payload Storage',
     markdown: roiStorage
+  },
+  'storage-policy': {
+    id: 'storage-policy',
+    title: 'Choosing an Image Storage Policy',
+    markdown: storagePolicy
   },
   'refinement-models': {
     id: 'refinement-models',

@@ -4,6 +4,7 @@
 
   export let title: string;
   export let markdown: string;
+  export let eyebrow = 'Help';
 
   const dispatch = createEventDispatcher<{ close: void }>();
   $: html = markdownToHtml(markdown);
@@ -19,7 +20,7 @@
   >
     <div class="help-modal-header">
       <div>
-        <p class="eyebrow">Help</p>
+        <p class="eyebrow">{eyebrow}</p>
         <h2>{title}</h2>
       </div>
       <button class="icon-button" type="button" aria-label="Close help" on:click={() => dispatch('close')}>×</button>

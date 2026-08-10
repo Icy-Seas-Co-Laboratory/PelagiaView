@@ -246,6 +246,8 @@ export type Job = {
   run_id?: string | null;
   asset_id?: string | null;
   worker_id?: string | null;
+  submitted_by_user_id?: string | null;
+  submitted_by_username?: string | null;
   priority?: number;
   attempts?: number;
   attempt_count?: number;
@@ -327,6 +329,24 @@ export type JobsClearResponse = {
   cancelled_count?: number | string | null;
   deleted_count?: number | string | null;
   dry_run?: boolean;
+  jobs?: Job[];
+};
+
+export type JobsControlOptions = {
+  action: 'pause' | 'resume';
+  run_id?: string | null;
+  asset_id?: string | null;
+  stage?: string[] | null;
+  ids?: string[] | null;
+  worker_id?: string | null;
+  reason?: string | null;
+};
+
+export type JobsControlResponse = {
+  matched_count?: number | string | null;
+  paused_count?: number | string | null;
+  pause_requested_count?: number | string | null;
+  resumed_count?: number | string | null;
   jobs?: Job[];
 };
 

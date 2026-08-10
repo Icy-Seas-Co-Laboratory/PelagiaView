@@ -4,6 +4,7 @@
 
   export let topic: HelpTopicId;
   export let label = 'Open help';
+  export let eyebrow = 'Help';
 
   let open = false;
   $: helpTopic = helpTopics[topic];
@@ -20,5 +21,5 @@
 </button>
 
 {#if open}
-  <HelpModal title={helpTopic.title} markdown={helpTopic.markdown} on:close={() => (open = false)} />
+  <HelpModal title={helpTopic.title} markdown={helpTopic.markdown} {eyebrow} on:close={() => (open = false)} />
 {/if}

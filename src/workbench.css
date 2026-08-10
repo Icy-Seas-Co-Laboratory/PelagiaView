@@ -615,8 +615,8 @@ summary:focus-visible {
   accent-color: var(--wb-accent);
 }
 
-/* Shared, bounded viewport for lightweight ROI tiles.  The spacer preserves
- * the full page geometry while only the visible tiles are mounted. */
+/* Shared, bounded viewport for ROI pages. Each page remains mounted so images
+ * already loaded during a scroll retain their authenticated blob URLs. */
 .roi-gallery-viewport {
   position: relative;
   min-height: 0;

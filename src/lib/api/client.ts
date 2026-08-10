@@ -34,6 +34,8 @@ import type {
   JobEvent,
   JobsClearOptions,
   JobsClearResponse,
+  JobsControlOptions,
+  JobsControlResponse,
   LogListOptions,
   JobsSummaryOptions,
   JobsSummaryResponse,
@@ -407,6 +409,10 @@ export class PelagiaApiClient {
 
   async clearJobs(options: JobsClearOptions = {}): Promise<JobsClearResponse> {
     return this.post<JobsClearResponse>('/jobs/clear', compact(options));
+  }
+
+  async controlJobs(options: JobsControlOptions): Promise<JobsControlResponse> {
+    return this.post<JobsControlResponse>('/jobs/control', compact(options));
   }
 
   async listJobEvents(options: number | JobEventListOptions = {}): Promise<JobEvent[]> {
