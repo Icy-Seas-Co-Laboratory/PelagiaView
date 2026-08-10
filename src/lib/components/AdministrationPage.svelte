@@ -23,7 +23,11 @@
   type ProjectStorageDraft = {
     frameEncoding: string;
     frameQuality: number;
-    roiEncoding: string;
+    smallRoiEncoding: string;
+    largeRoiEncoding: string;
+    largeRoiMinPixels: number;
+    roiQuality: number;
+    maskEncoding: string;
   };
 
   type AdministrationSection = 'overview' | 'projects' | 'people';
@@ -48,8 +52,13 @@
   let kvstorePathSuggestions: string[] = [];
   let projectFrameStorageEncoding = 'zstd';
   let projectFrameStorageQuality = 90;
-  let projectRoiStorageEncoding = 'auto';
+  let projectSmallRoiStorageEncoding = 'zstd';
+  let projectLargeRoiStorageEncoding = 'jpg';
+  let projectLargeRoiMinPixels = 50000;
+  let projectRoiStorageQuality = 90;
+  let projectMaskStorageEncoding = 'zstd';
   let imageCodecAvailability: CodecAvailability = {};
+  let allowedStorageEncodings = ['zstd', 'jpg', 'png', 'jxl', 'jxs', 'raw'];
   let creatingProject = false;
   let deletingProjectId = '';
   let projectStorageDrafts: Record<string, ProjectStorageDraft> = {};
@@ -84,8 +93,9 @@
   $: canCreateProject = Boolean($session.user?.is_admin);
   $: canListAllProjectUsers = Boolean($session.user?.is_admin);
   $: if (!canListAllProjectUsers && usersIncludeAllProjects) usersIncludeAllProjects = false;
-  $: frameStorageOptions = ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
-  $: roiStorageOptions = ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
+  $: frameStorageOptions = allowedStorageEncodings;
+  $: roiStorageOptions = allowedStorageEncodings;
+  $: maskStorageOptions = allowedStorageEncodings.filter((encoding) => ['zstd', 'png', 'raw'].includes(encoding));
   $: filteredProjects = projects.filter((project) => searchableProject(project).includes(projectSearch.trim().toLowerCase()));
   $: filteredUsers = users.filter((user) => searchableUser(user).includes(userSearch.trim().toLowerCase()));
   $: selectedProject = projects.find((project) => projectKeyForDraft(project) === selectedProjectKey) ?? null;
@@ -123,6 +133,13 @@
       client.listRawDirectory('.').catch(() => null)
     ]);
     imageCodecAvailability = capabilities?.supported?.image_codec_availability ?? {};
+    allowedStorageEncodings = capabilities?.supported?.image_storage_policy?.allowed_encodings
+      ?? capabilities?.supported?.image_encodings
+      ?? allowedStorageEncodings;
+    projectFrameStorageEncoding = availableFrameStorageEncoding(projectFrameStorageEncoding);
+    projectSmallRoiStorageEncoding = availableRoiStorageEncoding(projectSmallRoiStorageEncoding, 'zstd');
+    projectLargeRoiStorageEncoding = availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg');
+    projectMaskStorageEncoding = availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd');
     kvstoreDefaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
     rememberKvstoreSuggestions([
       kvstoreDefaultDirectory,
@@ -198,7 +215,11 @@
         await client.updateProjectStorageSettings(projectId, {
           frame_encoding: availableFrameStorageEncoding(projectFrameStorageEncoding),
           frame_quality: normalizeFrameStorageQuality(projectFrameStorageQuality),
-          roi_encoding: availableRoiStorageEncoding(projectRoiStorageEncoding)
+          small_roi_encoding: availableRoiStorageEncoding(projectSmallRoiStorageEncoding, 'zstd'),
+          large_roi_encoding: availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg'),
+          large_roi_min_pixels: normalizeRoiCutoff(projectLargeRoiMinPixels),
+          roi_quality: normalizeFrameStorageQuality(projectRoiStorageQuality),
+          mask_encoding: availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd')
         });
       }
       projectMessage = `Created project ${projectLabel(response.project)} with project storage defaults.`;
@@ -209,7 +230,11 @@
       kvstoreRootPathTouched = false;
       projectFrameStorageEncoding = 'zstd';
       projectFrameStorageQuality = 90;
-      projectRoiStorageEncoding = 'auto';
+      projectSmallRoiStorageEncoding = 'zstd';
+      projectLargeRoiStorageEncoding = 'jpg';
+      projectLargeRoiMinPixels = 50000;
+      projectRoiStorageQuality = 90;
+      projectMaskStorageEncoding = 'zstd';
       await refreshProjects();
       createProjectOpen = false;
     } catch (error) {
@@ -253,7 +278,11 @@
       const response = await client.updateProjectStorageSettings(projectId, {
         frame_encoding: availableFrameStorageEncoding(draft.frameEncoding),
         frame_quality: normalizeFrameStorageQuality(draft.frameQuality),
-        roi_encoding: availableRoiStorageEncoding(draft.roiEncoding)
+        small_roi_encoding: availableRoiStorageEncoding(draft.smallRoiEncoding, 'zstd'),
+        large_roi_encoding: availableRoiStorageEncoding(draft.largeRoiEncoding, 'jpg'),
+        large_roi_min_pixels: normalizeRoiCutoff(draft.largeRoiMinPixels),
+        roi_quality: normalizeFrameStorageQuality(draft.roiQuality),
+        mask_encoding: availableRoiStorageEncoding(draft.maskEncoding, 'zstd')
       });
       projectMessage = `Updated storage defaults for ${projectLabel(response.project ?? project)}.`;
       await refreshProjects();
@@ -403,7 +432,11 @@
       frameQuality: normalizeFrameStorageQuality(
         numberValue(effectiveFrame.quality) ?? numberValue(configuredFrame.quality) ?? projectLegacyFrameStorageQuality(project)
       ),
-      roiEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.encoding) ?? stringValue(configuredRoi.encoding) ?? 'auto')
+      smallRoiEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.small_encoding) ?? stringValue(configuredRoi.small_encoding) ?? 'zstd', 'zstd'),
+      largeRoiEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.large_encoding) ?? stringValue(configuredRoi.large_encoding) ?? 'jpg', 'jpg'),
+      largeRoiMinPixels: normalizeRoiCutoff(numberValue(effectiveRoi.large_min_pixels) ?? numberValue(configuredRoi.large_min_pixels) ?? 50000),
+      roiQuality: normalizeFrameStorageQuality(numberValue(effectiveRoi.quality) ?? numberValue(configuredRoi.quality) ?? 90),
+      maskEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.mask_encoding) ?? stringValue(configuredRoi.mask_encoding) ?? 'zstd', 'zstd')
     };
   }
 
@@ -439,29 +472,40 @@
   function projectStorageSourceLabel(project: ProjectSummary): string {
     const sources = projectStorageSettingsByKey[projectKeyForDraft(project)]?.effective?.sources;
     if (!sources) return 'Storage defaults';
-    return `Frame ${sources.frame_encoding ?? 'global'}, quality ${sources.frame_quality ?? 'global'}, ROI ${sources.roi_encoding ?? 'global'}`;
+    return `Frame ${sources.frame_encoding ?? 'global'}; small ROI ${sources.small_roi_encoding ?? 'global'}; large ROI ${sources.large_roi_encoding ?? 'global'}`;
   }
 
   function projectStorageChanged(project: ProjectSummary): boolean {
     const draft = projectStorageDrafts[projectKeyForDraft(project)] ?? projectStorageDraftFor(project);
     const current = projectStorageDraftFor(project);
-    return draft.frameEncoding !== current.frameEncoding || draft.frameQuality !== current.frameQuality || draft.roiEncoding !== current.roiEncoding;
+    return draft.frameEncoding !== current.frameEncoding
+      || draft.frameQuality !== current.frameQuality
+      || draft.smallRoiEncoding !== current.smallRoiEncoding
+      || draft.largeRoiEncoding !== current.largeRoiEncoding
+      || draft.largeRoiMinPixels !== current.largeRoiMinPixels
+      || draft.roiQuality !== current.roiQuality
+      || draft.maskEncoding !== current.maskEncoding;
   }
 
   function normalizeFrameStorageEncoding(value: string): string {
     return ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : 'zstd';
   }
 
-  function normalizeRoiStorageEncoding(value: string): string {
-    return ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : 'auto';
+  function normalizeRoiStorageEncoding(value: string, fallback = 'zstd'): string {
+    return ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : fallback;
   }
 
   function availableFrameStorageEncoding(value: string): string {
     return ensureAvailableCodec(normalizeFrameStorageEncoding(value), frameStorageOptions, imageCodecAvailability, 'zstd');
   }
 
-  function availableRoiStorageEncoding(value: string): string {
-    return ensureAvailableCodec(normalizeRoiStorageEncoding(value), roiStorageOptions, imageCodecAvailability, 'auto');
+  function availableRoiStorageEncoding(value: string, fallback: string): string {
+    const options = fallback === 'zstd' && ['zstd', 'png', 'raw'].includes(value) ? maskStorageOptions : roiStorageOptions;
+    return ensureAvailableCodec(normalizeRoiStorageEncoding(value, fallback), options, imageCodecAvailability, fallback);
+  }
+
+  function normalizeRoiCutoff(value: number): number {
+    return Math.max(1, Math.round(Number.isFinite(value) ? value : 50000));
   }
 
   function normalizeFrameStorageQuality(value: number): number {
@@ -611,8 +655,8 @@
     const warnings = new Set<string>();
     for (const project of items) {
       const storage = projectStorageDraftFor(project);
-      for (const encoding of [storage.frameEncoding, storage.roiEncoding]) {
-        if (encoding !== 'auto' && !codecAvailable(imageCodecAvailability, encoding)) {
+      for (const encoding of [storage.frameEncoding, storage.smallRoiEncoding, storage.largeRoiEncoding, storage.maskEncoding]) {
+        if (!codecAvailable(imageCodecAvailability, encoding)) {
           warnings.add(`${projectLabel(project)} uses unavailable ${codecLabel(encoding)} encoding.`);
         }
       }
@@ -640,7 +684,7 @@
     return ['jxl', 'jpg'].includes(encoding);
   }
 
-  function storageSource(project: ProjectSummary, field: 'frame_encoding' | 'frame_quality' | 'roi_encoding'): string {
+  function storageSource(project: ProjectSummary, field: 'frame_encoding' | 'frame_quality' | 'small_roi_encoding' | 'large_roi_encoding' | 'large_roi_min_pixels' | 'roi_quality' | 'mask_encoding'): string {
     const source = projectStorageSettingsByKey[projectKeyForDraft(project)]?.effective?.sources?.[field];
     if (!source || source === 'global') return 'System default';
     return source === 'project' ? 'Project override' : source;
@@ -737,7 +781,7 @@
             {@const draft = projectStorageDrafts[projectKeyForDraft(project)] ?? projectStorageDraftFor(project)}
             <button type="button" class:selected={selectedProjectKey === projectKeyForDraft(project)} on:click={() => selectProject(project)}>
               <span class="record-main"><strong>{project.project_name || project.name || project.project_key || project.id}</strong><small>{project.project_key || project.id}</small></span>
-              <span class="record-meta"><span class="status-pill {project.is_active === false ? 'bad' : 'good'}">{project.is_active === false ? 'Inactive' : projectRole(project)}</span><small>{codecLabel(draft.frameEncoding)} · {codecLabel(draft.roiEncoding)}</small></span>
+              <span class="record-meta"><span class="status-pill {project.is_active === false ? 'bad' : 'good'}">{project.is_active === false ? 'Inactive' : projectRole(project)}</span><small>{codecLabel(draft.smallRoiEncoding)} → {codecLabel(draft.largeRoiEncoding)}</small></span>
             </button>
           {:else}<p class="empty-state">{projectSearch ? 'No projects match this search.' : 'No projects are visible to this session.'}</p>{/each}
         </div>
@@ -759,11 +803,14 @@
             <div class="section-title"><div><span class="section-kicker">Storage policy</span><h3>Image defaults</h3><p>These values apply to newly stored images in this project.</p></div><HelpChip topic="storage-policy" label="Open the image storage policy guide" eyebrow="Documentation" /></div>
             <div class="storage-form">
               <label><span>Frame encoding <small>{storageSource(selectedProject, 'frame_encoding')}</small></span><select value={storageDraft.frameEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { frameEncoding: normalizeFrameStorageEncoding((event.currentTarget as HTMLSelectElement).value) })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each frameStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)} title={codecUnavailableTitle(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select></label>
-              <label><span>ROI encoding <small>{storageSource(selectedProject, 'roi_encoding')}</small></span><select value={storageDraft.roiEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { roiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value) })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)} title={codecUnavailableTitle(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select></label>
               <label><span>Frame quality (%) <small>{storageSource(selectedProject, 'frame_quality')}</small></span><input type="number" min="0" max="100" value={storageDraft.frameQuality} on:input={(event) => setProjectStorageDraft(selectedProject, { frameQuality: normalizeFrameStorageQuality(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={!frameQualityApplies(storageDraft.frameEncoding) || updatingProjectStorageFor === projectKeyForDraft(selectedProject)} />{#if !frameQualityApplies(storageDraft.frameEncoding)}<small>Not used by {codecLabel(storageDraft.frameEncoding)}.</small>{/if}</label>
+              <label><span>Small ROI codec <small>{storageSource(selectedProject, 'small_roi_encoding')}</small></span><select value={storageDraft.smallRoiEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { smallRoiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value, 'zstd') })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)} title={codecUnavailableTitle(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select></label>
+              <label><span>Large ROI codec <small>{storageSource(selectedProject, 'large_roi_encoding')}</small></span><select value={storageDraft.largeRoiEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { largeRoiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value, 'jpg') })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)} title={codecUnavailableTitle(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select></label>
+              <label><span>Large ROI cutoff (px²) <small>{storageSource(selectedProject, 'large_roi_min_pixels')}</small></span><input type="number" min="1" step="1000" value={storageDraft.largeRoiMinPixels} on:input={(event) => setProjectStorageDraft(selectedProject, { largeRoiMinPixels: normalizeRoiCutoff(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)} /><small>Uses padded crop width × height.</small></label>
+              <label><span>ROI quality (%) <small>{storageSource(selectedProject, 'roi_quality')}</small></span><input type="number" min="0" max="100" value={storageDraft.roiQuality} on:input={(event) => setProjectStorageDraft(selectedProject, { roiQuality: normalizeFrameStorageQuality(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={!frameQualityApplies(storageDraft.largeRoiEncoding) || updatingProjectStorageFor === projectKeyForDraft(selectedProject)} />{#if !frameQualityApplies(storageDraft.largeRoiEncoding)}<small>Not used by {codecLabel(storageDraft.largeRoiEncoding)}.</small>{/if}</label>
             </div>
             <button class="advanced-toggle" type="button" aria-expanded={projectStorageAdvanced} on:click={() => (projectStorageAdvanced = !projectStorageAdvanced)}>Advanced storage details <span>{projectStorageAdvanced ? '−' : '+'}</span></button>
-            {#if projectStorageAdvanced}<dl class="definition-grid storage-details"><div><dt>KV store</dt><dd>{selectedProject.kvstore_root_path || 'Managed by server configuration'}</dd></div><div><dt>Configuration provenance</dt><dd>{projectStorageSourceLabel(selectedProject)}</dd></div></dl>{/if}
+            {#if projectStorageAdvanced}<div class="storage-form storage-advanced"><label><span>Mask codec <small>{storageSource(selectedProject, 'mask_encoding')}</small></span><select value={storageDraft.maskEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { maskEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value, 'zstd') })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each maskStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select><small>Masks are always stored losslessly.</small></label></div><dl class="definition-grid storage-details"><div><dt>KV store</dt><dd>{selectedProject.kvstore_root_path || 'Managed by server configuration'}</dd></div><div><dt>Configuration provenance</dt><dd>{projectStorageSourceLabel(selectedProject)}</dd></div></dl>{/if}
             {#if projectStorageChanged(selectedProject)}<div class="save-bar"><span>Unsaved storage changes</span><div><button class="ghost" type="button" on:click={() => discardProjectStorage(selectedProject)} disabled={Boolean(updatingProjectStorageFor)}>Discard</button><button type="button" on:click={() => updateProjectFrameStorage(selectedProject)} disabled={Boolean(updatingProjectStorageFor)}>{updatingProjectStorageFor ? 'Saving…' : 'Save changes'}</button></div></div>{/if}
           </section>
 
@@ -809,7 +856,7 @@
 
 {#if createProjectOpen}
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-  <div class="admin-modal-layer"><section class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><header><div><span class="section-kicker">New project</span><h2 id="new-project-title">Create a project workspace</h2><p>Start with a stable identity and managed storage defaults.</p></div><button class="ghost dialog-close" type="button" aria-label="Close new project dialog" on:click={() => (createProjectOpen = false)}>×</button></header><div class="dialog-body"><section><h3>1. Identity</h3><div class="form-grid"><label>Project key<input bind:value={projectKey} placeholder="project-key" disabled={creatingProject} /><small>Stable identifier; treat as immutable after creation.</small></label><label>Display name<input bind:value={projectName} placeholder="Optional descriptive name" disabled={creatingProject} /></label><label class="span-2">Description<textarea bind:value={projectDescription} rows="3" placeholder="Scientific purpose or project scope" disabled={creatingProject}></textarea></label></div></section><section><h3>2. Storage</h3><div class="managed-storage"><strong>Managed project storage</strong><span>{kvstoreRootPath || joinKvstorePath(kvstoreDefaultDirectory, suggestedKvstoreName(projectKey))}</span><small>{kvstoreDiskHint() || 'Capacity information unavailable'}</small></div><details><summary>Use a custom path or codec policy</summary><div class="form-grid dialog-advanced"><label class="span-2">KV store root path<input bind:value={kvstoreRootPath} list="admin-kvstore-path-suggestions" autocomplete="off" on:input={updateTypedKvstoreRootPath} /><datalist id="admin-kvstore-path-suggestions">{#each kvstorePathSuggestions as path}<option value={path}></option>{/each}</datalist></label><label>Frame encoding<select bind:value={projectFrameStorageEncoding}>{#each frameStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>ROI encoding<select bind:value={projectRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Frame quality (%)<input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={!frameQualityApplies(projectFrameStorageEncoding)} /></label></div></details></section></div>{#if projectError}<p class="admin-notice form-error">{projectError}</p>{/if}<footer><button class="ghost" type="button" on:click={() => (createProjectOpen = false)} disabled={creatingProject}>Cancel</button><button type="button" on:click={createProject} disabled={creatingProject || !projectKey.trim()}>{creatingProject ? 'Creating…' : 'Create project'}</button></footer></section></div>
+  <div class="admin-modal-layer"><section class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><header><div><span class="section-kicker">New project</span><h2 id="new-project-title">Create a project workspace</h2><p>Start with a stable identity and managed storage defaults.</p></div><button class="ghost dialog-close" type="button" aria-label="Close new project dialog" on:click={() => (createProjectOpen = false)}>×</button></header><div class="dialog-body"><section><h3>1. Identity</h3><div class="form-grid"><label>Project key<input bind:value={projectKey} placeholder="project-key" disabled={creatingProject} /><small>Stable identifier; treat as immutable after creation.</small></label><label>Display name<input bind:value={projectName} placeholder="Optional descriptive name" disabled={creatingProject} /></label><label class="span-2">Description<textarea bind:value={projectDescription} rows="3" placeholder="Scientific purpose or project scope" disabled={creatingProject}></textarea></label></div></section><section><h3>2. Storage</h3><div class="managed-storage"><strong>Managed project storage</strong><span>{kvstoreRootPath || joinKvstorePath(kvstoreDefaultDirectory, suggestedKvstoreName(projectKey))}</span><small>{kvstoreDiskHint() || 'Capacity information unavailable'}</small></div><details><summary>Use a custom path or codec policy</summary><div class="form-grid dialog-advanced"><label class="span-2">KV store root path<input bind:value={kvstoreRootPath} list="admin-kvstore-path-suggestions" autocomplete="off" on:input={updateTypedKvstoreRootPath} /><datalist id="admin-kvstore-path-suggestions">{#each kvstorePathSuggestions as path}<option value={path}></option>{/each}</datalist></label><label>Frame encoding<select bind:value={projectFrameStorageEncoding}>{#each frameStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Frame quality (%)<input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={!frameQualityApplies(projectFrameStorageEncoding)} /></label><label>Small ROI codec<select bind:value={projectSmallRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Large ROI codec<select bind:value={projectLargeRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Large ROI cutoff (px²)<input type="number" min="1" step="1000" bind:value={projectLargeRoiMinPixels} /></label><label>ROI quality (%)<input type="number" min="0" max="100" bind:value={projectRoiStorageQuality} disabled={!frameQualityApplies(projectLargeRoiStorageEncoding)} /></label><label>Mask codec<select bind:value={projectMaskStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label></div></details></section></div>{#if projectError}<p class="admin-notice form-error">{projectError}</p>{/if}<footer><button class="ghost" type="button" on:click={() => (createProjectOpen = false)} disabled={creatingProject}>Cancel</button><button type="button" on:click={createProject} disabled={creatingProject || !projectKey.trim()}>{creatingProject ? 'Creating…' : 'Create project'}</button></footer></section></div>
 {/if}
 
 {#if createUserOpen}

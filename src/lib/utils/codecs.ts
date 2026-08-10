@@ -46,9 +46,13 @@ export function ensureAvailableCodec(
   fallback: string
 ): string {
   const normalized = normalizeCodec(codec);
-  return codecAvailable(availability, normalized)
-    ? normalized
-    : firstAvailableCodec(options, availability, fallback);
+  const normalizedOptions = uniqueCodecOptions(options);
+  if (normalizedOptions.includes(normalized) && codecAvailable(availability, normalized)) return normalized;
+  const normalizedFallback = normalizeCodec(fallback);
+  const safeFallback = normalizedOptions.includes(normalizedFallback)
+    ? normalizedFallback
+    : normalizedOptions[0] ?? normalizedFallback;
+  return firstAvailableCodec(normalizedOptions, availability, safeFallback);
 }
 
 export function codecUnavailableTitle(availability: CodecAvailability, codec: string): string | undefined {

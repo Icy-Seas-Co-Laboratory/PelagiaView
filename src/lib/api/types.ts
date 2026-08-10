@@ -117,6 +117,10 @@ export type SystemCapabilitiesResponse = {
   supported?: {
     image_encodings?: string[];
     image_codec_availability?: Record<string, boolean>;
+    image_storage_policy?: {
+      allowed_encodings?: string[];
+      unavailable_encodings?: string[];
+    };
     roi_encoding_options?: string[];
     [key: string]: unknown;
   };
@@ -143,7 +147,11 @@ export type ProjectSummary = {
 export type ProjectStorageSettingsRequest = {
   frame_encoding?: string | null;
   frame_quality?: number | null;
-  roi_encoding?: string | null;
+  small_roi_encoding?: string | null;
+  large_roi_encoding?: string | null;
+  large_roi_min_pixels?: number | null;
+  roi_quality?: number | null;
+  mask_encoding?: string | null;
 };
 
 export type ProjectStorageSettings = {
@@ -152,12 +160,20 @@ export type ProjectStorageSettings = {
     quality?: number | string | null;
   };
   roi?: {
-    encoding?: string | null;
+    small_encoding?: string | null;
+    large_encoding?: string | null;
+    large_min_pixels?: number | string | null;
+    quality?: number | string | null;
+    mask_encoding?: string | null;
   };
   sources?: {
     frame_encoding?: string | null;
     frame_quality?: string | null;
-    roi_encoding?: string | null;
+    small_roi_encoding?: string | null;
+    large_roi_encoding?: string | null;
+    large_roi_min_pixels?: string | null;
+    roi_quality?: string | null;
+    mask_encoding?: string | null;
   };
 };
 
@@ -998,8 +1014,12 @@ export type SegmentationOptions = {
   min_width_plus_height?: number | null;
   max_width_plus_height?: number | null;
   padding?: number | null;
-  roi_encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | 'auto' | null;
-  zstd_min_bytes?: number | null;
+  roi_encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | null;
+  small_roi_encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | null;
+  large_roi_encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | null;
+  large_roi_min_pixels?: number | null;
+  roi_quality?: number | null;
+  mask_encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | null;
   store_roi_payload_min_area?: number | null;
   store_roi_payload_min_width?: number | null;
   store_roi_payload_min_height?: number | null;

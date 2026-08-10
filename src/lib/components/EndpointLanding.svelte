@@ -41,11 +41,16 @@
   let kvstoreNameTouched = false;
   let projectFrameStorageEncoding = 'zstd';
   let projectFrameStorageQuality = 90;
-  let projectRoiStorageEncoding = 'auto';
+  let projectSmallRoiStorageEncoding = 'zstd';
+  let projectLargeRoiStorageEncoding = 'jpg';
+  let projectLargeRoiMinPixels = 50000;
+  let projectRoiStorageQuality = 90;
+  let projectMaskStorageEncoding = 'zstd';
   let imageCodecAvailability: CodecAvailability = {};
+  let allowedStorageEncodings = ['zstd', 'jpg', 'png', 'jxl', 'jxs', 'raw'];
 
-  $: frameStorageOptions = ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
-  $: roiStorageOptions = ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'];
+  $: frameStorageOptions = allowedStorageEncodings;
+  $: roiStorageOptions = allowedStorageEncodings;
   $: if (!kvstoreNameTouched) kvstoreName = suggestedKvstoreName(projectKey);
 
   async function connect() {
@@ -120,8 +125,13 @@
         client.listRawDirectory('.').catch(() => null)
       ]);
       imageCodecAvailability = capabilities?.supported?.image_codec_availability ?? {};
+      allowedStorageEncodings = capabilities?.supported?.image_storage_policy?.allowed_encodings
+        ?? capabilities?.supported?.image_encodings
+        ?? allowedStorageEncodings;
       projectFrameStorageEncoding = availableFrameStorageEncoding(projectFrameStorageEncoding);
-      projectRoiStorageEncoding = availableRoiStorageEncoding(projectRoiStorageEncoding);
+      projectSmallRoiStorageEncoding = availableRoiStorageEncoding(projectSmallRoiStorageEncoding, 'zstd');
+      projectLargeRoiStorageEncoding = availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg');
+      projectMaskStorageEncoding = availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd');
       const defaultDirectory = systemKvstoreDirectory(config) ?? kvstoreRootFromListing(roots) ?? '.';
       if (!kvstoreDirectoryTouched || !kvstoreDirectory.trim() || kvstoreDirectory === '.') {
         kvstoreDirectory = defaultDirectory;
@@ -149,7 +159,11 @@
       const storageSettings = {
         frame_encoding: availableFrameStorageEncoding(projectFrameStorageEncoding),
         frame_quality: normalizeFrameStorageQuality(projectFrameStorageQuality),
-        roi_encoding: availableRoiStorageEncoding(projectRoiStorageEncoding)
+        small_roi_encoding: availableRoiStorageEncoding(projectSmallRoiStorageEncoding, 'zstd'),
+        large_roi_encoding: availableRoiStorageEncoding(projectLargeRoiStorageEncoding, 'jpg'),
+        large_roi_min_pixels: Math.max(1, Math.round(projectLargeRoiMinPixels)),
+        roi_quality: normalizeFrameStorageQuality(projectRoiStorageQuality),
+        mask_encoding: availableRoiStorageEncoding(projectMaskStorageEncoding, 'zstd')
       };
       if (pendingLogin?.token) {
         const bootstrapClient = new PelagiaApiClient(pendingLogin.baseUrl, { token: pendingLogin.token });
@@ -236,16 +250,16 @@
     return ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : 'zstd';
   }
 
-  function normalizeRoiStorageEncoding(value: string): string {
-    return ['auto', 'zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : 'auto';
+  function normalizeRoiStorageEncoding(value: string, fallback = 'zstd'): string {
+    return ['zstd', 'jxl', 'jxs', 'jpg', 'png', 'raw'].includes(value) ? value : fallback;
   }
 
   function availableFrameStorageEncoding(value: string): string {
     return ensureAvailableCodec(normalizeFrameStorageEncoding(value), frameStorageOptions, imageCodecAvailability, 'zstd');
   }
 
-  function availableRoiStorageEncoding(value: string): string {
-    return ensureAvailableCodec(normalizeRoiStorageEncoding(value), roiStorageOptions, imageCodecAvailability, 'auto');
+  function availableRoiStorageEncoding(value: string, fallback: string): string {
+    return ensureAvailableCodec(normalizeRoiStorageEncoding(value, fallback), roiStorageOptions, imageCodecAvailability, fallback);
   }
 
   function normalizeFrameStorageQuality(value: number): number {
@@ -468,14 +482,32 @@
           <input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={creatingProject || $session.connecting} />
         </label>
         <label>
-          ROI encoding
-          <select bind:value={projectRoiStorageEncoding} disabled={creatingProject || $session.connecting}>
+          Small ROI codec
+          <select bind:value={projectSmallRoiStorageEncoding} disabled={creatingProject || $session.connecting}>
             {#each roiStorageOptions as encoding}
               <option
                 value={encoding}
                 disabled={!codecAvailable(imageCodecAvailability, encoding)}
                 title={codecUnavailableTitle(imageCodecAvailability, encoding)}
               >{encoding}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
+          Large ROI codec
+          <select bind:value={projectLargeRoiStorageEncoding} disabled={creatingProject || $session.connecting}>
+            {#each roiStorageOptions as encoding}
+              <option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{encoding}</option>
+            {/each}
+          </select>
+        </label>
+        <label>Large ROI cutoff (px²)<input type="number" min="1" step="1000" bind:value={projectLargeRoiMinPixels} disabled={creatingProject || $session.connecting} /></label>
+        <label>ROI quality (0–100)<input type="number" min="0" max="100" bind:value={projectRoiStorageQuality} disabled={creatingProject || $session.connecting} /></label>
+        <label>
+          Mask codec
+          <select bind:value={projectMaskStorageEncoding} disabled={creatingProject || $session.connecting}>
+            {#each roiStorageOptions as encoding}
+              <option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{encoding}</option>
             {/each}
           </select>
         </label>
