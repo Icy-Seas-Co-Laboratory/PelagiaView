@@ -63,6 +63,10 @@
           <small>{section.detail}</small>
         </a>
       {/each}
+      <a href={`${base}/registry/`}>
+        <strong>Registry</strong>
+        <small>Curate portable datasets</small>
+      </a>
     </nav>
 
     <div class="global-tools">

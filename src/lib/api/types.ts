@@ -1241,8 +1241,35 @@ export type CurationOptions = {
   models: OracleModelSummary[];
   default_model_ref: string;
   labels: CurationLabel[];
+  assets?: Array<{ id: string; filename: string; kind?: string }>;
+  registry_export?: { root_path: string; default_path: string };
   default_label_dictionary: CurationLabelDictionary;
   ownership: Record<string, string>;
+};
+
+export type RegistryDatasetSelection = {
+  asset_ids?: string[];
+  annotation_state?: 'all' | 'labeled' | 'unlabeled';
+  review_state?: 'all' | 'unreviewed' | 'verified' | 'rejected' | 'needs_review';
+  evidence_state?: 'all' | 'available' | 'missing' | 'disagreement';
+  min_area?: number | null;
+  max_area?: number | null;
+};
+
+export type RegistryDatasetPreview = {
+  matching_count: number;
+  selected_count: number;
+  payload_bytes: number;
+  estimated_sqlite_bytes: number;
+  subsample_ratio: number;
+};
+
+export type RegistryDatasetGenerationResponse = {
+  job: Job;
+  preview: RegistryDatasetPreview;
+  dataset_id: string;
+  revision_id: string;
+  destination_path: string;
 };
 
 export type ClassificationTargetSelection = {

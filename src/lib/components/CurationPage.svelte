@@ -3,6 +3,7 @@
   import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import InspectorImageControls from '$lib/components/InspectorImageControls.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
+  import RegistryDatasetExportModal from '$lib/components/RegistryDatasetExportModal.svelte';
   import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
   import { getClient, session } from '$lib/stores/session';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
@@ -64,6 +65,7 @@
   let curationInspectorWidth = 340;
   let curationInspectorShowScaleBar = true;
   let preferencesReady = false;
+  let registryExportOpen = false;
 
   $: selectedItems = items.filter((item) => selected.has(item.id));
   $: currentEvidence = (detail?.evidence?.[0] as Record<string, any> | undefined) ?? null;
@@ -687,6 +689,7 @@
   <main class="curation-gallery panel">
     <header class="curation-gallery-toolbar">
       <div><p class="eyebrow">Refined ROI workspace</p><h2>{total.toLocaleString()} curatable ROIs</h2></div>
+      <button class="registry-export-button" disabled={!options} on:click={() => (registryExportOpen = true)}>Create Registry dataset</button>
       <fieldset class="gallery-scale-modes" aria-label="Curation image scaling">
         <label><input type="radio" bind:group={galleryScaleMode} value="fit" />Fit tiles</label>
         <label><input type="radio" bind:group={galleryScaleMode} value="original" />Original pixels</label>
@@ -764,6 +767,10 @@
   </aside>
 </div>
 
+{#if registryExportOpen && options}
+  <RegistryDatasetExportModal {options} on:close={() => (registryExportOpen = false)} />
+{/if}
+
 {#if loading}<div class="loading-line"></div>{/if}
 {#if error}<div class="toast error">{error}<button on:click={()=>error=null}>×</button></div>{/if}
 {#if notice}<div class="toast notice">{notice}<button on:click={()=>notice=null}>×</button></div>{/if}
@@ -779,6 +786,7 @@
   .inference-panel{border-top:1px solid var(--border,#ccd);margin-top:16px;padding-top:8px}.model-heading{display:flex;align-items:center;justify-content:space-between}.model-heading span{font-size:9px;color:#28724d}.model-heading span.unavailable,.inference-panel small.unavailable{color:#a14f3d}.model-catalog{display:grid;gap:5px;max-height:230px;overflow:auto;margin:8px 0}.model-catalog article{padding:6px;border:1px solid var(--border,#ccd);border-left:3px solid #3f8b6c;border-radius:4px;background:color-mix(in srgb,var(--surface,#fff) 92%,var(--accent,#197997))}.model-catalog article.unavailable{border-left-color:#a14f3d;opacity:.82}.model-catalog article.selected{box-shadow:0 0 0 1px var(--accent,#197997)}.model-catalog header{display:flex;justify-content:space-between;gap:5px;font-size:10px}.model-catalog header span{font-size:8px;text-transform:uppercase;letter-spacing:.05em}.model-catalog p{margin:3px 0;font-size:9px;color:var(--muted,#667)}.model-catalog code{display:block;font-size:8px}.model-catalog small{display:-webkit-box;overflow:hidden;line-clamp:2;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:#a14f3d}.inference-panel>small{display:block;margin:7px 0;color:#28724d}.inference-actions{display:flex}.inference-actions button{flex:1}
   .classification-progress{display:grid;gap:6px;margin-top:9px}.classification-progress article{padding:7px;border:1px solid var(--border,#ccd);border-radius:5px;background:color-mix(in srgb,var(--surface,#fff) 94%,var(--accent,#197997))}.classification-progress article.failed{border-color:#a14f3d}.classification-progress header{display:flex;justify-content:space-between;text-transform:capitalize;font-size:10px}.classification-progress p{margin:5px 0;font-size:9px;line-height:1.3}.classification-progress small{display:block;margin:2px 0;color:var(--muted,#667)}.classification-progress-track{height:6px;margin-top:5px;border-radius:4px;overflow:hidden;background:var(--border,#d9e0e2)}.classification-progress-track i{display:block;height:100%;background:var(--accent,#197997);transition:width .25s ease}.classification-progress-track.indeterminate i{width:35%!important;animation:classification-pulse 1.2s ease-in-out infinite}.job-error{color:#a14f3d!important;overflow-wrap:anywhere}@keyframes classification-pulse{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
   .curation-gallery{display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:100%;min-height:0}.curation-gallery header,.curation-gallery footer{padding:12px;display:flex;align-items:center;justify-content:space-between;gap:10px}.curation-gallery header{border-bottom:1px solid var(--border,#ccd)}.curation-gallery footer{border-top:1px solid var(--border,#ccd)}
+  .registry-export-button{white-space:nowrap}
   :global(.inspect-image){width:100%;max-height:230px;object-fit:contain;background:#162329;border-radius:6px}.default-labels{width:100%;margin-top:6px}.curation-inspector>code{display:block;margin:5px 0 12px;overflow:hidden;text-overflow:ellipsis;font-size:9px}.curation-inspector section{border-top:1px solid var(--border,#ccd);padding:9px 0}.curation-inspector section.warning{border-left:4px solid #ba6b35;padding-left:8px}.current-label{font-size:18px}.review-actions{display:flex}.review-actions button{flex:1;padding:5px 2px}.evidence-bar{display:grid;grid-template-columns:minmax(80px,1fr)80px 45px;gap:5px;align-items:center;font-size:10px;margin:5px 0}.evidence-bar i{height:7px;background:var(--border,#d9e0e2);border-radius:4px;overflow:hidden}.evidence-bar i b{display:block;height:100%;background:var(--accent,#197997)}.evidence-bar em{text-align:right;font-style:normal}dl{display:grid;grid-template-columns:90px minmax(0,1fr);font-size:10px;margin:7px 0}dt{color:var(--muted,#667)}dd{margin:0;overflow-wrap:anywhere}.neighbor-list>div{display:grid;grid-template-columns:24px 1fr 42px;gap:4px;padding:4px 0;border-bottom:1px solid var(--border,#dde4e6);font-size:10px}.neighbor-list code{grid-column:2/4;overflow:hidden;text-overflow:ellipsis}.history{display:flex;justify-content:space-between;font-size:10px;padding:5px 0;border-bottom:1px solid var(--border,#dde4e6)}.empty{padding:25px;color:var(--muted,#667);text-align:center}
   .toast{position:fixed;right:20px;bottom:20px;z-index:10;padding:10px 12px;border-radius:6px;color:#fff;box-shadow:0 5px 20px #0004}.toast.error{background:#9b3d37}.toast.notice{background:#286f55}.toast button{border:0;background:transparent;color:inherit}.loading-line{position:fixed;left:0;right:0;top:0;height:3px;background:var(--accent,#197997);z-index:20}
   /* Typography floor: retain dense panels without reducing scientific context to fine print. */

@@ -2,6 +2,13 @@
 
 PelagiaView is a SvelteKit interface for working with a running Pelagia backend. It is intentionally focused on operational workflows: connecting to a backend session, monitoring queue and worker status, queueing processing work, exploring frames and ROIs, and reviewing logs/events.
 
+The integrated Registry workspace is available at `/registry/`. It uses the
+same Pelagia session and active project as the rest of the application and
+calls Pelagia's `/registry/*` API rather than a separate Registry backend.
+PelagiaView is the canonical Registry UI; the standalone Registry repository is
+the lightweight SQLite-only deployment and should receive deliberate ports of
+this interface rather than evolving an independent networked UI.
+
 ## Requirements
 
 - Node.js 18 or newer

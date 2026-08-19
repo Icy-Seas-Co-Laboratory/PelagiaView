@@ -403,6 +403,11 @@ export class PelagiaApiClient {
     return response.jobs ?? [];
   }
 
+  async getJob(jobId: string): Promise<Job> {
+    const response = await this.get<{ job: Job }>(`/jobs/${encodeURIComponent(jobId)}`, {}, 0, { cache: 'no-store' });
+    return response.job;
+  }
+
   async jobsSummary(options: JobsSummaryOptions = {}): Promise<JobsSummaryResponse> {
     return this.get<JobsSummaryResponse>('/jobs/summary', options, 0, { cache: 'no-store' });
   }
@@ -903,6 +908,22 @@ export class PelagiaApiClient {
     selection?: ClassificationTargetSelection | null;
   }): Promise<ClassificationTargetPreview> {
     return this.post('/curation/classification-targets/preview', compact(body));
+  }
+
+  async previewRegistryDataset(body: {
+    selection: import('./types').RegistryDatasetSelection;
+    subsample_ratio: number;
+  }): Promise<import('./types').RegistryDatasetPreview> {
+    return this.post('/curation/registry-datasets/preview', body);
+  }
+
+  async generateRegistryDataset(body: {
+    name: string;
+    path: string;
+    selection: import('./types').RegistryDatasetSelection;
+    subsample_ratio: number;
+  }): Promise<import('./types').RegistryDatasetGenerationResponse> {
+    return this.post('/curation/registry-datasets', body);
   }
 
   async listRawDirectory(path = '.'): Promise<DirectoryListing> {
