@@ -11,6 +11,7 @@ import type {
   Item,
   ItemEvidence,
   Label,
+  RegistryWorkspace,
   VocabularySummary
 } from './types';
 
@@ -53,6 +54,8 @@ export const api = {
     await waitForTransfer(queued.job, onProgress);
     return client().get<Dataset>(route('/api/dataset'));
   },
+  workspaces: async () => (await client().get<{ workspaces: RegistryWorkspace[] }>(route('/api/workspaces'))).workspaces,
+  activateWorkspace: (workspaceId: string) => client().post<Dataset>(route(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`)),
   dataset: () => client().get<Dataset>(route('/api/dataset')),
   datasetDetails: () => client().get<DatasetDetails>(route('/api/dataset/details')),
   exportDataset: async (path: string, replace_source = false, onProgress?: (message: string) => void) => {

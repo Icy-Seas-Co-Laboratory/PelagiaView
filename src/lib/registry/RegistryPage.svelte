@@ -2,13 +2,17 @@
   import { onMount } from 'svelte';
   import { api, registryUrl } from '$lib/registry/api';
   import { gridMoveIndex, nextSelection, stickyClickSelection } from '$lib/registry/selection';
-  import type { CoreVocabulary, Dataset, DatasetDetails, DescriptorTag, EvidenceSource, FileListing, ImportPreview, ImportResult, InferenceSourceDetail, Item, ItemEvidence, Label, VocabularyNode, VocabularySummary } from '$lib/registry/types';
+  import type { CoreVocabulary, Dataset, DatasetDetails, DescriptorTag, EvidenceSource, FileListing, ImportPreview, ImportResult, InferenceSourceDetail, Item, ItemEvidence, Label, RegistryWorkspace, VocabularyNode, VocabularySummary } from '$lib/registry/types';
   import { imageDimensions, itemCalibration, type ViewMode } from '$lib/registry/viewModes';
   import { buildOriginalLayout, originalMoveIndex, visibleOriginalEntries } from '$lib/registry/originalLayout';
   import { DIGIT_SHORTCUTS, shortcutLabel, withDefaultShortcuts } from '$lib/registry/preferences';
   import { assignmentOptions, type AssignmentOption } from '$lib/registry/assignmentOptions';
   import { clampPanelWidth, panelKeyDelta, PANEL_DEFAULT_WIDTH, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, type PanelSide } from '$lib/registry/panelSizing';
   import DescriptorPicker from '$lib/registry/DescriptorPicker.svelte';
+  import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
+  import HeaderImageInversionToggle from '$lib/components/HeaderImageInversionToggle.svelte';
+  import { imageInversionEnabled } from '$lib/stores/displayPreferences';
+  import { AuthenticatedImageCache } from '$lib/utils/authenticatedImageCache';
 
   let dataset: Dataset | null = null;
   let labels: Label[] = [];
@@ -23,7 +27,6 @@
   let labelFilter = '';
   let sort = 'original';
   let randomSeed = 'registry';
-  let search = '';
   let page = 0;
   const pageSize = 500;
   let tileSize = 128;
@@ -58,8 +61,10 @@
   let importDuplicateActions: Record<string,'skip'|'merge'> = {};
   let importDuplicatePage = 0;
   const importDuplicatePageSize = 100;
+  const defaultCanvasColors = { light: '#eef3f5', dark: '#111b1f' } as const;
   let theme: 'light' | 'dark' = 'light';
-  let canvasColor = '#111b1f';
+  let canvasColor: string = defaultCanvasColors.light;
+  let canvasColorCustom = false;
   let stickySelection = false;
   let stickyCandidate: string | undefined;
   let leftPanelWidth: number = PANEL_DEFAULT_WIDTH.left;
@@ -95,6 +100,10 @@
   let browseReference = '';
   let similarityMinimum = 0.7;
   let saving = false;
+  let workspaces: RegistryWorkspace[] = [];
+  let workspacesLoading = true;
+  let workspaceOpening = '';
+  const thumbnailCache = new AuthenticatedImageCache();
 
   $: activeLabels = labels.filter((label) => !label.deprecated_at);
   $: columns = Math.max(1, Math.floor((viewportWidth - 16) / (tileSize + 10)));
@@ -230,7 +239,10 @@
     try {
       const saved = JSON.parse(localStorage.getItem('pelagia.registry.preferences') || '{}');
       theme = saved.theme === 'dark' ? 'dark' : 'light';
-      canvasColor = /^#[0-9a-f]{6}$/i.test(saved.canvasColor) ? saved.canvasColor : '#111b1f';
+      const savedCanvasColor = /^#[0-9a-f]{6}$/i.test(saved.canvasColor) ? saved.canvasColor.toLowerCase() : '';
+      canvasColorCustom = !!savedCanvasColor && (saved.canvasColorMode === 'custom'
+        || (saved.canvasColorMode === undefined && savedCanvasColor !== defaultCanvasColors.dark));
+      canvasColor = canvasColorCustom ? savedCanvasColor : defaultCanvasColors[theme];
       stickySelection = saved.stickySelection === true;
       const viewport = window.innerWidth;
       const sizingViewport = viewport <= 900 ? Infinity : viewport;
@@ -241,12 +253,14 @@
       shortcutLabelIds = saved.shortcutLabelIds && typeof saved.shortcutLabelIds === 'object' ? saved.shortcutLabelIds : {};
     } catch {
       shortcutLabelIds = {}; stickySelection = false;
+      canvasColorCustom = false; canvasColor = defaultCanvasColors[theme];
       leftPanelWidth = PANEL_DEFAULT_WIDTH.left; rightPanelWidth = PANEL_DEFAULT_WIDTH.right;
     }
   }
 
   function savePreferences() {
-    localStorage.setItem('pelagia.registry.preferences', JSON.stringify({ theme, canvasColor, stickySelection, leftPanelWidth, rightPanelWidth, shortcutLabelIds }));
+    localStorage.setItem('pelagia.registry.preferences', JSON.stringify({ theme, canvasColor,
+      canvasColorMode: canvasColorCustom ? 'custom' : 'theme', stickySelection, leftPanelWidth, rightPanelWidth, shortcutLabelIds }));
   }
 
   function panelWidth(side: PanelSide) { return side === 'left' ? leftPanelWidth : rightPanelWidth; }
@@ -312,10 +326,21 @@
     savePreferences();
   }
 
-  function setTheme(value: 'light' | 'dark') { theme = value; savePreferences(); }
+  function setTheme(value: 'light' | 'dark') {
+    theme = value;
+    if (!canvasColorCustom) canvasColor = defaultCanvasColors[value];
+    savePreferences();
+  }
 
   function setCanvasColor(event: Event) {
     canvasColor = (event.currentTarget as HTMLInputElement).value;
+    canvasColorCustom = true;
+    savePreferences();
+  }
+
+  function resetCanvasColor() {
+    canvasColorCustom = false;
+    canvasColor = defaultCanvasColors[theme];
     savePreferences();
   }
 
@@ -328,7 +353,6 @@
   function params() {
     const p = new URLSearchParams({ limit: String(pageSize), offset: String(page * pageSize), annotation_state: annotationState, review: reviewState, sort, random_seed: randomSeed });
     if (labelFilter) p.append('label_id', labelFilter);
-    if (search.trim()) p.set('search', search.trim());
     if (evidenceSource) p.set('evidence_source', evidenceSource);
     if (mlState !== 'all') p.set('ml_state', mlState);
     if (confidenceMin !== '') p.set('confidence_min', confidenceMin);
@@ -340,11 +364,22 @@
     return p;
   }
 
-  async function openDataset() {
-    if (!path.trim()) return;
-    loading = true; error = ''; notice = '';
-    try {
-      const openedDataset = await api.open(path.trim(), (message) => notice = message);
+  function workspaceIdFromUrl() {
+    return new URL(window.location.href).searchParams.get('workspace')?.trim() || '';
+  }
+
+  function updateWorkspaceUrl(workspaceId: string | null, mode: 'push' | 'replace' = 'push') {
+    const url = new URL(window.location.href);
+    if (workspaceId) url.searchParams.set('workspace', workspaceId);
+    else url.searchParams.delete('workspace');
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl === currentUrl) return;
+    window.history[mode === 'replace' ? 'replaceState' : 'pushState'](window.history.state, '', nextUrl);
+  }
+
+  async function hydrateWorkspace(openedDataset: Dataset) {
+      if (dataset?.workspace_id !== openedDataset.workspace_id) thumbnailCache.clear();
       const [openedLabels, openedCatalog, openedTags, openedEvidence] = await Promise.all([api.labels(), api.vocabularies(), api.tags(), api.evidenceSources()]);
       let savedVocabularyKeys: string[] = [];
       try {
@@ -362,8 +397,73 @@
       expandedTaxonomy = new Set(['dataset-labels', ...openedVocabularies.flatMap((catalog) => [`vocabulary:${catalog.catalog_key}`, ...catalog.taxonomy.nodes.map((node) => `${catalog.catalog_key}:${node.id}`)])]);
       shortcutLabelIds = withDefaultShortcuts(openedLabels, shortcutLabelIds); savePreferences();
       page = 0; await loadItems();
+  }
+
+  async function loadWorkspaces(): Promise<RegistryWorkspace[]> {
+    workspacesLoading = true;
+    try {
+      workspaces = await api.workspaces();
+      return workspaces;
+    }
+    catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+      return [];
+    }
+    finally { workspacesLoading = false; }
+  }
+
+  async function openDataset() {
+    if (!path.trim()) return;
+    loading = true; error = ''; notice = '';
+    try {
+      const openedDataset = await api.open(path.trim(), (message) => notice = message);
+      await hydrateWorkspace(openedDataset);
+      if (openedDataset.workspace_id) updateWorkspaceUrl(openedDataset.workspace_id);
     } catch (e) { error = e instanceof Error ? e.message : String(e); }
     finally { loading = false; }
+  }
+
+  async function openWorkspace(workspace: RegistryWorkspace, updateHistory = true) {
+    workspaceOpening = workspace.workspace_id; error = ''; notice = '';
+    try {
+      const openedDataset = workspace.is_active ? await api.dataset() : await api.activateWorkspace(workspace.workspace_id);
+      await hydrateWorkspace(openedDataset);
+      if (updateHistory) updateWorkspaceUrl(workspace.workspace_id);
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    finally { workspaceOpening = ''; }
+  }
+
+  function closeWorkspace(updateHistory = true, refreshWorkspaces = true) {
+    thumbnailCache.clear();
+    dataset = null; items = []; labels = []; selected = new Set(); detail = null;
+    if (updateHistory) updateWorkspaceUrl(null);
+    if (refreshWorkspaces) void loadWorkspaces();
+  }
+
+  async function openWorkspaceFromUrl() {
+    const workspaceId = workspaceIdFromUrl();
+    const availableWorkspaces = await loadWorkspaces();
+    if (!workspaceId) return;
+    const workspace = availableWorkspaces.find((candidate) => candidate.workspace_id === workspaceId);
+    if (!workspace) {
+      error = 'This Registry workspace is unavailable in the current project or user scope.';
+      return;
+    }
+    await openWorkspace(workspace, false);
+  }
+
+  async function handleWorkspaceNavigation() {
+    const workspaceId = workspaceIdFromUrl();
+    if (workspaceId && dataset?.workspace_id === workspaceId) return;
+    if (!workspaceId) {
+      if (dataset) closeWorkspace(false);
+      return;
+    }
+
+    // The URL is authoritative during browser navigation; never leave a different
+    // workspace visible under the requested workspace identifier.
+    if (dataset) closeWorkspace(false, false);
+    await openWorkspaceFromUrl();
   }
 
   async function saveDataset(replaceSource = false) {
@@ -387,7 +487,7 @@
     error = '';
     try {
       await api.purgeDataset();
-      dataset = null; items = []; labels = []; selected = new Set();
+      closeWorkspace();
       notice = 'Loaded Registry data was purged from PostgreSQL. The source SQLite file was not changed.';
     } catch (e) { error = e instanceof Error ? e.message : String(e); }
   }
@@ -419,6 +519,12 @@
 
   function humanize(value: string) {
     return value.replace(/_/g,' ').replace(/\b\w/g,(letter)=>letter.toUpperCase());
+  }
+
+  function formatDate(value?: string) {
+    if (!value) return 'Unknown';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString();
   }
 
   function detailValue(value: unknown) {
@@ -754,7 +860,7 @@
 
   async function createLabel() {
     if (!newLabel.trim()) return;
-    try { await api.addLabel({ name: newLabel.trim(), display_name: newLabel.trim() }); newLabel = ''; labels = await api.labels(); }
+    try { await api.addLabel({ name: newLabel.trim(), display_name: newLabel.trim() }); newLabel = ''; await refresh(); }
     catch (e) { error = e instanceof Error ? e.message : String(e); }
   }
 
@@ -804,11 +910,15 @@
     loadPreferences();
     window.addEventListener('keydown', keydown);
     window.addEventListener('resize', fitPanelsToViewport);
+    window.addEventListener('popstate', handleWorkspaceNavigation);
     const stored = localStorage.getItem('pelagia.registry.lastPath');
     if (stored) path = stored;
+    void openWorkspaceFromUrl();
     return () => {
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('resize', fitPanelsToViewport);
+      window.removeEventListener('popstate', handleWorkspaceNavigation);
+      thumbnailCache.clear();
       finishPanelResize();
     };
   });
@@ -823,18 +933,51 @@
 
 {#if !dataset}
   <main class="open-screen">
-    <section class="open-panel">
-      <img class="brand-logo" src="/brand/pelagia_logo.png" alt="Registry" />
-      <p>Load an Oracle Dataset SQLite revision into a project-scoped PostgreSQL curation workspace.</p>
-      <label for="dataset-path">Dataset path</label>
-      <div class="open-row">
-        <input id="dataset-path" bind:value={path} on:keydown={(e) => e.key === 'Enter' && openDataset()} placeholder="/path/to/dataset.sqlite" spellcheck="false" />
-        <button on:click={() => browseFiles(undefined,'open')}>Browse…</button>
-        <button class="primary" on:click={() => { localStorage.setItem('pelagia.registry.lastPath', path); openDataset(); }} disabled={loading}>{loading ? 'Opening…' : 'Open dataset'}</button>
-      </div>
-      <small>The source remains unchanged until you explicitly save a new revision back to SQLite.</small>
-      {#if error}<div class="message error">{error}</div>{/if}
-    </section>
+    <div class="landing">
+      <section class="open-panel">
+        <img class="brand-logo" src="/brand/pelagia_logo.png" alt="Registry" />
+        <p>Open a project workspace or load an Oracle Dataset SQLite revision into PostgreSQL.</p>
+        <label for="dataset-path">Load SQLite dataset</label>
+        <div class="open-row">
+          <input id="dataset-path" bind:value={path} on:keydown={(e) => e.key === 'Enter' && openDataset()} placeholder="/path/to/dataset.sqlite" spellcheck="false" />
+          <button on:click={() => browseFiles(undefined,'open')}>Browse…</button>
+          <button class="primary" on:click={() => { localStorage.setItem('pelagia.registry.lastPath', path); openDataset(); }} disabled={loading}>{loading ? 'Opening…' : 'Load dataset'}</button>
+        </div>
+        <small>The source remains unchanged until you explicitly save a new revision back to SQLite.</small>
+        {#if error}<div class="message error">{error}</div>{/if}
+      </section>
+      <section class="workspace-panel" aria-busy={workspacesLoading}>
+        <div class="workspace-panel-heading">
+          <div><span>POSTGRESQL</span><h1>Available workspaces</h1></div>
+          <button on:click={loadWorkspaces} disabled={workspacesLoading}>{workspacesLoading ? 'Refreshing…' : 'Refresh'}</button>
+        </div>
+        {#if workspacesLoading && !workspaces.length}
+          <div class="workspace-empty">Loading workspaces…</div>
+        {:else if !workspaces.length}
+          <div class="workspace-empty">No workspaces are loaded for this project and user yet.</div>
+        {:else}
+          <div class="workspace-list">
+            {#each workspaces as workspace (workspace.workspace_id)}
+              <article class:active={workspace.is_active} class="workspace-card">
+                <div class="workspace-card-main">
+                  <div class="workspace-card-title">
+                    <strong>{workspace.title || workspace.name}</strong>
+                    {#if workspace.is_active}<span class="badge active">Active</span>{/if}
+                    {#if workspace.dirty_at}<span class="badge dirty">Unsaved changes</span>{/if}
+                  </div>
+                  <div class="workspace-meta">{humanize(workspace.dataset_type)} · {workspace.lifecycle} · {workspace.item_count.toLocaleString()} ROIs · {workspace.labeled_count.toLocaleString()} labeled</div>
+                  <div class="workspace-source" title={workspace.source_path}>{workspace.source_path}</div>
+                  <div class="workspace-revision">Revision {workspace.revision_id.slice(0, 12)} · loaded {formatDate(workspace.loaded_at)}</div>
+                </div>
+                <button class="primary" on:click={() => openWorkspace(workspace)} disabled={!!workspaceOpening || loading}>
+                  {workspaceOpening === workspace.workspace_id ? 'Opening…' : 'Open workspace'}
+                </button>
+              </article>
+            {/each}
+          </div>
+        {/if}
+      </section>
+    </div>
     {#if fileBrowserOpen}
       <div class="browser-backdrop" role="presentation" on:click={(event) => event.currentTarget === event.target && (fileBrowserOpen = false)}>
         <div class="file-browser" role="dialog" aria-modal="true" aria-labelledby="file-browser-title" tabindex="-1">
@@ -869,13 +1012,15 @@
         <div title="ROIs needing review"><strong>{dataset.stats.needs_review.toLocaleString()}</strong><span>Review</span></div>
         <div title="Active labels"><strong>{dataset.stats.active_labels.toLocaleString()}</strong><span>Labels</span></div>
       </div>
-      <div class="search"><input aria-label="Search items" bind:value={search} on:keydown={(e) => e.key === 'Enter' && (page=0,loadItems())} placeholder="Search source key or ID" /><button on:click={() => {page=0;loadItems()}}>Search</button></div>
       <button class="quiet information-button" on:click={openInformation}>ⓘ Details</button>
       <button class="quiet preferences-button" on:click={() => preferencesOpen = true}>⚙ Preferences</button>
       <button class="quiet" disabled={saving} on:click={() => saveDataset(false)}>{saving ? 'Saving…' : 'Save as…'}</button>
-      <button class="quiet" disabled={saving} on:click={() => saveDataset(true)}>Save source</button>
+      <div class:dirty={dataset.dirty} class="save-state" title={dataset.dirty ? 'This workspace has changes that have not been saved to SQLite.' : 'All workspace changes are saved to SQLite.'}>
+        <span role="status" aria-live="polite">{dataset.dirty ? 'Unsaved changes' : 'Saved'}</span>
+        <button disabled={saving || !dataset.dirty} on:click={() => saveDataset(true)}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
       <button class="quiet" on:click={purgeDataset}>Purge</button>
-      <button class="quiet" on:click={() => dataset = null}>Close</button>
+      <button class="quiet" on:click={() => closeWorkspace()}>Close</button>
     </header>
 
     <aside class="filters">
@@ -922,15 +1067,15 @@
       <div class="gallery-tools">
         <div>{#if browseMode}<button class="browse-mode" on:click={clearEvidenceBrowse}>× {browseMode==='knn'?'Recorded KNN':'Embedding similarity'}</button>{/if}{#if stickySelection}<span class="sticky-indicator" title="First click focuses; second click selects">Sticky selection</span>{/if}<strong>{total.toLocaleString()}</strong> matching <span class="divider">·</span> page {page+1} of {Math.max(1,Math.ceil(total/pageSize))}</div>
         <fieldset class="view-modes" aria-label="Image view mode"><label><input type="radio" bind:group={viewMode} value="fit" />Fit tile</label><label><input type="radio" bind:group={viewMode} value="original" />Original pixels</label><label title={physicalReference ? `Relative physical scale; dataset median calibration ${physicalReference.toFixed(3)} µm/pixel (${dataset.physical_scale.calibrated_items}/${dataset.physical_scale.total_items} calibrated)` : 'Unavailable: this dataset has no pixel-to-length calibration metadata'}><input type="radio" bind:group={viewMode} value="physical" disabled={!physicalReference} />Physical scale</label><label><input type="radio" bind:group={viewMode} value="normalize-height" />Normalize height</label></fieldset>
-        <div class="tool-group">{#if browseMode==='similarity'}<label>Minimum <input class="metric-input" type="number" min="-1" max="1" step="0.05" bind:value={similarityMinimum} on:change={() => {page=0;loadItems()}} /></label>{:else}<label>Sort <select bind:value={sort} on:change={loadItems}><option value="original">Dataset order</option><option value="annotation">Annotation state</option><option value="label">Label</option><optgroup label="ROI canvas size"><option value="image_area_asc">Pixel area · smallest</option><option value="image_area_desc">Pixel area · largest</option><option value="longest_side_asc">Longest side · shortest</option><option value="longest_side_desc">Longest side · longest</option></optgroup>{#if evidenceSource}<optgroup label="ML evidence"><option value="ml_confidence_desc">Confidence · highest</option><option value="ml_confidence_asc">Confidence · lowest</option><option value="ml_knn_desc">KNN similarity · highest</option><option value="ml_knn_asc">KNN similarity · lowest</option><option value="ml_agreement_asc">KNN agreement · lowest</option><option value="ml_prototype_desc">Prototype similarity · highest</option><option value="ml_prototype_margin_asc">Prototype margin · lowest</option></optgroup>{/if}<option value="random">Random</option></select></label>{/if}{#if sort==='random'&&!browseMode}<input class="seed" aria-label="Random seed" bind:value={randomSeed} on:change={loadItems} />{/if}<label class="scale-control">Scale <input aria-label="Relative gallery scale" type="range" min="64" max="256" step="16" bind:value={tileSize} /><output>{scaleFactor.toFixed(1)}×</output></label></div>
+        <div class="tool-group"><HeaderImageInversionToggle />{#if browseMode==='similarity'}<label>Minimum <input class="metric-input" type="number" min="-1" max="1" step="0.05" bind:value={similarityMinimum} on:change={() => {page=0;loadItems()}} /></label>{:else}<label>Sort <select bind:value={sort} on:change={loadItems}><option value="original">Dataset order</option><option value="annotation">Annotation state</option><option value="label">Label</option><optgroup label="ROI canvas size"><option value="image_area_asc">Pixel area · smallest</option><option value="image_area_desc">Pixel area · largest</option><option value="longest_side_asc">Longest side · shortest</option><option value="longest_side_desc">Longest side · longest</option></optgroup>{#if evidenceSource}<optgroup label="ML evidence"><option value="ml_confidence_desc">Confidence · highest</option><option value="ml_confidence_asc">Confidence · lowest</option><option value="ml_knn_desc">KNN similarity · highest</option><option value="ml_knn_asc">KNN similarity · lowest</option><option value="ml_agreement_asc">KNN agreement · lowest</option><option value="ml_prototype_desc">Prototype similarity · highest</option><option value="ml_prototype_margin_asc">Prototype margin · lowest</option></optgroup>{/if}<option value="random">Random</option></select></label>{/if}{#if sort==='random'&&!browseMode}<input class="seed" aria-label="Random seed" bind:value={randomSeed} on:change={loadItems} />{/if}<label class="scale-control">Scale <input aria-label="Relative gallery scale" type="range" min="64" max="256" step="16" bind:value={tileSize} /><output>{scaleFactor.toFixed(1)}×</output></label></div>
       </div>
-      <div class="gallery" bind:this={gallery} use:resize on:scroll={() => scrollTop=gallery.scrollTop} aria-label="ROI gallery">
+      <div class="gallery" data-image-scroll-root bind:this={gallery} use:resize on:scroll={() => scrollTop=gallery.scrollTop} aria-label="ROI gallery">
         {#if viewMode === 'original'}
           <div class="gallery-spacer original-spacer" style={`height:${originalLayout.height}px;width:${originalLayout.width}px`}>
             {#each originalVisible as placement (items[placement.index].item_id)}
               {@const item = items[placement.index]}
               <button class:selected={selected.has(item.item_id)} class:focused={focused===item.item_id} class:reference-roi={!!browseMode&&item.item_id===browseReference} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:rejected={item.review_decision==='rejected'} class:labeled={isAssigned(item)} class:compact={!placement.showLabel} class="tile original-tile" style={`left:${placement.x}px;top:${placement.y}px;width:${placement.width}px;height:${placement.height}px`} on:click={(event)=>select(item,event)} title={`${item.label_display_name||'Unlabeled'} · ${item.source_key||item.item_id} · ${item.shape?.[1]||'?'}×${item.shape?.[0]||'?'} px`}>
-                <span class="image-wrap original-stage" style={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`}><img class="original" style={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`} loading="lazy" src={imageSource(item)} alt={item.label_display_name ? `ROI labeled ${item.label_display_name}` : 'Unlabeled ROI'} />{#if item.descriptor_indicators?.length}<span class="descriptor-leds" role="img" aria-label={descriptorSummary(item)}>{#each item.descriptor_indicators as descriptor}<i class:target-descriptor={descriptor.scope==='target_tags'} class:image-descriptor={descriptor.scope==='image_tags'} title={`${descriptor.name} · ${descriptor.scope==='target_tags'?'target':'image'} descriptor`}></i>{/each}</span>{/if}{#if item.similarity!==undefined}<small class:reference-score={item.item_id===browseReference} class="ml-score">{item.item_id===browseReference?'target':'sim'} {item.similarity.toFixed(3)}</small>{:else if item.prediction_confidence!==undefined&&item.prediction_confidence!==null}<small class="ml-score">ML {item.prediction_confidence.toFixed(2)}</small>{/if}</span>
+                <span class="image-wrap original-stage" style={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`}><AuthenticatedImage imageClass="original" imageStyle={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`} src={imageSource(item)} alt={item.label_display_name ? `ROI labeled ${item.label_display_name}` : 'Unlabeled ROI'} invert={$imageInversionEnabled} cache={thumbnailCache} />{#if item.descriptor_indicators?.length}<span class="descriptor-leds" role="img" aria-label={descriptorSummary(item)}>{#each item.descriptor_indicators as descriptor}<i class:target-descriptor={descriptor.scope==='target_tags'} class:image-descriptor={descriptor.scope==='image_tags'} title={`${descriptor.name} · ${descriptor.scope==='target_tags'?'target':'image'} descriptor`}></i>{/each}</span>{/if}{#if item.similarity!==undefined}<small class:reference-score={item.item_id===browseReference} class="ml-score">{item.item_id===browseReference?'target':'sim'} {item.similarity.toFixed(3)}</small>{:else if item.prediction_confidence!==undefined&&item.prediction_confidence!==null}<small class="ml-score">ML {item.prediction_confidence.toFixed(2)}</small>{/if}</span>
                 {#if placement.showLabel}<span class="tile-meta"><span>{isAssigned(item) ? item.label_display_name : 'Unlabeled'}</span>{#if item.label_origin==='classification' && isAssigned(item)}<b title={`Classification source: ${item.annotation_source || 'dataset'}`}>data</b>{/if}{#if item.review_decision}<i title={item.review_decision}>{item.review_decision==='verified'?'✓':'!'}</i>{/if}</span>{/if}
               </button>
             {/each}
@@ -940,7 +1085,7 @@
             <div class="tile-grid" style={`--tile:${tileSize}px;--columns:${columns};transform:translateY(${startRow*rowHeight}px)`}>
               {#each visible as item (item.item_id)}
                 <button class:selected={selected.has(item.item_id)} class:focused={focused===item.item_id} class:reference-roi={!!browseMode&&item.item_id===browseReference} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:rejected={item.review_decision==='rejected'} class:labeled={isAssigned(item)} class="tile" on:click={(event)=>select(item,event)} title={item.source_key||item.item_id}>
-                  <span class="image-wrap"><img class={viewMode} style={imageStyle(item)} loading="lazy" src={imageSource(item)} alt={item.label_display_name ? `ROI labeled ${item.label_display_name}` : 'Unlabeled ROI'} />{#if viewMode === 'physical' && !itemCalibration(item)}<small class="no-calibration">no scale</small>{/if}{#if item.descriptor_indicators?.length}<span class="descriptor-leds" role="img" aria-label={descriptorSummary(item)}>{#each item.descriptor_indicators as descriptor}<i class:target-descriptor={descriptor.scope==='target_tags'} class:image-descriptor={descriptor.scope==='image_tags'} title={`${descriptor.name} · ${descriptor.scope==='target_tags'?'target':'image'} descriptor`}></i>{/each}</span>{/if}{#if item.similarity!==undefined}<small class:reference-score={item.item_id===browseReference} class="ml-score">{item.item_id===browseReference?'target':'sim'} {item.similarity.toFixed(3)}</small>{:else if item.prediction_confidence!==undefined&&item.prediction_confidence!==null}<small class="ml-score">ML {item.prediction_confidence.toFixed(2)}</small>{/if}</span>
+                  <span class="image-wrap"><AuthenticatedImage imageClass={viewMode} imageStyle={imageStyle(item)} src={imageSource(item)} alt={item.label_display_name ? `ROI labeled ${item.label_display_name}` : 'Unlabeled ROI'} invert={$imageInversionEnabled} cache={thumbnailCache} />{#if viewMode === 'physical' && !itemCalibration(item)}<small class="no-calibration">no scale</small>{/if}{#if item.descriptor_indicators?.length}<span class="descriptor-leds" role="img" aria-label={descriptorSummary(item)}>{#each item.descriptor_indicators as descriptor}<i class:target-descriptor={descriptor.scope==='target_tags'} class:image-descriptor={descriptor.scope==='image_tags'} title={`${descriptor.name} · ${descriptor.scope==='target_tags'?'target':'image'} descriptor`}></i>{/each}</span>{/if}{#if item.similarity!==undefined}<small class:reference-score={item.item_id===browseReference} class="ml-score">{item.item_id===browseReference?'target':'sim'} {item.similarity.toFixed(3)}</small>{:else if item.prediction_confidence!==undefined&&item.prediction_confidence!==null}<small class="ml-score">ML {item.prediction_confidence.toFixed(2)}</small>{/if}</span>
                   <span class="tile-meta"><span>{isAssigned(item) ? item.label_display_name : 'Unlabeled'}</span>{#if item.label_origin==='classification' && isAssigned(item)}<b title={`Classification source: ${item.annotation_source || 'dataset'}`}>data</b>{/if}{#if item.review_decision}<i title={item.review_decision}>{item.review_decision==='verified'?'✓':'!'}</i>{/if}</span>
                 </button>
               {/each}
@@ -958,7 +1103,7 @@
     <aside class="inspector">
       <h2>Inspector</h2>
       {#if detail}
-        <img class="inspect-image" src={registryUrl(`/api/items/${detail.item_id}/image`)} alt="Focused ROI" />
+        <AuthenticatedImage imageClass="inspect-image" imageStyle="width:100%;height:230px;object-fit:contain" src={registryUrl(`/api/items/${detail.item_id}/image`)} alt="Focused ROI" invert={$imageInversionEnabled} eager />
         <div class="inspect-id"><strong>{detail.source_key||'ROI'}</strong><button title="Copy item ID" on:click={()=>detail?.item_id && navigator.clipboard.writeText(detail.item_id)}>Copy ID</button></div>
         {#if activeEvidence}<section class="evidence-card"><h3>ML evidence</h3><div class="evidence-source">{activeEvidence.source_name}<span>{activeEvidence.source_kind}</span></div><dl><dt>Prediction</dt><dd>{evidenceLabel(activeEvidence.predicted_label_id)}</dd><dt>Confidence</dt><dd>{formatScore(activeEvidence.prediction_confidence)}</dd>{#if activeEvidence.prototype_similarity!==null&&activeEvidence.prototype_similarity!==undefined}<dt>Prototype label</dt><dd>{evidenceLabel(activeEvidence.prototype_label_id)}</dd><dt>Prototype</dt><dd>{formatScore(activeEvidence.prototype_similarity)} <small>margin {formatScore(activeEvidence.prototype_margin)}</small></dd>{/if}{#if activeEvidence.nearest_neighbor_similarity!==null&&activeEvidence.nearest_neighbor_similarity!==undefined}<dt>KNN label</dt><dd>{evidenceLabel(activeEvidence.knn_label_id)}</dd><dt>KNN nearest</dt><dd>{formatScore(activeEvidence.nearest_neighbor_similarity)}</dd><dt>KNN agreement</dt><dd>{formatScore(activeEvidence.top_k_label_agreement)}</dd><dt>KNN support</dt><dd>{formatScore(activeEvidence.weighted_label_support)}</dd>{/if}</dl><div class="evidence-actions">{#if activeEvidence.neighbors?.length}<button on:click={showNeighbors}>Show {activeEvidence.neighbors.length} recorded neighbors</button>{/if}{#if activeEvidence.embedding_available}<button class="primary" on:click={findSimilar}>Find similar ROIs</button>{/if}</div><p>Model evidence supports review; it is not a verified annotation.</p></section>{/if}
         <section class="classification-picker"><h3>Assign classification</h3><p>{selected.size > 1 ? `Apply a label to ${selected.size} selected ROIs` : 'Search dataset labels and enabled taxonomies'}</p><div class="combobox"><input aria-label="Find a classification label" aria-autocomplete="list" aria-expanded={assignmentOpen} aria-controls="classification-options" role="combobox" value={assignmentQuery} placeholder="Type a label, taxon, ID, or mapping…" autocomplete="off" on:focus={() => {assignmentOpen=true;assignmentIndex=0}} on:input={(event)=>{assignmentQuery=(event.currentTarget as HTMLInputElement).value;assignmentOpen=true;assignmentIndex=0}} on:keydown={assignmentKeydown} on:blur={()=>setTimeout(()=>assignmentOpen=false,120)} />{#if assignmentOpen}<div id="classification-options" class="assignment-options" role="listbox">{#each availableAssignments as option,index (option.key)}<button class:highlighted={index===assignmentIndex} role="option" aria-selected={index===assignmentIndex} on:mousedown={(event)=>event.preventDefault()} on:click={()=>selectAssignment(option)}><span><strong>{option.name}</strong><small>{option.detail}</small></span>{#if option.preferred}<em title="Enabled standardized taxonomy">◆</em>{/if}</button>{/each}{#if !availableAssignments.length}<div class="no-options">No matching labels</div>{/if}</div>{/if}</div></section>
@@ -1090,7 +1235,7 @@
         <div class="preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title">
           <div class="preferences-header"><div><span>REGISTRY WORKSPACE</span><h2 id="preferences-title">Preferences & vocabulary</h2></div><button aria-label="Close preferences" on:click={() => preferencesOpen=false}>×</button></div>
           <div class="preferences-body">
-            <section class="appearance-settings"><h3>Appearance & selection</h3><div class="preference-row"><span>View</span><div class="segmented"><button class:active={theme==='light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme==='dark'} on:click={() => setTheme('dark')}>Dark</button></div></div><label class="preference-row"><span>Canvas color</span><span class="color-control"><input type="color" value={canvasColor} on:input={setCanvasColor} /><code>{canvasColor.toUpperCase()}</code></span></label><div class="preference-row panel-size-preference"><span><strong>Side panel widths</strong><small>Drag either gallery edge or focus it and use the arrow keys.</small></span><button on:click={()=>{resetPanelWidth('left');resetPanelWidth('right')}}>Reset</button></div><label class="preference-row sticky-preference"><span><strong>Sticky selection</strong><small>First click focuses an ROI; second click selects it. Selected ROIs remain until clicked again.</small></span><input type="checkbox" checked={stickySelection} on:change={setStickySelection} /></label></section>
+            <section class="appearance-settings"><h3>Appearance & selection</h3><div class="preference-row"><span>View</span><div class="segmented"><button class:active={theme==='light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme==='dark'} on:click={() => setTheme('dark')}>Dark</button></div></div><div class="preference-row"><span>Canvas color</span><span class="color-control"><input aria-label="Canvas color" type="color" value={canvasColor} on:input={setCanvasColor} /><code>{canvasColor.toUpperCase()}</code><button disabled={!canvasColorCustom} on:click={resetCanvasColor}>Use theme</button></span></div><div class="preference-row panel-size-preference"><span><strong>Side panel widths</strong><small>Drag either gallery edge or focus it and use the arrow keys.</small></span><button on:click={()=>{resetPanelWidth('left');resetPanelWidth('right')}}>Reset</button></div><label class="preference-row sticky-preference"><span><strong>Sticky selection</strong><small>First click focuses an ROI; second click selects it. Selected ROIs remain until clicked again.</small></span><input type="checkbox" checked={stickySelection} on:change={setStickySelection} /></label></section>
             <section class="shortcut-settings"><h3>Label shortcuts</h3><p>Choose which classification each number key assigns.</p><div class="shortcut-grid">{#each DIGIT_SHORTCUTS as digit}<label><kbd>{digit}</kbd><select value={shortcutLabelIds[digit]||''} on:change={(event)=>setShortcut(digit,event)}><option value="">Unassigned</option>{#each activeLabels as label}<option value={label.label_id}>{label.display_name||label.name}</option>{/each}</select></label>{/each}</div></section>
             <section class="cheatsheet-settings"><h3>Keyboard cheatsheet</h3><dl class="cheatsheet"><dt><kbd>← ↑ ↓ →</kbd></dt><dd>Move focused ROI</dd><dt><kbd>Shift</kbd> + arrows</dt><dd>Extend selection</dd><dt><kbd>Cmd/Ctrl</kbd> + click</dt><dd>Toggle selection</dd><dt><kbd>Shift</kbd> + click</dt><dd>Select range</dd><dt><kbd>0–9</kbd></dt><dd>Assign configured label</dd><dt><kbd>Space</kbd></dt><dd>Verify selection</dd><dt><kbd>F</kbd></dt><dd>Flag as needs review</dd><dt><kbd>U</kbd></dt><dd>Undo last operation</dd><dt><kbd>Esc</kbd></dt><dd>Clear selection</dd></dl></section>
             <section class="vocabulary-settings">
@@ -1119,8 +1264,10 @@
   .primary { background: #197997; color: white; border-color: #197997; font-weight: 650; padding: 8px 15px; }
   .primary:hover:not(:disabled) { background: #146981; }
 
-  .open-screen { height: 100vh; display: grid; place-items: center; background: #e9f0f2; }
+  .open-screen { height: 100vh; overflow:auto; display: grid; place-items: center; padding:40px 20px; background: #e9f0f2; }
+  .landing { width:min(940px, 100%); display:grid; gap:18px; }
   .open-panel { width: min(680px, calc(100vw - 40px)); background: #f7fafc; border: 1px solid #b7c7ce; box-shadow: 0 14px 40px #17343e18; padding: 38px; }
+  .landing .open-panel { width:100%; }
   .wordmark span, .browser-header span { font-size: 10px; letter-spacing: .22em; color: #197997; font-weight: 800; }
   .brand-logo { display:block; width:min(430px, 82%); height:auto; margin:0 0 24px; }
   .open-panel p { color: #53656d; margin-bottom: 28px; }
@@ -1129,8 +1276,38 @@
   .open-row input { flex: 1; min-width: 0; }
   .open-row button { border-left: 0; white-space: nowrap; }
   .open-panel small { display: block; color: #687a82; margin-top: 10px; }
+  .workspace-panel { background:#f7fafc; border:1px solid #b7c7ce; box-shadow:0 14px 40px #17343e12; }
+  .workspace-panel-heading { display:flex; justify-content:space-between; align-items:center; gap:18px; padding:20px 22px 16px; border-bottom:1px solid #ced8dc; }
+  .workspace-panel-heading span { font-size:10px; letter-spacing:.18em; color:#197997; font-weight:800; }
+  .workspace-panel-heading h1 { margin:2px 0 0; font-size:20px; }
+  .workspace-panel-heading button { padding:6px 12px; }
+  .workspace-list { max-height:min(390px, 42vh); overflow:auto; }
+  .workspace-card { display:flex; align-items:center; gap:20px; padding:17px 22px; border:0; border-bottom:1px solid #d6dfe2; background:#fff; }
+  .workspace-card:last-child { border-bottom:0; }
+  .workspace-card.active { box-shadow:inset 3px 0 #197997; background:#f5fbfc; }
+  .workspace-card-main { min-width:0; flex:1; }
+  .workspace-card-title { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+  .workspace-card-title strong { font-size:15px; }
+  .badge { padding:2px 6px; border:1px solid; font-size:9px; font-weight:750; letter-spacing:.05em; text-transform:uppercase; }
+  .badge.active { color:#176f65; border-color:#75aaa4; background:#e4f4f1; }
+  .badge.dirty { color:#8a5923; border-color:#c8a16e; background:#fff5e6; }
+  .workspace-meta { margin-top:5px; color:#4f646c; font-size:12px; }
+  .workspace-source { margin-top:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#536b74; font:11px ui-monospace,monospace; }
+  .workspace-revision { margin-top:4px; color:#7a8a90; font-size:10px; }
+  .workspace-card > button { flex:none; }
+  .workspace-empty { padding:28px 22px; color:#687a82; text-align:center; }
   .message { margin-top: 20px; padding: 10px; border-left: 3px solid; }
   .error { background: #fff0ed; color: #8a2f24; border-color: #bd4a3b; }
+
+  @media (max-width: 680px) {
+    .open-screen { place-items:start center; padding:20px 12px; }
+    .open-panel { padding:24px 18px; }
+    .open-row { flex-wrap:wrap; }
+    .open-row input { flex-basis:100%; }
+    .open-row button { flex:1; border-left:1px solid #b7c5cb; border-top:0; }
+    .workspace-card { align-items:flex-start; flex-direction:column; gap:12px; padding:16px 18px; }
+    .workspace-card > button { width:100%; }
+  }
 
   .browser-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: #071b22a6; }
   .file-browser { width: min(780px, 100%); height: min(620px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; background: #f7fafc; border: 1px solid #8ea4ad; box-shadow: 0 24px 70px #06171e66; }
@@ -1168,10 +1345,14 @@
   .header-stats div { min-width:49px; display:flex; flex-direction:column; justify-content:center; padding:0 7px; border-right:1px solid #36525c; }
   .header-stats strong { font:700 12px ui-monospace,monospace; color:#edf7f8; }
   .header-stats span { margin-top:2px; color:#8facb5; font-size:8px; text-transform:uppercase; letter-spacing:.04em; }
-  .search { display: flex; width: min(320px, 24vw); }
-  .search input { width: 100%; background: #f4f8f9; }
-  .search button { border-left: 0; }
   .quiet { background: transparent; color: #d4e2e6; border-color: #53717b; }
+  .save-state { height:34px; display:flex; align-items:stretch; border:1px solid #53717b; color:#9fb6be; }
+  .save-state > span { display:flex; align-items:center; padding:0 8px; font-size:9px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; white-space:nowrap; }
+  .save-state > button { min-width:54px; border:0; border-left:1px solid #53717b; background:#294650; color:#d4e2e6; font-weight:700; }
+  .save-state.dirty { border-color:#d59a4e; background:#6b4825; color:#ffd8a5; }
+  .save-state.dirty > span::before { content:''; width:7px; height:7px; margin-right:6px; border-radius:50%; background:#ffb85c; box-shadow:0 0 0 2px #ffb85c30; }
+  .save-state.dirty > button { border-left-color:#d59a4e; background:#d48431; color:#fff; }
+  .save-state.dirty > button:hover:not(:disabled) { border-color:#ecad5b; background:#e0923e; }
   .filters { grid-area: filters; min-height:0; overflow: hidden; display:flex; flex-direction:column; background: var(--surface); border-right: 1px solid var(--line); }
   .left-panel-resizer { grid-area:left-resizer; }
   .right-panel-resizer { grid-area:right-resizer; }
@@ -1195,7 +1376,6 @@
   .ml-check input { margin:1px 0 0; accent-color:var(--accent); }
   .ml-actions { display:flex; }
   .ml-actions button { flex:1; padding:4px; font-size:9px; }
-  .icon { border: 0; background: transparent; font-size: 18px; padding: 0; }
   .annotation-bar kbd { font: 600 10px ui-monospace, monospace; display: inline-grid; place-items: center; width: 19px; height: 19px; border: 1px solid #aebdc3; background: #fff; color: #40545c; }
   .new-label { display: flex; }
   .new-label input { width: 100%; min-width: 0; }
@@ -1242,9 +1422,9 @@
   .tile .tile-meta i { background:var(--tile-status); }
   .image-wrap { position:relative; height: var(--tile); width: 100%; display: grid; place-items: center; background: var(--canvas-color); overflow: hidden; }
   .original-stage { align-self: center; flex: none; }
-  .image-wrap img { display: block; flex: none; }
-  .image-wrap img.fit { max-width: 100%; max-height: 100%; }
-  .image-wrap img.original, .image-wrap img.physical, .image-wrap img.normalize-height { max-width: none; max-height: none; }
+  .image-wrap :global(img) { display: block; flex: none; }
+  .image-wrap :global(img.fit) { max-width: 100%; max-height: 100%; }
+  .image-wrap :global(img.original), .image-wrap :global(img.physical), .image-wrap :global(img.normalize-height) { max-width: none; max-height: none; }
   .no-calibration { position: absolute; right: 5px; top: 5px; padding: 2px 4px; background: #111b1fcc; color: #d8e4e7; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
   .ml-score { position:absolute; left:5px; top:5px; padding:2px 4px; background:#071b22d9; color:#bdebf0; font:700 9px ui-monospace,monospace; }
   .ml-score.reference-score { background:#7d168eeb; color:#fff; text-transform:uppercase; }
@@ -1265,7 +1445,7 @@
 
   .inspector { grid-area: inspector; overflow: auto; background: var(--surface); border-left: 1px solid var(--line); }
   .inspector > h2 { padding: 14px; margin: 0; border-bottom: 1px solid #c7d1d5; }
-  .inspect-image { width: 100%; height: 230px; object-fit: contain; background: var(--canvas-color); border-bottom: 1px solid #aab9bf; }
+  .inspector :global(.inspect-image) { background: var(--canvas-color); border-bottom: 1px solid #aab9bf; }
   .inspect-id { display: flex; align-items: center; padding: 9px 12px; border-bottom: 1px solid #c7d1d5; gap: 5px; }
   .inspect-id strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .inspect-id button { margin-left: auto; font-size: 10px; padding: 3px 5px; }
@@ -1483,6 +1663,7 @@
   .color-control { display:flex; align-items:center; gap:7px; }
   .color-control input { width:40px; height:28px; padding:2px; }
   .color-control code { color:var(--muted); }
+  .color-control button { padding:4px 7px; font-size:9px; white-space:nowrap; }
   .shortcut-grid { display:grid; grid-template-columns:1fr 1fr; gap:7px 10px; }
   .shortcut-grid label { display:grid; grid-template-columns:25px minmax(0,1fr); align-items:center; gap:5px; }
   .shortcut-grid kbd,.cheatsheet kbd { font:600 10px ui-monospace,monospace; }
@@ -1514,6 +1695,7 @@
   .workspace.dark .filters h2,.workspace.dark .inspector h2,.workspace.dark .inspector h3,.workspace.dark .taxonomy-row em,.workspace.dark .workflow-help { color:var(--muted); }
   .workspace.dark .segmented .active { background:color-mix(in srgb,var(--accent) 20%,var(--raised)); border-color:var(--accent); color:var(--accent); }
   .workspace.dark .sticky-indicator { color:#e1b4f2; border-color:#a66ac0; background:#492853; }
+  .workspace.dark .save-state.dirty > button { border-left-color:#d59a4e; background:#d48431; color:#fff; }
 
   @media (max-width:900px) {
     .information-body { grid-template-columns:1fr; }

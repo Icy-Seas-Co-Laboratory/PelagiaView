@@ -73,6 +73,15 @@ export type Dataset = {
   physical_scale: { available: boolean; calibrated_items: number; total_items: number; reference_um_per_pixel?: number };
 };
 
+export type RegistryWorkspace = {
+  workspace_id: string; dataset_id: string; revision_id: string; parent_revision_id?: string;
+  dataset_type: string; name: string; title?: string; description?: string; version?: string;
+  lifecycle: string; source_path: string; source_size_bytes: number; status: string;
+  is_active: boolean; dirty_at?: string; loaded_at: string; exported_at?: string;
+  last_export_path?: string; contract_schema_version: string;
+  item_count: number; labeled_count: number;
+};
+
 export type InferenceSourceDetail = {
   source_key: string; source_kind: 'oracle' | 'registry'; name: string;
   evidence: EvidenceSource & { aggregates?: Record<string, number | null> };
