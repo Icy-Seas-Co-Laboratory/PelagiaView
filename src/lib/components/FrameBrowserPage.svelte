@@ -1149,6 +1149,7 @@
             <option value="video">Video</option>
             <option value="image">Image</option>
             <option value="image_sequence">Image sequence</option>
+            <option value="interchange">Pelagia interchange</option>
           </select>
         </label>
 

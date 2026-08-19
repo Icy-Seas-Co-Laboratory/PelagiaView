@@ -453,7 +453,7 @@ export type AnalyzedIngestionAsset = {
   asset_id?: string | null;
   filename?: string | null;
   path: string;
-  kind: 'video' | 'image_sequence' | string;
+  kind: 'video' | 'image_sequence' | 'interchange' | string;
   size_bytes?: number | null;
   checksum?: string | null;
   checksum_status?: string | null;
@@ -465,7 +465,7 @@ export type AnalyzedIngestionAsset = {
 
 export type AnalyzeIngestionRequest = {
   source_path: string;
-  kind?: 'auto' | 'video' | 'image_sequence' | string;
+  kind?: 'auto' | 'video' | 'image_sequence' | 'interchange' | string;
   recursive?: boolean;
   compute_checksum?: boolean;
   collections?: string | string[] | null;

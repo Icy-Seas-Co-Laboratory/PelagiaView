@@ -385,7 +385,6 @@
       try {
         const saved = JSON.parse(localStorage.getItem(vocabularyPreferenceKey(openedDataset.dataset_id)) || 'null');
         if (Array.isArray(saved)) savedVocabularyKeys = saved;
-        else savedVocabularyKeys = [...new Set(openedLabels.map((label) => label.standard_vocabulary_key).filter((key): key is string => !!key))];
       } catch { savedVocabularyKeys = []; }
       savedVocabularyKeys = savedVocabularyKeys.filter((key) => openedCatalog.some((entry) => entry.key === key));
       const openedVocabularies = await Promise.all(savedVocabularyKeys.map((key) => api.installedVocabulary(key)));
@@ -532,6 +531,10 @@
     if (typeof value === 'number') return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined,{maximumFractionDigits:4});
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
     return String(value);
+  }
+
+  function boxSummary(box?: { x: number; y: number; w: number; h: number } | null) {
+    return box ? `x ${box.x.toLocaleString()} · y ${box.y.toLocaleString()} · ${box.w.toLocaleString()} × ${box.h.toLocaleString()} px` : '—';
   }
 
   function scalarEntries(record?: Record<string, any>, excluded: string[] = []) {
@@ -1112,7 +1115,9 @@
         <section><DescriptorPicker title="Target descriptors" scope="target_tags" tags={descriptorTags} assigned={assignedTargetTags} targetCount={selected.size||1} on:assign={(event)=>toggleDescriptor(event.detail.tag,true)} on:remove={(event)=>toggleDescriptor(event.detail.tag,false)} on:create={(event)=>createCustomTag(event.detail.scope,event.detail.name)} /></section>
         <section><DescriptorPicker title="Image descriptors" scope="image_tags" tags={descriptorTags} assigned={assignedImageTags} targetCount={selected.size||1} on:assign={(event)=>toggleDescriptor(event.detail.tag,true)} on:remove={(event)=>toggleDescriptor(event.detail.tag,false)} on:create={(event)=>createCustomTag(event.detail.scope,event.detail.name)} /></section>
         <section><h3>Annotation history</h3>{#if detail.annotations?.length}{#each detail.annotations as ann}<div class="history"><span class="history-dot"></span><div><strong>{ann.label_display_name}</strong><span>{ann.annotator||'Unknown'} · {new Date(ann.created_at).toLocaleString()}</span><em>{ann.status==='deprecated'?'removed':ann.is_current?'current':'replaced'}</em></div></div>{/each}{:else}<p class="muted">No annotation history</p>{/if}</section>
-        <section><h3>Metadata</h3><dl><dt>Shape</dt><dd>{detail.shape?.join(' × ')||'Unknown'}</dd><dt>Encoding</dt><dd>{detail.encoding}</dd>{#each Object.entries(detail.metadata||{}).slice(0,8) as [key,value]}<dt>{key.replaceAll('_',' ')}</dt><dd>{typeof value==='object'?JSON.stringify(value):String(value)}</dd>{/each}</dl></section>
+        <section><h3>Spatial geometry</h3><dl><dt>Coordinate space</dt><dd>{detail.coordinate_space||'image_pixels'}</dd><dt>Object bbox</dt><dd>{boxSummary(detail.bbox)}</dd><dt>Stored crop</dt><dd>{boxSummary(detail.crop_bbox)}</dd>{#if detail.bbox && detail.crop_bbox}<dt>Object in crop</dt><dd>x {(detail.bbox.x-detail.crop_bbox.x).toLocaleString()} · y {(detail.bbox.y-detail.crop_bbox.y).toLocaleString()}</dd>{/if}</dl><p class="workflow-help">Bounding boxes identify the ROI within the source image; crop bounds identify the pixels stored for review.</p></section>
+        {#if detail.metadata?.pelagia}<section><h3>Pelagia provenance</h3><dl>{#each scalarEntries(detail.metadata.pelagia,['spatial','detection_metadata']) as [key,value]}<dt>{humanize(key)}</dt><dd title={String(value)}>{detailValue(value)}</dd>{/each}</dl>{#if hasContent(detail.metadata.pelagia.detection_metadata)}<details class="metadata-disclosure"><summary>Detection metadata</summary><pre>{JSON.stringify(detail.metadata.pelagia.detection_metadata,null,2)}</pre></details>{/if}</section>{/if}
+        <section><h3>Metadata</h3><dl><dt>Shape</dt><dd>{detail.shape?.join(' × ')||'Unknown'}</dd><dt>Encoding</dt><dd>{detail.encoding}</dd>{#each Object.entries(detail.metadata||{}).filter(([key])=>key!=='pelagia').slice(0,8) as [key,value]}<dt>{key.replaceAll('_',' ')}</dt><dd>{typeof value==='object'?JSON.stringify(value):String(value)}</dd>{/each}</dl>{#if detail.metadata?.pelagia}<details class="metadata-disclosure"><summary>Full Pelagia metadata</summary><pre>{JSON.stringify(detail.metadata.pelagia,null,2)}</pre></details>{/if}{#if hasContent(detail.spatial_metadata)}<details class="metadata-disclosure"><summary>Spatial normalization metadata</summary><pre>{JSON.stringify(detail.spatial_metadata,null,2)}</pre></details>{/if}</section>
       {:else}<div class="empty inspector-empty">Select an ROI to inspect its classification and history.</div>{/if}
     </aside>
 

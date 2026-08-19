@@ -423,7 +423,10 @@
       collections: asset.collectionsText || undefined,
       media_count: asset.media_count,
       metadata,
-      n_tile: Math.max(1, Math.round(Number(nTile) || 1))
+      n_tile: Math.max(1, Math.round(Number(nTile) || 1)),
+      ...(asset.kind === 'interchange'
+        ? { generate_backgrounds: false, generate_flatfield_profiles: false }
+        : {})
     };
   }
 
@@ -1064,6 +1067,7 @@
                   </td>
                   <td class="analysis-facts-cell">
                     <span>{assetSummary(asset)}</span>
+                    {#if asset.kind === 'interchange'}<span>Encoded-frame fast path</span>{/if}
                     {#if assetMetadataValue(asset, 'width') && assetMetadataValue(asset, 'height')}
                       <span>{assetMetadataValue(asset, 'width')} x {assetMetadataValue(asset, 'height')}</span>
                     {/if}

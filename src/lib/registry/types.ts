@@ -51,8 +51,12 @@ export type DescriptorTag = {
   deprecated_at?: string;
 };
 
+export type SpatialBox = { x: number; y: number; w: number; h: number };
+
 export type Item = {
   item_id: string; source_key?: string; shape?: number[]; metadata: Record<string, unknown>;
+  coordinate_space?: string; bbox?: SpatialBox; crop_bbox?: SpatialBox;
+  spatial_metadata?: Record<string, unknown>;
   descriptor_indicators?: Array<{ tag_id: string; scope: 'target_tags' | 'image_tags'; name: string }>;
   image_width?: number; image_height?: number; pixel_area?: number; longest_side?: number;
   annotation_id?: string; label_id?: string; label_name?: string; label_display_name?: string;
