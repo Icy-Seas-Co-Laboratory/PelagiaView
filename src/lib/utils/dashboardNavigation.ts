@@ -16,6 +16,7 @@ export type DashboardView =
   | 'status'
   | 'assets'
   | 'ingestion'
+  | 'telemetry'
   | 'preprocessing'
   | 'segmentation'
   | 'roi_refinement'
@@ -47,6 +48,7 @@ export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'explorer', label: 'Explorer', detail: 'Test processing interactively', group: 'explorer', path: 'workspace' },
   { id: 'assets', label: 'Assets', detail: 'Review the project data catalog', group: 'workflow', path: 'assets', nextView: 'ingestion' },
   { id: 'ingestion', label: 'Ingestion', shortLabel: 'Ingest', detail: 'Register source imagery', group: 'workflow', path: 'ingestion', nextView: 'preprocessing' },
+  { id: 'telemetry', label: 'Telemetry', shortLabel: 'Sensors', detail: 'Review and import sensor data', group: 'workflow', path: 'telemetry', nextView: 'preprocessing' },
   { id: 'preprocessing', label: 'Preprocessing', shortLabel: 'Prepare', detail: 'Prepare frames for detection', group: 'workflow', path: 'preprocessing', nextView: 'segmentation' },
   { id: 'segmentation', label: 'Candidate ROIs', shortLabel: 'Detect', detail: 'Generate candidate detections', group: 'workflow', path: 'candidates', nextView: 'roi_refinement' },
   { id: 'roi_refinement', label: 'ROI Refinement', shortLabel: 'Refine', detail: 'Produce curatable ROIs', group: 'workflow', path: 'refinement', nextView: 'ml_evidence' },

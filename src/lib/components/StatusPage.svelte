@@ -20,6 +20,7 @@
 
   const stages: StageDefinition[] = [
     { stage: 'extract_frames', label: 'Ingestion', short: 'Source imagery to frames' },
+    { stage: 'telemetry_import', label: 'Telemetry', short: 'Sensor data ingestion and normalization' },
     { stage: 'background_frames', label: 'Backgrounds', short: 'Background reference generation' },
     { stage: 'preprocess_frames', label: 'Preprocessing', short: 'Frame correction and normalization' },
     { stage: 'segment', label: 'Candidate ROIs', short: 'Thresholding and candidate detection' },

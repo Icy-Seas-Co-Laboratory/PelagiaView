@@ -3,6 +3,7 @@
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
+  import InterchangeImportModal from '$lib/components/InterchangeImportModal.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type {
@@ -10,6 +11,7 @@
     DirectoryListing,
     Job,
     QueueAssetsRequest,
+    QueueAssetsResponse,
     QueueIngestionAssetRequest,
     SystemConfigResponse
   } from '$lib/api/types';
@@ -57,6 +59,7 @@
   let submittedAssetIds: string[] = [];
   let ingestionJobsById: Record<string, Job> = {};
   let ingestionJobIdsByAssetKey: Record<string, string> = {};
+  let interchangeImportOpen = false;
 
   type IngestionPreferences = {
     nTile: number;
@@ -269,6 +272,22 @@
 
   function updateCurrentPath(path: string) {
     currentPath = path;
+  }
+
+  function handleInterchangeImported(event: CustomEvent<{ response: QueueAssetsResponse; asset: AnalyzedIngestionAsset }>) {
+    const { response, asset } = event.detail;
+    const jobs = response.jobs ?? [];
+    submittedJobIds = uniqueStrings([...jobs.map((job) => job.id), ...submittedJobIds]).slice(0, 100);
+    submittedRunIds = uniqueStrings([response.run_id, ...submittedRunIds]).slice(0, 50);
+    submittedAssetIds = uniqueStrings([
+      ...(response.assets ?? []).map((registeredAsset) => registeredAsset.id),
+      asset.asset_id,
+      ...submittedAssetIds
+    ]).slice(0, 500);
+    mergeIngestionJobs(jobs);
+    message = `Queued interchange collection ${(asset.collections ?? [asset.filename ?? 'dataset'])[0]}.`;
+    error = null;
+    void refreshIngestionJobs();
   }
 
   function selectedPaths(): string[] {
@@ -833,6 +852,7 @@
         <p class="eyebrow">Server storage</p>
         <h2>Raw asset browser</h2>
       </div>
+      <button type="button" on:click={() => interchangeImportOpen = true}>Import interchange</button>
     </div>
 
     {#if browserSource === 'registered-assets'}
@@ -1143,3 +1163,12 @@
     {/if}
   </section>
 </div>
+
+{#if interchangeImportOpen}
+  <InterchangeImportModal
+    initialPath={currentPath}
+    collectionSuggestions={collectionSuggestions}
+    on:close={() => interchangeImportOpen = false}
+    on:imported={handleInterchangeImported}
+  />
+{/if}

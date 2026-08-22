@@ -7,11 +7,13 @@
   import InfoChip from '$lib/components/InfoChip.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import InspectorImageControls from '$lib/components/InspectorImageControls.svelte';
+  import TelemetryFilterModal from '$lib/components/TelemetryFilterModal.svelte';
+  import TelemetrySummary from '$lib/components/TelemetrySummary.svelte';
   import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
   import { authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
-  import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset } from '$lib/api/types';
+  import type { DetectionFilters, DetectionSummary, FrameContextResponse, FrameSummary, RawAsset, TelemetryRangeFilter } from '$lib/api/types';
   import { roiBrowserHref } from '$lib/utils/dashboardNavigation';
   import {
     displayModeForPayloadKind,
@@ -48,6 +50,8 @@
   let maxBBoxW: number | null = null;
   let minBBoxH: number | null = null;
   let maxBBoxH: number | null = null;
+  let telemetryFilters: TelemetryRangeFilter[] = [];
+  let telemetryFilterModalOpen = false;
   const imageFormat = 'jpg';
   let invertImages = false;
   let applyRoiMask = false;
@@ -181,7 +185,8 @@
       hasFilterValue(minBBoxW) ||
       hasFilterValue(maxBBoxW) ||
       hasFilterValue(minBBoxH) ||
-      hasFilterValue(maxBBoxH)
+      hasFilterValue(maxBBoxH) ||
+      telemetryFilters.length > 0
   );
   $: roiPreferenceSnapshot = {
     selectedAssetId,
@@ -196,6 +201,7 @@
     maxBBoxW,
     minBBoxH,
     maxBBoxH,
+    telemetryFilters,
     applyRoiMask,
     roiViewMode,
     sortBy,
@@ -265,6 +271,7 @@
       max_area: maxArea,
       min_perimeter: minPerimeter,
       max_perimeter: maxPerimeter,
+      telemetry_filters: telemetryFilters,
       has_roi_payload: true,
       refinement_state: roiViewMode === 'refined' ? 'refined' : undefined,
       sort_by: sortBy,
@@ -288,6 +295,7 @@
     maxBBoxW = null;
     minBBoxH = null;
     maxBBoxH = null;
+    telemetryFilters = [];
     fullResolutionTileKeys = new Set();
     void loadDetections(true);
   }
@@ -319,6 +327,7 @@
       maxBBoxW = nullableNumberPreference(preferences.maxBBoxW, maxBBoxW);
       minBBoxH = nullableNumberPreference(preferences.minBBoxH, minBBoxH);
       maxBBoxH = nullableNumberPreference(preferences.maxBBoxH, maxBBoxH);
+      telemetryFilters = telemetryFilterPreferences(preferences.telemetryFilters);
       applyRoiMask = typeof preferences.applyRoiMask === 'boolean' ? preferences.applyRoiMask : applyRoiMask;
       roiViewMode = roiViewModePreference(preferences.roiViewMode, roiViewMode);
       sortBy = sortByPreference(preferences.sortBy, sortBy);
@@ -358,6 +367,37 @@
 
   function hasFilterValue(value: unknown): boolean {
     return value !== null && value !== undefined && value !== '';
+  }
+
+  function telemetryFilterPreferences(value: unknown): TelemetryRangeFilter[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const candidate = item as Record<string, unknown>;
+      const parameterKey = typeof candidate.parameter_key === 'string' ? candidate.parameter_key.trim() : '';
+      const minValue = candidate.min_value == null ? null : Number(candidate.min_value);
+      const maxValue = candidate.max_value == null ? null : Number(candidate.max_value);
+      if (!parameterKey || (minValue === null && maxValue === null) ||
+          (minValue !== null && !Number.isFinite(minValue)) || (maxValue !== null && !Number.isFinite(maxValue)) ||
+          (minValue !== null && maxValue !== null && minValue > maxValue)) return [];
+      return [{ parameter_key: parameterKey, min_value: minValue, max_value: maxValue }];
+    });
+  }
+
+  function telemetryFilterLabel(filter: TelemetryRangeFilter): string {
+    const minimum = filter.min_value == null ? '−∞' : filter.min_value;
+    const maximum = filter.max_value == null ? '+∞' : filter.max_value;
+    return `${filter.parameter_key}: ${minimum}–${maximum}`;
+  }
+
+  function applyTelemetryFilters(filters: TelemetryRangeFilter[]) {
+    telemetryFilters = filters;
+    telemetryFilterModalOpen = false;
+    void loadDetections(true);
+  }
+
+  function removeTelemetryFilter(index: number) {
+    applyTelemetryFilters(telemetryFilters.filter((_, filterIndex) => filterIndex !== index));
   }
 
   function applyUrlFilters(params: URLSearchParams) {
@@ -450,6 +490,7 @@
       const context = await client.frameContext(detection.frame_id, {
         width: frameContextImageWidth,
         include_detections: true,
+        include_telemetry: true,
         detection_limit: frameDetectionBatchSize,
         detection_offset: 0,
         frame_payload_kind: detailFramePayloadKind
@@ -489,6 +530,7 @@
         const context = await client.frameContext(detection.frame_id, {
           width: frameContextImageWidth,
           include_detections: true,
+          include_telemetry: true,
           detection_limit: frameDetectionBatchSize,
           detection_offset: offset,
           frame_payload_kind: detailFramePayloadKind
@@ -1677,6 +1719,22 @@
         Max height (px)
         <input type="number" min="0" bind:value={maxBBoxH} />
       </label>
+
+      <div class="telemetry-filter-control">
+        <div class="telemetry-filter-heading">
+          <span>Telemetry criteria</span>
+          <button class="telemetry-add-button" type="button" aria-label="Add telemetry filter" title="Add telemetry filter" on:click={() => telemetryFilterModalOpen = true}>+</button>
+        </div>
+        {#if telemetryFilters.length === 0}
+          <small>Filter frames by arbitrary sensor value ranges.</small>
+        {:else}
+          <div class="telemetry-filter-chips">
+            {#each telemetryFilters as filter, index}
+              <span class="telemetry-filter-chip">{telemetryFilterLabel(filter)}<button type="button" aria-label={`Remove ${telemetryFilterLabel(filter)}`} on:click={() => removeTelemetryFilter(index)}>×</button></span>
+            {/each}
+          </div>
+        {/if}
+      </div>
       </div>
     </details>
   </section>
@@ -1804,6 +1862,7 @@
         {#if selectedDetection.refinement_relationship}<div><dt>Refinement</dt><dd>{selectedDetection.refinement_relationship}</dd></div>{/if}
         {#if selectedDetection.refinement_method}<div><dt>Method</dt><dd>{selectedDetection.refinement_method}</dd></div>{/if}
       </dl>
+      <TelemetrySummary telemetry={selectedFrameContext?.telemetry} />
       {#if detailError}<p class="form-error">{detailError}</p>{/if}
       <button type="button" on:click={() => (roiDetailModalOpen = true)}>Open full provenance</button>
     {:else}
@@ -1813,6 +1872,24 @@
 
   <button class="scroll-top-button" type="button" aria-label="Scroll to top" on:click={scrollToTop}></button>
 </div>
+
+{#if telemetryFilterModalOpen}
+  <TelemetryFilterModal
+    initialFilters={telemetryFilters}
+    on:apply={(event) => applyTelemetryFilters(event.detail)}
+    on:close={() => telemetryFilterModalOpen = false}
+  />
+{/if}
+
+<style>
+  .telemetry-filter-control { border-top: 1px solid var(--border-subtle, #d9dee7); grid-column: 1 / -1; margin-top: 0.35rem; padding-top: 0.7rem; }
+  .telemetry-filter-heading { align-items: center; display: flex; font-size: 0.78rem; font-weight: 650; justify-content: space-between; }
+  .telemetry-filter-control small { color: var(--text-muted, #667085); display: block; font-size: 0.74rem; line-height: 1.35; margin-top: 0.35rem; }
+  .telemetry-add-button { align-items: center; border: 1px solid var(--accent, #2563eb); border-radius: 50%; color: var(--accent, #2563eb); display: inline-flex; font-size: 1.05rem; height: 1.45rem; justify-content: center; line-height: 1; padding: 0; width: 1.45rem; }
+  .telemetry-filter-chips { display: grid; gap: 0.3rem; margin-top: 0.45rem; }
+  .telemetry-filter-chip { align-items: center; background: color-mix(in srgb, var(--accent, #2563eb) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent, #2563eb) 30%, var(--border-subtle, #d9dee7)); border-radius: 0.3rem; display: flex; font-size: 0.72rem; gap: 0.3rem; justify-content: space-between; padding: 0.25rem 0.4rem; }
+  .telemetry-filter-chip button { background: transparent; border: 0; color: inherit; padding: 0 0.1rem; }
+</style>
 
 {#if selectedDetection && roiDetailModalOpen}
   <div class="modal-backdrop">

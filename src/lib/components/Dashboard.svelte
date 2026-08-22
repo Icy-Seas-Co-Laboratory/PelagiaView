@@ -10,6 +10,7 @@
   import DatasetQueuePage from './DatasetQueuePage.svelte';
   import CurationPage from './CurationPage.svelte';
   import IngestionPage from './IngestionPage.svelte';
+  import TelemetryImportPage from './TelemetryImportPage.svelte';
   import MlEvidencePage from './MlEvidencePage.svelte';
   import FrameBrowserPage from './FrameBrowserPage.svelte';
   import PreferencesModal from './PreferencesModal.svelte';
@@ -81,6 +82,8 @@
           <AssetsPage />
         {:else if activeTab === 'ingestion'}
           <IngestionPage />
+        {:else if activeTab === 'telemetry'}
+          <TelemetryImportPage />
         {:else if activeTab === 'preprocessing'}
           <DatasetQueuePage mode="preprocessing" />
         {:else if activeTab === 'segmentation'}

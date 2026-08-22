@@ -4,6 +4,8 @@
   import InspectorImageControls from '$lib/components/InspectorImageControls.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import RegistryDatasetExportModal from '$lib/components/RegistryDatasetExportModal.svelte';
+  import TelemetryFilterModal from '$lib/components/TelemetryFilterModal.svelte';
+  import TelemetrySummary from '$lib/components/TelemetrySummary.svelte';
   import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
   import { getClient, session } from '$lib/stores/session';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
@@ -21,7 +23,7 @@
     expandableCurationLabelIds,
     visibleCurationTaxonomy
   } from '$lib/utils/curationTaxonomy';
-  import type { CurationLabel, CurationOptions, CurationRoi, Job, OracleModelSummary } from '$lib/api/types';
+  import type { CurationLabel, CurationOptions, CurationRoi, FrameContextResponse, Job, OracleModelSummary, TelemetryRangeFilter } from '$lib/api/types';
   import type { ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   let options: CurationOptions | null = null;
@@ -33,6 +35,8 @@
   let annotationState = 'all';
   let reviewState = 'all';
   let evidenceState = 'all';
+  let telemetryFilters: TelemetryRangeFilter[] = [];
+  let telemetryFilterModalOpen = false;
   let labelId = '';
   let labelSource: 'any' | 'human' | 'prediction' = 'any';
   let sortBy = 'oldest';
@@ -66,6 +70,8 @@
   let curationInspectorShowScaleBar = true;
   let preferencesReady = false;
   let registryExportOpen = false;
+  let telemetryContext: FrameContextResponse | null = null;
+  let focusSerial = 0;
 
   $: selectedItems = items.filter((item) => selected.has(item.id));
   $: currentEvidence = (detail?.evidence?.[0] as Record<string, any> | undefined) ?? null;
@@ -110,7 +116,8 @@
     galleryScale,
     stickySelection,
     curationRailWidth,
-    curationInspectorWidth
+    curationInspectorWidth,
+    telemetryFilters
   };
   $: if (preferencesReady) persistCurationPreferences(curationPreferenceSnapshot);
 
@@ -159,6 +166,7 @@
         annotation_state: annotationState,
         review_state: reviewState,
         evidence_state: evidenceState,
+        telemetry_filters: telemetryFilters,
         label_id: labelId || undefined,
         label_source: labelSource,
         search: search || undefined,
@@ -171,7 +179,10 @@
       selected = new Set([...selected].filter((id) => items.some((item) => item.id === id)));
       if (focusedId && items.some((item) => item.id === focusedId)) await focus(focusedId, false);
       else if (items.length) await focus(items[0].id, false);
-      else detail = null;
+      else {
+        detail = null;
+        telemetryContext = null;
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     } finally {
@@ -182,10 +193,25 @@
   async function focus(id: string, replaceSelection = true) {
     const client = getClient();
     if (!client) return;
+    const serial = ++focusSerial;
     focusedId = id;
     if (replaceSelection) selected = new Set([id]);
+    telemetryContext = null;
     try {
-      detail = await client.getCurationRoi(id);
+      const nextDetail = await client.getCurationRoi(id);
+      if (serial !== focusSerial) return;
+      detail = nextDetail;
+      if (nextDetail.frame_id) {
+        try {
+          const context = await client.frameContext(nextDetail.frame_id, {
+            include_detections: false,
+            include_telemetry: true
+          });
+          if (serial === focusSerial) telemetryContext = context;
+        } catch {
+          // Telemetry is supplemental; keep the curation detail usable when it is unavailable.
+        }
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -451,6 +477,22 @@
     void load();
   }
 
+  function applyTelemetryFilters(filters: TelemetryRangeFilter[]) {
+    telemetryFilters = filters;
+    telemetryFilterModalOpen = false;
+    updateFilters();
+  }
+
+  function removeTelemetryFilter(index: number) {
+    applyTelemetryFilters(telemetryFilters.filter((_, filterIndex) => filterIndex !== index));
+  }
+
+  function telemetryFilterLabel(filter: TelemetryRangeFilter): string {
+    const minimum = filter.min_value == null ? '−∞' : filter.min_value;
+    const maximum = filter.max_value == null ? '+∞' : filter.max_value;
+    return `${filter.parameter_key}: ${minimum}–${maximum}`;
+  }
+
   function labelName(label: CurationLabel) {
     return label.display_name || label.name;
   }
@@ -546,6 +588,7 @@
       galleryScaleMode = stored.galleryScaleMode === 'original' ? 'original' : 'fit';
       galleryScale = boundedPreference(stored.galleryScale, galleryScale, 0.5, 3);
       stickySelection = Boolean(stored.stickySelection);
+      telemetryFilters = telemetryFilterPreferences(stored.telemetryFilters);
       curationRailWidth = boundedPreference(stored.curationRailWidth, curationRailWidth, 200, 480);
       curationInspectorWidth = boundedPreference(stored.curationInspectorWidth, curationInspectorWidth, 260, 560);
     } catch {
@@ -562,6 +605,21 @@
   function boundedPreference(value: unknown, fallback: number, min: number, max: number): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+  }
+
+  function telemetryFilterPreferences(value: unknown): TelemetryRangeFilter[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const candidate = item as Record<string, unknown>;
+      const parameterKey = typeof candidate.parameter_key === 'string' ? candidate.parameter_key.trim() : '';
+      const minValue = candidate.min_value == null ? null : Number(candidate.min_value);
+      const maxValue = candidate.max_value == null ? null : Number(candidate.max_value);
+      if (!parameterKey || (minValue === null && maxValue === null) ||
+          (minValue !== null && !Number.isFinite(minValue)) || (maxValue !== null && !Number.isFinite(maxValue)) ||
+          (minValue !== null && maxValue !== null && minValue > maxValue)) return [];
+      return [{ parameter_key: parameterKey, min_value: minValue, max_value: maxValue }];
+    });
   }
 
   function observeGallery(node: HTMLDivElement) {
@@ -629,6 +687,18 @@
     <label>Model evidence<select bind:value={evidenceState} on:change={updateFilters}><option value="all">All evidence states</option><option value="available">Evidence available</option><option value="missing">No evidence</option><option value="disagreement">Disagreement</option></select></label>
     <label>Sort<select bind:value={sortBy} on:change={updateFilters}><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="confidence_asc">Lowest confidence</option><option value="confidence_desc">Highest confidence</option><option value="disagreement">Most disagreement</option><option value="area_asc">Smallest ROI</option><option value="area_desc">Largest ROI</option></select></label>
     <div class="search-row"><input bind:value={search} on:keydown={(event) => event.key === 'Enter' && updateFilters()} placeholder="Search ROI or asset" /><button on:click={updateFilters}>Go</button></div>
+    <section class="telemetry-filter-control">
+      <div class="section-title"><h3>Telemetry criteria</h3><button class="telemetry-add-button" type="button" aria-label="Add telemetry filter" title="Add telemetry filter" on:click={() => telemetryFilterModalOpen = true}>+</button></div>
+      {#if telemetryFilters.length === 0}
+        <small>Filter the curation queue by sensor value ranges.</small>
+      {:else}
+        <div class="telemetry-filter-chips">
+          {#each telemetryFilters as filter, index}
+            <span class="telemetry-filter-chip">{telemetryFilterLabel(filter)}<button type="button" aria-label={`Remove ${telemetryFilterLabel(filter)}`} on:click={() => removeTelemetryFilter(index)}>×</button></span>
+          {/each}
+        </div>
+      {/if}
+    </section>
 
     <section class="label-tree">
       <div class="section-title"><h3>{labelHierarchyExists ? 'Taxonomy' : 'Labels'}</h3><span><button class:active={!labelId} on:click={() => { labelId=''; updateFilters(); }}>All</button>{#if labelHierarchyExists}<button title="Expand or collapse the taxonomy" on:click={toggleAllLabelBranches}>{visibleLabelRows.length === labelTaxonomy.length ? 'Collapse' : 'Expand'}</button>{/if}</span></div>
@@ -757,6 +827,8 @@
 
       <section class:warning={consensus==='Evidence disagreement'}><h3>Evidence consensus</h3><strong>{consensus}</strong>{#if detail.evidence_id}<p>Neural: {detail.predicted_label_name || classLabel(detail.predicted_class_index ?? -1)} · Prototype: {classLabel(detail.prototype_class_index ?? -1)} · KNN: {classLabel(detail.knn_class_index ?? -1)}</p><button class="primary" disabled={!detail.predicted_label_id || working} on:click={acceptPrediction}>Accept prediction as human label</button>{:else}<p>No classification run has produced evidence for this ROI.</p>{/if}</section>
 
+      <TelemetrySummary telemetry={telemetryContext?.telemetry} />
+
       {#if currentEvidence}<section><h3>Neural probabilities</h3>{#each probabilityRows.slice().sort((a,b)=>b.probability-a.probability).slice(0,6) as row}<div class="evidence-bar"><span>{row.label_name || `Class ${row.class_index}`}</span><i><b style={`width:${Math.max(0,Math.min(100,row.probability*100))}%`}></b></i><em>{percent(row.probability)}</em></div>{/each}<dl><dt>Margin</dt><dd>{percent(currentEvidence.probability_margin)}</dd><dt>Entropy</dt><dd>{similarity(currentEvidence.entropy)}</dd></dl></section>
       <section><h3>Prototype similarity</h3>{#if prototypeRows.length}{#each prototypeRows.slice(0,5) as row}<div class="evidence-bar"><span>{row.label}</span><i><b style={`width:${Math.max(0,Math.min(100,(row.similarity+1)*50))}%`}></b></i><em>{similarity(row.similarity)}</em></div>{/each}<dl><dt>Margin</dt><dd>{similarity(currentEvidence.prototype_margin)}</dd></dl>{:else}<p>Prototype evidence unavailable for this model.</p>{/if}</section>
       <section><h3>KNN context</h3><dl><dt>Agreement</dt><dd>{percent(currentEvidence.knn_agreement)}</dd><dt>Weighted support</dt><dd>{percent(currentEvidence.knn_weighted_support)}</dd><dt>Margin</dt><dd>{percent(currentEvidence.knn_margin)}</dd></dl>{#if knnNeighbors.length}<div class="neighbor-list">{#each knnNeighbors as neighbor}<div><b>#{Number(neighbor.rank)+1}</b><span>{classLabel(Number(neighbor.class_index))}</span><em>{similarity(neighbor.similarity)}</em><code>{neighbor.exemplar_id}</code></div>{/each}</div><small>Oracle currently provides exemplar identity and similarity, but not deployable exemplar images.</small>{:else}<p>KNN evidence unavailable for this model.</p>{/if}</section>
@@ -771,6 +843,14 @@
   <RegistryDatasetExportModal {options} on:close={() => (registryExportOpen = false)} />
 {/if}
 
+{#if telemetryFilterModalOpen}
+  <TelemetryFilterModal
+    initialFilters={telemetryFilters}
+    on:apply={(event) => applyTelemetryFilters(event.detail)}
+    on:close={() => telemetryFilterModalOpen = false}
+  />
+{/if}
+
 {#if loading}<div class="loading-line"></div>{/if}
 {#if error}<div class="toast error">{error}<button on:click={()=>error=null}>×</button></div>{/if}
 {#if notice}<div class="toast notice">{notice}<button on:click={()=>notice=null}>×</button></div>{/if}
@@ -782,6 +862,7 @@
   .rail-heading h2,.inspector-heading h2,.curation-gallery h2{margin:0 0 12px}.eyebrow{margin:0;color:var(--muted,#667);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
   label{display:grid;gap:4px;margin:9px 0;font-size:11px;font-weight:650;color:var(--muted,#667)}select,input,button{font:inherit}select,input{min-width:0;padding:7px;border:1px solid var(--border,#bac5ca);border-radius:5px;background:var(--surface,#fff);color:inherit}button{border:1px solid var(--border,#bac5ca);border-radius:5px;background:var(--surface,#fff);color:inherit;padding:6px 8px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button.primary{background:var(--accent,#197997);color:#fff;border-color:var(--accent,#197997);width:100%}
   .search-row,.new-label{display:flex}.search-row input,.new-label input{flex:1}.search-row button,.new-label button{border-radius:0 5px 5px 0;margin-left:-1px}
+  .telemetry-filter-control{border-top:1px solid var(--border,#ccd);margin:14px -5px 0;padding:9px 5px 0}.telemetry-filter-control .section-title h3{margin:0}.telemetry-filter-control>small{color:var(--muted,#667);display:block;font-size:10px;line-height:1.4;margin-top:5px}.telemetry-add-button{border:1px solid var(--accent,#197997);border-radius:50%;color:var(--accent,#197997);font-size:16px;height:24px;line-height:18px;padding:0;width:24px}.telemetry-filter-chips{display:grid;gap:4px;margin-top:6px}.telemetry-filter-chip{align-items:center;background:color-mix(in srgb,var(--accent,#197997) 10%,transparent);border:1px solid color-mix(in srgb,var(--accent,#197997) 30%,var(--border,#ccd));border-radius:4px;display:flex;font-size:10px;gap:4px;justify-content:space-between;padding:3px 5px}.telemetry-filter-chip button{border:0;background:transparent;padding:0 2px}
   .label-tree{margin:15px -5px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:0 5px}.section-title>span{display:flex}.section-title button{padding:3px 5px}.label-tree h3,.inference-panel h3,.curation-inspector h3{margin:8px 0;font-size:12px}.label-tree>.taxonomy-row{width:100%;border:0;border-bottom:1px solid var(--border,#dde4e6);border-radius:0;display:flex;justify-content:space-between;text-align:left;background:transparent;padding-left:calc(5px + var(--depth,0) * 13px)}.label-tree>.taxonomy-row.active{background:color-mix(in srgb,var(--accent,#197997) 14%,transparent)}.taxonomy-label{display:flex;align-items:center;gap:4px;min-width:0}.taxonomy-label>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-toggle{width:12px;flex:0 0 12px;display:inline-grid;place-items:center;color:var(--muted,#667)}.tree-toggle[role="button"]{cursor:pointer}.label-tree em{font-style:normal;font-size:10px;white-space:nowrap}.label-tree small{color:var(--muted,#778)}kbd{font:9px ui-monospace;border:1px solid var(--border,#ccd);padding:1px 3px}
   .inference-panel{border-top:1px solid var(--border,#ccd);margin-top:16px;padding-top:8px}.model-heading{display:flex;align-items:center;justify-content:space-between}.model-heading span{font-size:9px;color:#28724d}.model-heading span.unavailable,.inference-panel small.unavailable{color:#a14f3d}.model-catalog{display:grid;gap:5px;max-height:230px;overflow:auto;margin:8px 0}.model-catalog article{padding:6px;border:1px solid var(--border,#ccd);border-left:3px solid #3f8b6c;border-radius:4px;background:color-mix(in srgb,var(--surface,#fff) 92%,var(--accent,#197997))}.model-catalog article.unavailable{border-left-color:#a14f3d;opacity:.82}.model-catalog article.selected{box-shadow:0 0 0 1px var(--accent,#197997)}.model-catalog header{display:flex;justify-content:space-between;gap:5px;font-size:10px}.model-catalog header span{font-size:8px;text-transform:uppercase;letter-spacing:.05em}.model-catalog p{margin:3px 0;font-size:9px;color:var(--muted,#667)}.model-catalog code{display:block;font-size:8px}.model-catalog small{display:-webkit-box;overflow:hidden;line-clamp:2;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:#a14f3d}.inference-panel>small{display:block;margin:7px 0;color:#28724d}.inference-actions{display:flex}.inference-actions button{flex:1}
   .classification-progress{display:grid;gap:6px;margin-top:9px}.classification-progress article{padding:7px;border:1px solid var(--border,#ccd);border-radius:5px;background:color-mix(in srgb,var(--surface,#fff) 94%,var(--accent,#197997))}.classification-progress article.failed{border-color:#a14f3d}.classification-progress header{display:flex;justify-content:space-between;text-transform:capitalize;font-size:10px}.classification-progress p{margin:5px 0;font-size:9px;line-height:1.3}.classification-progress small{display:block;margin:2px 0;color:var(--muted,#667)}.classification-progress-track{height:6px;margin-top:5px;border-radius:4px;overflow:hidden;background:var(--border,#d9e0e2)}.classification-progress-track i{display:block;height:100%;background:var(--accent,#197997);transition:width .25s ease}.classification-progress-track.indeterminate i{width:35%!important;animation:classification-pulse 1.2s ease-in-out infinite}.job-error{color:#a14f3d!important;overflow-wrap:anywhere}@keyframes classification-pulse{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}

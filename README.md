@@ -136,6 +136,7 @@ The app is organized around workflow and system pages:
 
 - `Status`: polls `/system/status`, `/jobs`, `/jobs/summary`, `/workers`, and `/kvstore`; supports job pause, resume, retry, and worker shutdown where backend endpoints exist.
 - `Ingestion`: browses server-side files through `GET /live/files` and queues video paths through `POST /ingestion/videos`.
+- `Telemetry`: analyzes server-side CSV sensor files through `POST /telemetry/analyze`, maps columns to the controlled unit vocabulary, previews values, and queues imports through `POST /runs/{run_id}/telemetry/import`.
 - `Preprocessing`: filters frames through `/frames/processing-state` and queues preprocessing batches through `POST /frame/preprocess/jobs`.
 - `Segmentation`: filters frames and queues candidate ROI generation through `POST /segmentation/jobs`.
 - `ROI Refinement`: filters frames/ROIs and queues refinement work through `POST /roi-refinement/jobs`.

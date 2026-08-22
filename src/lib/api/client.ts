@@ -61,6 +61,8 @@ import type {
   QueueAssetsRequest,
   QueueAssetsResponse,
   RawAsset,
+  RunSummary,
+  RunsListResponse,
   RoiRefinementCapabilities,
   RoiRefinementOptions,
   SegmentationOptions,
@@ -70,6 +72,11 @@ import type {
   SystemConfigResponse,
   SystemUsageResponse,
   SystemStatus,
+  TelemetryAnalyzeRequest,
+  TelemetryAnalyzeResponse,
+  TelemetryCatalogResponse,
+  TelemetryImportRequest,
+  TelemetryRangeFilter,
   WorkerSession
 } from './types';
 import { recordApiRequest } from '$lib/utils/analytics';
@@ -107,6 +114,8 @@ type FrameContextOptions = {
   detection_limit?: number | null;
   detection_offset?: number | null;
   frame_payload_kind?: 'original' | 'preprocessed' | null;
+  include_telemetry?: boolean;
+  telemetry_parameters?: string[];
 };
 
 type DetectionImageOptions = {
@@ -473,6 +482,16 @@ export class PelagiaApiClient {
     return response.collections ?? [];
   }
 
+  async listRuns(limit = 100): Promise<RunSummary[]> {
+    const response = await this.get<RunsListResponse>('/runs', { limit, offset: 0 }, 2500);
+    return response.runs ?? [];
+  }
+
+  async createRun(body: { run_key: string; instrument?: string; source_path?: string; source_type?: string; metadata?: Record<string, unknown> }): Promise<RunSummary> {
+    const response = await this.post<{ run: RunSummary }>('/runs', compact(body));
+    return response.run;
+  }
+
   async assetDetectionStats(kind?: string, limit = 500): Promise<AssetDetectionStats> {
     return this.get<AssetDetectionStats>('/assets/detections', { kind, limit }, 2500);
   }
@@ -590,7 +609,11 @@ export class PelagiaApiClient {
   }
 
   async searchDetectionsPage(filters: DetectionFilters = {}): Promise<DetectionListResponse> {
-    const response = await this.get<DetectionListResponse>('/detections', compact(filters), 1500);
+    const { telemetry_filters, ...detectionFilters } = filters;
+    const response = await this.get<DetectionListResponse>('/detections', compact({
+      ...detectionFilters,
+      telemetry_filter: telemetry_filters?.map((filter) => JSON.stringify(filter))
+    }), 1500);
     return withDetectionPageFallback(response, filters.limit ?? 100, filters.offset ?? 0);
   }
 
@@ -724,6 +747,18 @@ export class PelagiaApiClient {
 
   async queueAnalyzedAssets(body: QueueAssetsRequest): Promise<QueueAssetsResponse> {
     return this.post<QueueAssetsResponse>('/ingestion/assets', compact(body));
+  }
+
+  async telemetryCatalog(): Promise<TelemetryCatalogResponse> {
+    return this.get<TelemetryCatalogResponse>('/telemetry/catalog', {}, 0, { cache: 'no-store' });
+  }
+
+  async analyzeTelemetry(body: TelemetryAnalyzeRequest): Promise<TelemetryAnalyzeResponse> {
+    return this.post<TelemetryAnalyzeResponse>('/telemetry/analyze', compact(body));
+  }
+
+  async importTelemetry(runId: string, body: TelemetryImportRequest): Promise<{ job: Job }> {
+    return this.post<{ job: Job }>(`/runs/${encodeURIComponent(runId)}/telemetry/import`, compact(body));
   }
 
   async segmentFrame(frameId: string, options: SegmentationOptions): Promise<{
@@ -865,7 +900,13 @@ export class PelagiaApiClient {
   }
 
   async listCurationRois(options: Record<string, unknown> = {}): Promise<CurationRoiPage> {
-    return this.get('/curation/rois', options as Record<string, QueryParamValue>, 0);
+    const { telemetry_filters, ...curationOptions } = options as Record<string, unknown> & {
+      telemetry_filters?: TelemetryRangeFilter[];
+    };
+    return this.get('/curation/rois', compact({
+      ...curationOptions,
+      telemetry_filter: telemetry_filters?.map((filter) => JSON.stringify(filter))
+    }) as Record<string, QueryParamValue>, 0);
   }
 
   async getCurationRoi(roiId: string): Promise<CurationRoi> {

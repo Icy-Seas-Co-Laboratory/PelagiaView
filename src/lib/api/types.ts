@@ -281,6 +281,15 @@ export type Job = {
   result?: Record<string, unknown>;
 };
 
+export type RunSummary = {
+  id?: string | null;
+  run_id?: string | null;
+  run_key?: string | null;
+  status?: string | null;
+  source_path?: string | null;
+  source_type?: string | null;
+};
+
 export type JobProgress = {
   schema_version?: number;
   stage?: string;
@@ -494,6 +503,77 @@ export type AnalyzeIngestionResponse = {
   suggested_ingestion_request?: QueueAssetsRequest;
 };
 
+export type TelemetryUnitCatalogEntry = {
+  canonical_unit: string;
+  dimension: string;
+  aliases?: string[];
+  scale_to_reference?: number;
+  offset_to_reference?: number;
+};
+
+export type TelemetryCatalogResponse = {
+  unit_registry?: { name?: string; version?: string; units?: TelemetryUnitCatalogEntry[] };
+  parameters?: Array<Record<string, unknown>>;
+  sensors?: Array<Record<string, unknown>>;
+  interpolation_methods?: string[];
+};
+
+export type TelemetryValue = {
+  parameter?: string;
+  unit?: string | null;
+  value?: number | null;
+  observed_at?: string | null;
+  method?: string | null;
+  missing_reason?: string | null;
+  source_observed_at?: string[];
+  gap_seconds?: number | null;
+  qc_flags?: Array<number | null>;
+};
+
+export type TelemetryRangeFilter = {
+  parameter_key: string;
+  min_value?: number | null;
+  max_value?: number | null;
+};
+
+export type TelemetryAnalyzeRequest = {
+  path: string;
+  timestamp_column?: string | null;
+  timestamp_format?: string;
+  source_timezone?: string;
+  delimiter?: string;
+  sample_limit?: number;
+};
+
+export type TelemetryAnalyzeResponse = {
+  path?: string;
+  filename?: string;
+  size_bytes?: number;
+  columns?: string[];
+  timestamp_column?: string;
+  timestamp_format?: string | null;
+  source_timezone?: string;
+  row_count?: number;
+  time_range?: { start?: string | null; end?: string | null; duration_seconds?: number | null };
+  sampling?: { median_interval_seconds?: number | null; min_interval_seconds?: number | null; max_interval_seconds?: number | null };
+  timestamp_diagnostics?: { valid?: boolean; invalid_count?: number; invalid_examples?: Array<Record<string, unknown>>; duplicate_count?: number; non_monotonic_count?: number };
+  column_stats?: Array<{ column?: string; missing?: number; numeric?: number; invalid_numeric?: number; sample?: number[] }>;
+  preview_rows?: Array<{ row?: number; timestamp?: string | null; values?: Record<string, unknown> }>;
+};
+
+export type TelemetryImportRequest = {
+  path: string;
+  timestamp_column: string;
+  streams: Array<Record<string, unknown>>;
+  timestamp_format?: string;
+  source_timezone?: string;
+  delimiter?: string;
+  parser_name?: string;
+  parser_version?: string;
+  collections?: string[] | null;
+  metadata?: Record<string, unknown>;
+};
+
 export type QueueIngestionAssetRequest = Omit<AnalyzedIngestionAsset, 'collections'> & {
   collections?: string | string[] | null;
   n_tile?: number | null;
@@ -555,6 +635,8 @@ export type QueueAssetsResponse = {
   registration?: Record<string, unknown>;
   jobs?: Job[];
 };
+
+export type RunsListResponse = { runs?: RunSummary[] };
 
 export type FrameSummary = {
   id: string;
@@ -863,6 +945,8 @@ export type FrameContextResponse = {
   detections: DetectionSummary[];
   detection_count: number;
   page?: PageMetadata;
+  telemetry?: Record<string, TelemetryValue>;
+  events?: Array<Record<string, unknown>>;
 };
 
 export type DetectionFilters = {
@@ -887,6 +971,7 @@ export type DetectionFilters = {
   sort_by?: 'area' | 'byte_size' | 'id' | 'asset_frame' | null;
   sort_dir?: 'asc' | 'desc' | null;
   refinement_state?: 'any' | 'refined' | 'unrefined' | null;
+  telemetry_filters?: TelemetryRangeFilter[];
   limit?: number | null;
   offset?: number | null;
 };
