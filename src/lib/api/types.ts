@@ -281,6 +281,95 @@ export type Job = {
   result?: Record<string, unknown>;
 };
 
+/** A reproducible, ordered submission of one or more processing stages. */
+export type JobSeriesStep = {
+  id?: string;
+  stage: string;
+  enabled?: boolean;
+  options?: Record<string, unknown>;
+  status?: string | null;
+  job_ids?: string[];
+  progress?: JobProgress | null;
+  error_message?: string | null;
+  skip_reason?: string | null;
+};
+
+export type JobSeriesTarget = {
+  asset_ids?: string[];
+  collections?: string[];
+  frame_ids?: string[];
+  start_frame?: number | null;
+  end_frame?: number | null;
+};
+
+export type JobSeriesPresetSnapshot = {
+  preset_id?: string | null;
+  preset_name?: string | null;
+  source?: string | null;
+  captured_at?: string | null;
+  settings?: Record<string, unknown>;
+};
+
+export type JobSeriesFailurePolicy = 'continue' | 'stop_series' | 'retry_failed';
+
+export type JobSeriesRequest = {
+  targets: JobSeriesTarget;
+  preset_snapshot: JobSeriesPresetSnapshot;
+  steps: JobSeriesStep[];
+  priority?: number | null;
+  failure_policy?: JobSeriesFailurePolicy;
+  dry_run?: boolean;
+};
+
+export type JobSeriesEligibility = {
+  eligible_count?: number | string | null;
+  ineligible_count?: number | string | null;
+  selected_asset_count?: number | string | null;
+  selected_frame_count?: number | string | null;
+  by_step?: Array<{
+    stage?: string;
+    eligible_count?: number | string | null;
+    ineligible_count?: number | string | null;
+    reasons?: Record<string, number | string>;
+  }>;
+  sample_frame_ids?: string[];
+};
+
+export type JobSeriesProgress = JobProgress & {
+  unit_lineage?: Array<Record<string, unknown>>;
+};
+
+export type JobSeries = {
+  id: string;
+  status?: string | null;
+  targets?: JobSeriesTarget;
+  preset_snapshot?: JobSeriesPresetSnapshot | null;
+  steps?: JobSeriesStep[];
+  priority?: number | null;
+  failure_policy?: JobSeriesFailurePolicy | string | null;
+  dry_run?: boolean;
+  progress?: JobSeriesProgress | null;
+  job_ids?: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_message?: string | null;
+};
+
+export type JobSeriesListOptions = {
+  status?: string | string[] | null;
+  limit?: number | null;
+  offset?: number | null;
+  include_details?: boolean;
+};
+
+export type JobSeriesSubmitResponse = {
+  series?: JobSeries;
+  eligibility?: JobSeriesEligibility;
+  dry_run?: boolean;
+};
+
 export type RunSummary = {
   id?: string | null;
   run_id?: string | null;
@@ -1271,6 +1360,12 @@ export type OracleModelSummary = {
       knn?: boolean;
       visual_exemplars?: boolean;
     };
+    clustering?: {
+      available?: boolean;
+      cluster_count?: number | null;
+      method?: string | null;
+      embedding_dimension?: number | null;
+    };
   };
 };
 
@@ -1290,6 +1385,13 @@ export type CurationEvidenceSummary = {
   knn_agreement?: number | null;
   knn_weighted_support?: number | null;
   knn_margin?: number | null;
+  clustering_evidence_id?: string | null;
+  clustering_inference_run_id?: string | null;
+  cluster_index?: number | null;
+  cluster_id?: string | null;
+  cluster_similarity?: number | null;
+  cluster_novel?: boolean | null;
+  cluster_abstained?: boolean | null;
 };
 
 export type CurationRoi = CurationEvidenceSummary & {
@@ -1313,6 +1415,7 @@ export type CurationRoi = CurationEvidenceSummary & {
   annotations?: Array<Record<string, unknown>>;
   reviews?: Array<Record<string, unknown>>;
   evidence?: Array<Record<string, any>>;
+  clustering_evidence?: Array<Record<string, any>>;
 };
 
 export type CurationOptions = {
@@ -1324,6 +1427,7 @@ export type CurationOptions = {
     available_model_count?: number;
   };
   models: OracleModelSummary[];
+  clustering_models?: OracleModelSummary[];
   default_model_ref: string;
   labels: CurationLabel[];
   assets?: Array<{ id: string; filename: string; kind?: string }>;
@@ -1372,6 +1476,7 @@ export type ClassificationTargetSelection = {
 
 export type ClassificationTargetPreview = {
   model_ref: string;
+  evidence_kind?: 'classification' | 'clustering';
   selection: ClassificationTargetSelection;
   target_count: number;
   explicit_roi_count: number;
@@ -1386,6 +1491,95 @@ export type CurationRoiPage = {
   total: number;
   limit: number;
   offset: number;
+};
+
+export type FeatureSpaceSource = {
+  source_key: string;
+  source_kind: 'classification' | 'clustering';
+  inference_run_id: string;
+  model_selector?: string | null;
+  artifact_id?: string | null;
+  model_run_id?: string | null;
+  artifact_fingerprint?: string | null;
+  evidence_count: number;
+  embedding_count: number;
+  embedding_shape?: number[] | null;
+  latest_evidence_at?: string | null;
+  comparison: 'cosine_similarity';
+  scope: 'single_inference_run';
+};
+
+export type FeatureSpaceRoi = {
+  id: string;
+  asset_id?: string | null;
+  asset_filename?: string | null;
+  roi_index?: number | null;
+  area?: number | null;
+  roi_shape?: number[] | null;
+  label_display_name?: string | null;
+  review_decision?: string | null;
+  roi_url?: string;
+  thumbnail_url?: string;
+  similarity?: number | null;
+  is_reference?: boolean;
+  cluster_id?: string | null;
+  cluster_index?: number | null;
+  cluster_name?: string | null;
+  novel?: boolean | null;
+  abstained?: boolean | null;
+};
+
+export type FeatureSpaceSimilarityResult = {
+  items: FeatureSpaceRoi[];
+  reference_roi_id: string;
+  source_key: string;
+  comparison: 'cosine_similarity' | 'cluster_centroid_similarity';
+  minimum: number;
+  candidate_count: number;
+  total_vector_count: number;
+  scanned_vector_count: number;
+  search_scope: 'full_source' | 'deterministic_prefix' | 'cluster_local';
+  readable_embedding_count: number | null;
+  unreadable_embedding_count: number;
+  limit: number;
+  cluster_id?: string;
+};
+
+export type FeatureSpaceSourceRois = {
+  items: FeatureSpaceRoi[];
+  source_key: string;
+  limit: number;
+};
+
+export type FeatureSpaceCluster = {
+  cluster_id: string;
+  cluster_index?: number | null;
+  cluster_name?: string | null;
+  roi_count: number;
+  mean_similarity?: number | null;
+  min_similarity?: number | null;
+  max_similarity?: number | null;
+  novelty_count: number;
+  representative_detection_id: string;
+  representative_similarity?: number | null;
+};
+
+export type FeatureSpaceClusterResult = {
+  items: FeatureSpaceCluster[];
+  source_key: string;
+  organization_kind: 'self_supervised_clusters' | 'label_prototypes';
+  group_ids: 'run_local';
+};
+
+export type FeatureSpaceClusterMembers = {
+  items: FeatureSpaceRoi[];
+  total: number;
+  limit: number;
+  offset: number;
+  source_key: string;
+  cluster_id: string;
+  organization_kind: 'self_supervised_clusters' | 'label_prototypes';
+  group_ids: 'run_local';
 };
 
 export type FramePreprocessOptions = {

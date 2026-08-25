@@ -9,13 +9,17 @@
   import EventLogPage from './EventLogPage.svelte';
   import DatasetQueuePage from './DatasetQueuePage.svelte';
   import CurationPage from './CurationPage.svelte';
+  import ClustersPage from './ClustersPage.svelte';
   import IngestionPage from './IngestionPage.svelte';
   import TelemetryImportPage from './TelemetryImportPage.svelte';
   import MlEvidencePage from './MlEvidencePage.svelte';
+  import JobSeriesBuilderPage from './JobSeriesBuilderPage.svelte';
+  import JobSeriesMonitorPage from './JobSeriesMonitorPage.svelte';
   import FrameBrowserPage from './FrameBrowserPage.svelte';
   import PreferencesModal from './PreferencesModal.svelte';
   import RoiBrowserPage from './RoiBrowserPage.svelte';
   import ExplorerPage from './ExplorerPage.svelte';
+  import PresetLibraryPage from './PresetLibraryPage.svelte';
   import StatusPage from './StatusPage.svelte';
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
@@ -75,36 +79,46 @@
       <AppSidebar mode={activeDefinition.group === 'explorer' ? 'explorer' : 'workflow'} activeView={activeTab} currentUrl={$page.url} collapsed={sidebarCollapsed} onToggle={() => (sidebarCollapsed = !sidebarCollapsed)} />
     {/if}
     <section class="dashboard-surface section-surface">
-      <div class="page-scroll-content" class:browser-page={['rois', 'frames', 'curation'].includes(activeTab)} class:workbench-page={activeTab === 'explorer'}>
-        {#if activeTab === 'status'}
-          <StatusPage />
-        {:else if activeTab === 'assets'}
-          <AssetsPage />
-        {:else if activeTab === 'ingestion'}
-          <IngestionPage />
-        {:else if activeTab === 'telemetry'}
-          <TelemetryImportPage />
-        {:else if activeTab === 'preprocessing'}
-          <DatasetQueuePage mode="preprocessing" />
-        {:else if activeTab === 'segmentation'}
-          <DatasetQueuePage mode="segmentation" />
-        {:else if activeTab === 'roi_refinement'}
-          <DatasetQueuePage mode="roi_refinement" />
-        {:else if activeTab === 'ml_evidence'}
-          <MlEvidencePage />
-        {:else if activeTab === 'explorer'}
-          <ExplorerPage />
-        {:else if activeTab === 'rois'}
-          <RoiBrowserPage />
-        {:else if activeTab === 'curation'}
-          <CurationPage />
-        {:else if activeTab === 'frames'}
-          <FrameBrowserPage />
-        {:else if activeTab === 'admin'}
-          <AdministrationPage />
-        {:else}
-          <EventLogPage />
-        {/if}
+      <div class="page-scroll-content" data-dashboard-view={activeTab} class:browser-page={['rois', 'frames', 'curation', 'clusters'].includes(activeTab)} class:workbench-page={activeTab === 'explorer'}>
+        {#key activeTab}
+          {#if activeTab === 'status'}
+            <StatusPage />
+          {:else if activeTab === 'assets'}
+            <AssetsPage />
+          {:else if activeTab === 'ingestion'}
+            <IngestionPage />
+          {:else if activeTab === 'telemetry'}
+            <TelemetryImportPage />
+          {:else if activeTab === 'preprocessing'}
+            <DatasetQueuePage mode="preprocessing" />
+          {:else if activeTab === 'segmentation'}
+            <DatasetQueuePage mode="segmentation" />
+          {:else if activeTab === 'roi_refinement'}
+            <DatasetQueuePage mode="roi_refinement" />
+          {:else if activeTab === 'ml_evidence'}
+            <MlEvidencePage />
+          {:else if activeTab === 'job_series'}
+            <JobSeriesBuilderPage />
+          {:else if activeTab === 'job_series_monitor'}
+            <JobSeriesMonitorPage />
+          {:else if activeTab === 'preset_library'}
+            <PresetLibraryPage />
+          {:else if activeTab === 'explorer'}
+            <ExplorerPage />
+          {:else if activeTab === 'rois'}
+            <RoiBrowserPage />
+          {:else if activeTab === 'curation'}
+            <CurationPage />
+          {:else if activeTab === 'clusters'}
+            <ClustersPage />
+          {:else if activeTab === 'frames'}
+            <FrameBrowserPage />
+          {:else if activeTab === 'admin'}
+            <AdministrationPage />
+          {:else}
+            <EventLogPage />
+          {/if}
+        {/key}
       </div>
     </section>
   </div>

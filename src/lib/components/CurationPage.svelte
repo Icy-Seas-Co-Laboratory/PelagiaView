@@ -23,7 +23,7 @@
     expandableCurationLabelIds,
     visibleCurationTaxonomy
   } from '$lib/utils/curationTaxonomy';
-  import type { CurationLabel, CurationOptions, CurationRoi, FrameContextResponse, Job, OracleModelSummary, TelemetryRangeFilter } from '$lib/api/types';
+  import type { CurationLabel, CurationOptions, CurationRoi, FrameContextResponse, TelemetryRangeFilter } from '$lib/api/types';
   import type { ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   let options: CurationOptions | null = null;
@@ -41,7 +41,6 @@
   let labelSource: 'any' | 'human' | 'prediction' = 'any';
   let sortBy = 'oldest';
   let search = '';
-  let modelRef = '';
   let page = 0;
   let total = 0;
   const pageSize = 120;
@@ -51,10 +50,6 @@
   let notice: string | null = null;
   let newLabel = '';
   let expandedLabelIds = new Set<string>();
-  let classificationJobs: Job[] = [];
-  let classificationError: string | null = null;
-  let classificationPollTimer: number | null = null;
-  const observedClassificationStatuses = new Map<string, string>();
   type GalleryScaleMode = 'fit' | 'original';
   const fitGalleryTileBasePx = 150;
   let galleryScaleMode: GalleryScaleMode = 'fit';
@@ -86,16 +81,9 @@
     .sort((a, b) => b.similarity - a.similarity);
   $: knnNeighbors = (currentEvidence?.neighbors ?? []) as Array<Record<string, any>>;
   $: consensus = consensusSummary(detail);
-  $: oracleModels = options?.models ?? [];
-  $: availableModels = oracleModels.filter((model) => model.available !== false);
-  $: selectedModel = availableModels.find((model) => model.alias === modelRef) ?? null;
   $: labelTaxonomy = buildCurationTaxonomy(labels);
   $: visibleLabelRows = visibleCurationTaxonomy(labelTaxonomy, expandedLabelIds);
   $: labelHierarchyExists = labelTaxonomy.some((row) => row.depth > 0);
-  $: activeClassificationJobs = classificationJobs.filter((job) => isActiveJob(job));
-  $: visibleClassificationJobs = activeClassificationJobs.length
-    ? activeClassificationJobs
-    : classificationJobs.slice(0, 1);
   $: galleryTileSize = fitTileSize(galleryScale, fitGalleryTileBasePx);
   $: galleryColumns = Math.max(1, Math.floor((galleryWidth - 16) / (galleryTileSize + 10)));
   $: galleryRowHeight = galleryTileSize + 46;
@@ -126,13 +114,10 @@
     preferencesReady = true;
     window.addEventListener('keydown', keydown);
     await initialize();
-    await loadClassificationJobs(false);
-    classificationPollTimer = window.setInterval(() => void loadClassificationJobs(true), 3000);
   });
 
   onDestroy(() => {
     window.removeEventListener('keydown', keydown);
-    if (classificationPollTimer !== null) window.clearInterval(classificationPollTimer);
   });
 
   async function initialize() {
@@ -143,11 +128,6 @@
       options = await client.getCurationOptions();
       labels = options.labels ?? [];
       expandedLabelIds = expandableCurationLabelIds(buildCurationTaxonomy(labels));
-      const usableModels = options.models.filter((model) => model.available !== false);
-      modelRef =
-        usableModels.find((model) => model.alias === options?.default_model_ref)?.alias ??
-        usableModels[0]?.alias ??
-        '';
       await load();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -350,81 +330,6 @@
     } finally {
       working = false;
     }
-  }
-
-  async function runInference(selectedOnly: boolean) {
-    const client = getClient();
-    if (!client || !modelRef || working) return;
-    const roiIds = selectedOnly ? targets() : [];
-    if (selectedOnly && !roiIds.length) return;
-    working = true;
-    try {
-      const response = await client.queueClassificationJob({ roi_ids: roiIds, model_ref: modelRef });
-      classificationJobs = [response.job, ...classificationJobs.filter((job) => job.id !== response.job.id)];
-      observedClassificationStatuses.set(response.job.id, response.job.status ?? 'queued');
-      notice = `Queued classification job ${response.job.id}. Evidence will appear as the worker completes.`;
-      await loadClassificationJobs(false);
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      working = false;
-    }
-  }
-
-  async function loadClassificationJobs(refreshEvidence: boolean) {
-    const client = getClient();
-    if (!client) return;
-    try {
-      const next = await client.listJobs({
-        stage: 'classify',
-        include_progress: true,
-        limit: 5,
-        sort: 'updated_at',
-        direction: 'desc'
-      });
-      let completedSinceLastPoll = false;
-      for (const job of next) {
-        const status = job.status ?? 'unknown';
-        const previous = observedClassificationStatuses.get(job.id);
-        if (previous && isActiveStatus(previous) && !isActiveStatus(status)) {
-          completedSinceLastPoll = true;
-        }
-        observedClassificationStatuses.set(job.id, status);
-      }
-      classificationJobs = next;
-      classificationError = null;
-      if (refreshEvidence && completedSinceLastPoll) await load();
-    } catch (cause) {
-      classificationError = cause instanceof Error ? cause.message : String(cause);
-    }
-  }
-
-  function isActiveStatus(status: string): boolean {
-    return ['queued', 'leased', 'working', 'paused'].includes(status.toLowerCase());
-  }
-
-  function isActiveJob(job: Job): boolean {
-    return isActiveStatus(job.status ?? '');
-  }
-
-  function jobProgressPercent(job: Job): number | null {
-    const value = Number(job.progress?.percent);
-    return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
-  }
-
-  function jobProgressCount(job: Job): string {
-    const completed = Number(job.progress?.completed);
-    const total = Number(job.progress?.total);
-    if (Number.isFinite(completed) && Number.isFinite(total) && total > 0) {
-      return `${completed.toLocaleString()} of ${total.toLocaleString()} ROIs`;
-    }
-    if (job.status === 'succeeded' && total === 0) return 'No eligible ROIs';
-    return job.status === 'queued' ? 'Waiting for a classification worker' : 'Determining workload';
-  }
-
-  function jobPhase(job: Job): string {
-    const phase = String(job.progress?.current?.phase ?? job.progress?.secondary?.phase ?? '');
-    return phase ? phase.replaceAll('_', ' ') : job.status ?? 'unknown';
   }
 
   function keydown(event: KeyboardEvent) {
@@ -655,25 +560,6 @@
     return votes.every((value) => value === votes[0]) ? 'All evidence agrees' : 'Evidence disagreement';
   }
 
-  function modelArchitecture(model: OracleModelSummary): string {
-    return model.architecture || model.model?.architecture || 'Unspecified architecture';
-  }
-
-  function modelClassCount(model: OracleModelSummary): number {
-    return model.capabilities?.labels?.length ?? 0;
-  }
-
-  function modelFeatures(model: OracleModelSummary): string[] {
-    const features: string[] = [];
-    if (model.capabilities?.embedding?.available) features.push('embeddings');
-    if (model.capabilities?.evidence?.prototype) features.push('prototypes');
-    if (model.capabilities?.evidence?.knn) features.push('KNN');
-    return features;
-  }
-
-  function shortIdentity(value: string | null | undefined): string {
-    return value ? value.slice(0, 8) : 'unknown';
-  }
 </script>
 
 <div
@@ -716,42 +602,6 @@
     {#if options?.default_label_dictionary}<button class="default-labels" disabled={working} on:click={importDefaultLabels}>Load {options.default_label_dictionary.vocabulary.name} defaults</button>{/if}
     <div class="new-label"><input bind:value={newLabel} on:keydown={(event) => event.key === 'Enter' && createLabel()} placeholder="New project label" /><button disabled={!newLabel.trim() || working} on:click={createLabel}>Add</button></div>
 
-    <section class="inference-panel">
-      <div class="model-heading"><h3>Classification models</h3><span class:unavailable={!availableModels.length}>{availableModels.length}/{oracleModels.length} available</span></div>
-      {#if availableModels.length}
-        <label>Model to use<select bind:value={modelRef}>{#each availableModels as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label>
-      {:else}
-        <p class="muted">No usable classification model is currently available.</p>
-      {/if}
-      <div class="model-catalog" aria-label="Oracle Builder classification models">
-        {#each oracleModels as model (model.alias)}
-          <article class:unavailable={!model.available} class:selected={model.alias === modelRef}>
-            <header><strong>{model.alias}</strong><span>{model.available ? 'Ready' : 'Unavailable'}</span></header>
-            <p>{modelArchitecture(model)}{#if modelClassCount(model)} · {modelClassCount(model)} classes{/if}</p>
-            {#if modelFeatures(model).length}<p>{modelFeatures(model).join(' · ')}</p>{/if}
-            {#if model.model?.artifact_id}<code title={model.model.artifact_id}>artifact {shortIdentity(model.model.artifact_id)}</code>{/if}
-            {#if model.load_error}<small title={model.load_error}>{model.load_error}</small>{/if}
-          </article>
-        {/each}
-      </div>
-      <small class:unavailable={options?.oracle.status !== 'ready'}>Oracle: {options?.oracle.status || 'unknown'}{#if options?.oracle.error} · {options.oracle.error}{/if}</small>
-      {#if selectedModel}<small>Selected: {selectedModel.alias} · artifact {shortIdentity(selectedModel.model?.artifact_id)}</small>{/if}
-      <div class="inference-actions"><button disabled={working || !targets().length || !selectedModel} on:click={() => runInference(true)}>Run selected</button><button disabled={working || !selectedModel} on:click={() => runInference(false)}>Run all</button></div>
-      {#if visibleClassificationJobs.length}
-        <div class="classification-progress" aria-live="polite">
-          {#each visibleClassificationJobs as job (job.id)}
-            <article class:failed={job.status === 'failed' || job.status === 'dead_lettered'}>
-              <header><strong>{jobPhase(job)}</strong><span>{jobProgressPercent(job) === null ? job.status : `${jobProgressPercent(job)?.toFixed(0)}%`}</span></header>
-              <div class:indeterminate={jobProgressPercent(job) === null && isActiveJob(job)} class="classification-progress-track"><i style={`width:${jobProgressPercent(job) ?? 0}%`}></i></div>
-              <p>{job.progress?.message || job.summary || 'Classification job queued'}</p>
-              <small>{jobProgressCount(job)} · job {shortIdentity(job.id)}</small>
-              {#if job.error_message}<small class="job-error">{job.error_message}</small>{/if}
-            </article>
-          {/each}
-        </div>
-      {/if}
-      {#if classificationError}<small class="job-error">Progress unavailable: {classificationError}</small>{/if}
-    </section>
   </aside>
 
   <WorkspaceResizeHandle label="Resize curation filters" value={curationRailWidth} min={200} max={480} onResize={(value) => (curationRailWidth = value)} />
@@ -834,6 +684,12 @@
       <section><h3>KNN context</h3><dl><dt>Agreement</dt><dd>{percent(currentEvidence.knn_agreement)}</dd><dt>Weighted support</dt><dd>{percent(currentEvidence.knn_weighted_support)}</dd><dt>Margin</dt><dd>{percent(currentEvidence.knn_margin)}</dd></dl>{#if knnNeighbors.length}<div class="neighbor-list">{#each knnNeighbors as neighbor}<div><b>#{Number(neighbor.rank)+1}</b><span>{classLabel(Number(neighbor.class_index))}</span><em>{similarity(neighbor.similarity)}</em><code>{neighbor.exemplar_id}</code></div>{/each}</div><small>Oracle currently provides exemplar identity and similarity, but not deployable exemplar images.</small>{:else}<p>KNN evidence unavailable for this model.</p>{/if}</section>
       <section><h3>Provenance</h3><dl><dt>Model selector</dt><dd>{currentEvidence.model_selector}</dd><dt>Artifact</dt><dd>{currentEvidence.artifact_id || 'Unknown'}</dd><dt>Model run</dt><dd>{currentEvidence.model_run_id || 'Unknown'}</dd><dt>Inference run</dt><dd>{currentEvidence.inference_run_id}</dd></dl></section>{/if}
 
+      {#if detail?.clustering_evidence?.length}
+        {@const clusterEvidence = detail.clustering_evidence[0] as Record<string, any>}
+        {@const clusterPacket = (clusterEvidence.evidence_packet ?? {}) as Record<string, any>}
+        <section><h3>Feature-space organization</h3><dl><dt>Cluster</dt><dd>{clusterEvidence.cluster_id || 'Novel / unassigned'}</dd><dt>Similarity</dt><dd>{similarity(clusterEvidence.similarity)}</dd><dt>Novelty</dt><dd>{clusterEvidence.abstained ? 'Abstained' : clusterEvidence.novel ? 'Novel' : 'Assigned'}</dd></dl>{#if clusterPacket.clusters?.length}<div class="neighbor-list">{#each clusterPacket.clusters.slice(0,5) as cluster}<div><b>{cluster.cluster_id}</b><span>{cluster.size} ROIs</span><em>{similarity(cluster.similarity)}</em></div>{/each}</div>{/if}<small>Cluster IDs are run-local evidence, not taxonomy labels.</small></section>
+      {/if}
+
       <section><h3>Annotation history</h3>{#if detail.annotations?.length}{#each detail.annotations as annotation}<div class="history"><strong>{annotation.label_display_name}</strong><span>{annotation.actor_username} · {annotation.is_current ? 'current' : 'replaced'}</span></div>{/each}{:else}<p>No human annotation history.</p>{/if}</section>
     {:else}<div class="empty">Select an ROI to review its evidence and annotation history.</div>{/if}
   </aside>
@@ -863,20 +719,17 @@
   label{display:grid;gap:4px;margin:9px 0;font-size:11px;font-weight:650;color:var(--muted,#667)}select,input,button{font:inherit}select,input{min-width:0;padding:7px;border:1px solid var(--border,#bac5ca);border-radius:5px;background:var(--surface,#fff);color:inherit}button{border:1px solid var(--border,#bac5ca);border-radius:5px;background:var(--surface,#fff);color:inherit;padding:6px 8px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button.primary{background:var(--accent,#197997);color:#fff;border-color:var(--accent,#197997);width:100%}
   .search-row,.new-label{display:flex}.search-row input,.new-label input{flex:1}.search-row button,.new-label button{border-radius:0 5px 5px 0;margin-left:-1px}
   .telemetry-filter-control{border-top:1px solid var(--border,#ccd);margin:14px -5px 0;padding:9px 5px 0}.telemetry-filter-control .section-title h3{margin:0}.telemetry-filter-control>small{color:var(--muted,#667);display:block;font-size:10px;line-height:1.4;margin-top:5px}.telemetry-add-button{border:1px solid var(--accent,#197997);border-radius:50%;color:var(--accent,#197997);font-size:16px;height:24px;line-height:18px;padding:0;width:24px}.telemetry-filter-chips{display:grid;gap:4px;margin-top:6px}.telemetry-filter-chip{align-items:center;background:color-mix(in srgb,var(--accent,#197997) 10%,transparent);border:1px solid color-mix(in srgb,var(--accent,#197997) 30%,var(--border,#ccd));border-radius:4px;display:flex;font-size:10px;gap:4px;justify-content:space-between;padding:3px 5px}.telemetry-filter-chip button{border:0;background:transparent;padding:0 2px}
-  .label-tree{margin:15px -5px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:0 5px}.section-title>span{display:flex}.section-title button{padding:3px 5px}.label-tree h3,.inference-panel h3,.curation-inspector h3{margin:8px 0;font-size:12px}.label-tree>.taxonomy-row{width:100%;border:0;border-bottom:1px solid var(--border,#dde4e6);border-radius:0;display:flex;justify-content:space-between;text-align:left;background:transparent;padding-left:calc(5px + var(--depth,0) * 13px)}.label-tree>.taxonomy-row.active{background:color-mix(in srgb,var(--accent,#197997) 14%,transparent)}.taxonomy-label{display:flex;align-items:center;gap:4px;min-width:0}.taxonomy-label>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-toggle{width:12px;flex:0 0 12px;display:inline-grid;place-items:center;color:var(--muted,#667)}.tree-toggle[role="button"]{cursor:pointer}.label-tree em{font-style:normal;font-size:10px;white-space:nowrap}.label-tree small{color:var(--muted,#778)}kbd{font:9px ui-monospace;border:1px solid var(--border,#ccd);padding:1px 3px}
-  .inference-panel{border-top:1px solid var(--border,#ccd);margin-top:16px;padding-top:8px}.model-heading{display:flex;align-items:center;justify-content:space-between}.model-heading span{font-size:9px;color:#28724d}.model-heading span.unavailable,.inference-panel small.unavailable{color:#a14f3d}.model-catalog{display:grid;gap:5px;max-height:230px;overflow:auto;margin:8px 0}.model-catalog article{padding:6px;border:1px solid var(--border,#ccd);border-left:3px solid #3f8b6c;border-radius:4px;background:color-mix(in srgb,var(--surface,#fff) 92%,var(--accent,#197997))}.model-catalog article.unavailable{border-left-color:#a14f3d;opacity:.82}.model-catalog article.selected{box-shadow:0 0 0 1px var(--accent,#197997)}.model-catalog header{display:flex;justify-content:space-between;gap:5px;font-size:10px}.model-catalog header span{font-size:8px;text-transform:uppercase;letter-spacing:.05em}.model-catalog p{margin:3px 0;font-size:9px;color:var(--muted,#667)}.model-catalog code{display:block;font-size:8px}.model-catalog small{display:-webkit-box;overflow:hidden;line-clamp:2;-webkit-line-clamp:2;-webkit-box-orient:vertical;color:#a14f3d}.inference-panel>small{display:block;margin:7px 0;color:#28724d}.inference-actions{display:flex}.inference-actions button{flex:1}
-  .classification-progress{display:grid;gap:6px;margin-top:9px}.classification-progress article{padding:7px;border:1px solid var(--border,#ccd);border-radius:5px;background:color-mix(in srgb,var(--surface,#fff) 94%,var(--accent,#197997))}.classification-progress article.failed{border-color:#a14f3d}.classification-progress header{display:flex;justify-content:space-between;text-transform:capitalize;font-size:10px}.classification-progress p{margin:5px 0;font-size:9px;line-height:1.3}.classification-progress small{display:block;margin:2px 0;color:var(--muted,#667)}.classification-progress-track{height:6px;margin-top:5px;border-radius:4px;overflow:hidden;background:var(--border,#d9e0e2)}.classification-progress-track i{display:block;height:100%;background:var(--accent,#197997);transition:width .25s ease}.classification-progress-track.indeterminate i{width:35%!important;animation:classification-pulse 1.2s ease-in-out infinite}.job-error{color:#a14f3d!important;overflow-wrap:anywhere}@keyframes classification-pulse{0%{transform:translateX(-110%)}100%{transform:translateX(310%)}}
+  .label-tree{margin:15px -5px}.section-title{display:flex;align-items:center;justify-content:space-between;padding:0 5px}.section-title>span{display:flex}.section-title button{padding:3px 5px}.label-tree h3,.curation-inspector h3{margin:8px 0;font-size:12px}.label-tree>.taxonomy-row{width:100%;border:0;border-bottom:1px solid var(--border,#dde4e6);border-radius:0;display:flex;justify-content:space-between;text-align:left;background:transparent;padding-left:calc(5px + var(--depth,0) * 13px)}.label-tree>.taxonomy-row.active{background:color-mix(in srgb,var(--accent,#197997) 14%,transparent)}.taxonomy-label{display:flex;align-items:center;gap:4px;min-width:0}.taxonomy-label>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.tree-toggle{width:12px;flex:0 0 12px;display:inline-grid;place-items:center;color:var(--muted,#667)}.tree-toggle[role="button"]{cursor:pointer}.label-tree em{font-style:normal;font-size:10px;white-space:nowrap}.label-tree small{color:var(--muted,#778)}kbd{font:9px ui-monospace;border:1px solid var(--border,#ccd);padding:1px 3px}
   .curation-gallery{display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:100%;min-height:0}.curation-gallery header,.curation-gallery footer{padding:12px;display:flex;align-items:center;justify-content:space-between;gap:10px}.curation-gallery header{border-bottom:1px solid var(--border,#ccd)}.curation-gallery footer{border-top:1px solid var(--border,#ccd)}
   .registry-export-button{white-space:nowrap}
   :global(.inspect-image){width:100%;max-height:230px;object-fit:contain;background:#162329;border-radius:6px}.default-labels{width:100%;margin-top:6px}.curation-inspector>code{display:block;margin:5px 0 12px;overflow:hidden;text-overflow:ellipsis;font-size:9px}.curation-inspector section{border-top:1px solid var(--border,#ccd);padding:9px 0}.curation-inspector section.warning{border-left:4px solid #ba6b35;padding-left:8px}.current-label{font-size:18px}.review-actions{display:flex}.review-actions button{flex:1;padding:5px 2px}.evidence-bar{display:grid;grid-template-columns:minmax(80px,1fr)80px 45px;gap:5px;align-items:center;font-size:10px;margin:5px 0}.evidence-bar i{height:7px;background:var(--border,#d9e0e2);border-radius:4px;overflow:hidden}.evidence-bar i b{display:block;height:100%;background:var(--accent,#197997)}.evidence-bar em{text-align:right;font-style:normal}dl{display:grid;grid-template-columns:90px minmax(0,1fr);font-size:10px;margin:7px 0}dt{color:var(--muted,#667)}dd{margin:0;overflow-wrap:anywhere}.neighbor-list>div{display:grid;grid-template-columns:24px 1fr 42px;gap:4px;padding:4px 0;border-bottom:1px solid var(--border,#dde4e6);font-size:10px}.neighbor-list code{grid-column:2/4;overflow:hidden;text-overflow:ellipsis}.history{display:flex;justify-content:space-between;font-size:10px;padding:5px 0;border-bottom:1px solid var(--border,#dde4e6)}.empty{padding:25px;color:var(--muted,#667);text-align:center}
   .toast{position:fixed;right:20px;bottom:20px;z-index:10;padding:10px 12px;border-radius:6px;color:#fff;box-shadow:0 5px 20px #0004}.toast.error{background:#9b3d37}.toast.notice{background:#286f55}.toast button{border:0;background:transparent;color:inherit}.loading-line{position:fixed;left:0;right:0;top:0;height:3px;background:var(--accent,#197997);z-index:20}
   /* Typography floor: retain dense panels without reducing scientific context to fine print. */
-  .eyebrow,.label-tree em,.model-catalog header,.classification-progress header,
+  .eyebrow,.label-tree em,
   .evidence-bar,dl,.neighbor-list>div,.history{font-size:var(--wb-font-micro,.7rem)}
-  label,.model-catalog p,.classification-progress p,.classification-progress small,
-  .model-heading span,.model-catalog code,.model-catalog header span,
+  label,
   .curation-inspector>code,kbd{font-size:var(--wb-font-caption,.75rem);line-height:var(--wb-line-compact,1.3)}
-  .label-tree h3,.inference-panel h3,.curation-inspector h3{font-size:var(--wb-font-small,.8125rem)}
-  .model-catalog small,.inference-panel>small,.label-tree small{font-size:var(--wb-font-micro,.7rem);line-height:var(--wb-line-reading,1.5)}
+  .label-tree h3,.curation-inspector h3{font-size:var(--wb-font-small,.8125rem)}
+  .label-tree small{font-size:var(--wb-font-micro,.7rem);line-height:var(--wb-line-reading,1.5)}
   @media(max-width:1050px){.curation-workspace{grid-template-columns:220px 1fr}.curation-inspector{grid-column:1/-1;max-height:none}}@media(max-width:700px){.curation-workspace{display:block}.curation-rail,.curation-gallery,.curation-inspector{margin-bottom:10px;max-height:none}}
 </style>

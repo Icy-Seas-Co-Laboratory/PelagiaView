@@ -22,11 +22,14 @@
   type ReviewState = NonNullable<ClassificationTargetSelection['review_state']>;
   type EvidenceState = NonNullable<ClassificationTargetSelection['evidence_state']>;
   type LabelSource = NonNullable<ClassificationTargetSelection['label_source']>;
+  type EvidenceKind = 'classification' | 'clustering';
+  type EvidenceModel = OracleModelSummary & { evidenceKind: EvidenceKind };
 
   let options: CurationOptions | null = null;
   let assets: RawAsset[] = [];
   let collections: CollectionSummary[] = [];
-  let modelRef = '';
+  let selectedModelRefs = new Set<string>();
+  let models: EvidenceModel[] = [];
   let selectedAssetIds = new Set<string>();
   let selectedCollections = new Set<string>();
   let annotationState: AnnotationState = 'all';
@@ -39,7 +42,7 @@
   let search = '';
   let assetFilterOptions: LiveFilterOption[] = [];
   let collectionFilterOptions: LiveFilterOption[] = [];
-  let preview: ClassificationTargetPreview | null = null;
+  let previews: Record<string, ClassificationTargetPreview> = {};
   let loading = true;
   let previewing = false;
   let queueing = false;
@@ -52,9 +55,13 @@
   let previewSerial = 0;
   let scheduledSignature = '';
 
-  $: models = options?.models ?? [];
+  $: models = [
+    ...(options?.models ?? []).map((model) => ({ ...model, evidenceKind: 'classification' as const })),
+    ...(options?.clustering_models ?? []).map((model) => ({ ...model, evidenceKind: 'clustering' as const }))
+  ];
   $: availableModels = models.filter((model) => model.available !== false);
-  $: selectedModel = availableModels.find((model) => model.alias === modelRef) ?? null;
+  $: selectedModels = availableModels.filter((model) => selectedModelRefs.has(modelKey(model)));
+  $: queueableModels = selectedModels.filter((model) => (previews[modelKey(model)]?.target_count ?? 0) > 0);
   $: labels = options?.labels ?? [];
   $: taxonomy = buildCurationTaxonomy(labels);
   $: assetFilterOptions = assets.map((asset) => ({
@@ -86,8 +93,8 @@
     max_area: maxArea,
     search: search.trim() || null
   } satisfies ClassificationTargetSelection;
-  $: selectionSignature = JSON.stringify({ modelRef, selection });
-  $: if (ready && modelRef && selectionSignature !== scheduledSignature) {
+  $: selectionSignature = JSON.stringify({ modelRefs: [...selectedModelRefs].sort(), selection });
+  $: if (ready && selectedModels.length && selectionSignature !== scheduledSignature) {
     scheduledSignature = selectionSignature;
     schedulePreview();
     persistPreferences();
@@ -118,11 +125,17 @@
       assets = nextAssets;
       collections = nextCollections;
       restorePreferences();
-      const usableModels = nextOptions.models.filter((model) => model.available !== false);
-      modelRef = usableModels.some((model) => model.alias === modelRef)
-        ? modelRef
-        : usableModels.find((model) => model.alias === nextOptions.default_model_ref)?.alias ?? usableModels[0]?.alias ?? '';
-      if (!modelRef && nextOptions.oracle.error) error = nextOptions.oracle.error;
+      const usableModels: EvidenceModel[] = [
+        ...nextOptions.models.map((model) => ({ ...model, evidenceKind: 'classification' as const })),
+        ...(nextOptions.clustering_models ?? []).map((model) => ({ ...model, evidenceKind: 'clustering' as const }))
+      ].filter((model) => model.available !== false);
+      const validSelection = new Set([...selectedModelRefs].filter((ref) => usableModels.some((model) => modelKey(model) === ref)));
+      if (!validSelection.size) {
+        const defaultModel = usableModels.find((model) => model.alias === nextOptions.default_model_ref) ?? usableModels[0];
+        if (defaultModel) validSelection.add(modelKey(defaultModel));
+      }
+      selectedModelRefs = validSelection;
+      if (!selectedModelRefs.size && nextOptions.oracle.error) error = nextOptions.oracle.error;
     } catch (cause) {
       error = `Unable to load ML Evidence options: ${errorMessage(cause)}`;
     } finally {
@@ -152,7 +165,7 @@
 
   function schedulePreview() {
     if (previewTimer !== null) window.clearTimeout(previewTimer);
-    preview = null;
+    previews = {};
     previewError = null;
     previewing = true;
     previewTimer = window.setTimeout(() => void loadPreview(), 250);
@@ -160,16 +173,23 @@
 
   async function loadPreview() {
     const client = getClient();
-    if (!client || !modelRef) return;
+    if (!client || !selectedModels.length) return;
     const serial = ++previewSerial;
     previewing = true;
     previewError = null;
     try {
-      const next = await client.previewClassificationTargets({ model_ref: modelRef, selection });
-      if (serial === previewSerial) preview = next;
+      const next = await Promise.all(selectedModels.map(async (model) => [
+        modelKey(model),
+        await client.previewClassificationTargets({
+          model_ref: model.alias,
+          evidence_kind: model.evidenceKind,
+          selection
+        })
+      ] as const));
+      if (serial === previewSerial) previews = Object.fromEntries(next);
     } catch (cause) {
       if (serial === previewSerial) {
-        preview = null;
+        previews = {};
         previewError = previewFailureMessage(cause);
       }
     } finally {
@@ -179,14 +199,22 @@
 
   async function queueEvidence() {
     const client = getClient();
-    if (!client || !modelRef || !preview?.target_count || queueing) return;
+    if (!client || !queueableModels.length || queueing) return;
     queueing = true;
     error = null;
     notice = null;
     try {
-      const result = await client.queueClassificationJob({ model_ref: modelRef, selection });
-      submittedJobIds = [result.job.id, ...submittedJobIds.filter((id) => id !== result.job.id)];
-      notice = `Queued ML evidence for ${formatCount(result.target_count)} refined ROIs using ${result.model_ref}.`;
+      const results = await Promise.all(queueableModels.map((model) => client.queueClassificationJob({
+        model_ref: model.alias,
+        evidence_kind: model.evidenceKind,
+        selection
+      })));
+      submittedJobIds = [
+        ...results.map((result) => result.job.id),
+        ...submittedJobIds.filter((id) => !results.some((result) => result.job.id === id))
+      ];
+      const targetCount = results.reduce((sum, result) => sum + result.target_count, 0);
+      notice = `Queued ${results.length} evidence job${results.length === 1 ? '' : 's'} for ${formatCount(targetCount)} model-ROI evaluations.`;
     } catch (cause) {
       error = `Unable to queue ML evidence: ${errorMessage(cause)}`;
     } finally {
@@ -212,7 +240,26 @@
     if (model.capabilities?.embedding?.available) features.push('embeddings');
     if (model.capabilities?.evidence?.prototype) features.push('prototype similarity');
     if (model.capabilities?.evidence?.knn) features.push('KNN context');
+    if (model.capabilities?.clustering?.available) {
+      features.push(`${model.capabilities.clustering.cluster_count ?? '?'} clusters`);
+    }
     return features;
+  }
+
+  function modelKey(model: Pick<EvidenceModel, 'alias' | 'evidenceKind'>): string {
+    return `${model.evidenceKind}:${model.alias}`;
+  }
+
+  function toggleModel(model: EvidenceModel, checked: boolean) {
+    const next = new Set(selectedModelRefs);
+    const key = modelKey(model);
+    if (checked) next.add(key);
+    else next.delete(key);
+    selectedModelRefs = next;
+  }
+
+  function selectedCountFor(kind: EvidenceKind): number {
+    return selectedModels.filter((model) => model.evidenceKind === kind).length;
   }
 
   function preferenceKey(): string {
@@ -223,7 +270,12 @@
     if (typeof localStorage === 'undefined') return;
     try {
       const stored = JSON.parse(localStorage.getItem(preferenceKey()) ?? '{}') as Record<string, unknown>;
-      modelRef = typeof stored.modelRef === 'string' ? stored.modelRef : '';
+      const storedRefs = Array.isArray(stored.modelRefs)
+        ? stored.modelRefs.map(String)
+        : typeof stored.modelRef === 'string' && stored.modelRef
+          ? [`classification:${stored.modelRef}`]
+          : [];
+      selectedModelRefs = new Set(storedRefs);
       selectedAssetIds = new Set(Array.isArray(stored.assetIds) ? stored.assetIds.map(String) : []);
       selectedCollections = new Set(Array.isArray(stored.collections) ? stored.collections.map(String) : []);
       annotationState = stateValue<AnnotationState>(stored.annotationState, ['all', 'labeled', 'unlabeled'], 'all');
@@ -242,7 +294,7 @@
   function persistPreferences() {
     if (typeof localStorage === 'undefined') return;
     localStorage.setItem(preferenceKey(), JSON.stringify({
-      modelRef,
+      modelRefs: [...selectedModelRefs],
       assetIds: [...selectedAssetIds],
       collections: [...selectedCollections],
       annotationState,
@@ -280,7 +332,7 @@
 
 <div class="ml-evidence-page">
   <section class="workflow-page-intro">
-    <div><h1>Generate ML evidence</h1><p>Select refined ROIs and an Oracle Builder model. Pelagia owns the query, job, evidence records, and provenance; Oracle Builder owns inference.</p></div>
+    <div><h1>Generate ML evidence</h1><p>Select refined ROIs and one or more Oracle Builder models. Pelagia owns the query, jobs, evidence records, and provenance; Oracle Builder owns inference.</p></div>
     <span class:ready={availableModels.length > 0}>{availableModels.length ? `${availableModels.length} model${availableModels.length === 1 ? '' : 's'} ready` : 'Oracle unavailable'}</span>
   </section>
 
@@ -310,30 +362,49 @@
 
     <aside class="evidence-control-column">
       <section class="panel model-panel">
-        <p class="eyebrow">Inference</p><h2>Oracle Builder model</h2>
-        <label>Classification model<select bind:value={modelRef} disabled={!availableModels.length}>{#if !availableModels.length}<option value="">No available model</option>{/if}{#each availableModels as model}<option value={model.alias}>{model.alias}</option>{/each}</select></label>
-        {#if selectedModel}
-          <article class="model-summary"><header><strong>{selectedModel.alias}</strong><span>Ready</span></header><p>{modelArchitecture(selectedModel)}</p><dl><dt>Classes</dt><dd>{formatCount(selectedModel.capabilities?.labels?.length ?? 0)}</dd><dt>Evidence</dt><dd>{modelFeatures(selectedModel).join(', ') || 'probabilities only'}</dd></dl></article>
-        {:else if !loading}<p class="empty">Start Oracle Builder with a classification model to queue evidence.</p>{/if}
+        <p class="eyebrow">Inference</p><h2>Oracle Builder models</h2>
+        <p class="model-help">Each selection produces a separate, provenance-scoped evidence job. {selectedModels.length ? `${selectedModels.length} selected.` : 'Select at least one ready model.'}</p>
+        {#each ['classification', 'clustering'] as evidenceKind (evidenceKind)}
+          {@const group = availableModels.filter((model) => model.evidenceKind === evidenceKind)}
+          <fieldset class="model-group">
+            <legend>{evidenceKind === 'classification' ? 'Classification' : 'Self-supervised clustering'} <span>{selectedCountFor(evidenceKind as EvidenceKind)}/{group.length}</span></legend>
+            {#if group.length}
+              {#each group as model (modelKey(model))}
+                <label class="model-choice">
+                  <input type="checkbox" checked={selectedModelRefs.has(modelKey(model))} on:change={(event) => toggleModel(model, (event.currentTarget as HTMLInputElement).checked)} />
+                  <span><strong>{model.alias}</strong><small>{modelArchitecture(model)} · {modelFeatures(model).join(', ') || (evidenceKind === 'clustering' ? 'cluster evidence' : 'probabilities')}</small></span>
+                </label>
+              {/each}
+            {:else if !loading}
+              <p class="empty">No ready {evidenceKind} model.</p>
+            {/if}
+          </fieldset>
+        {/each}
       </section>
 
       <section class="panel queue-panel">
-        <p class="eyebrow">Resolved workload</p><h2>{previewing ? 'Counting refined ROIs…' : preview ? formatCount(preview.target_count) : '—'}</h2><p>{preview?.target_count === 1 ? 'refined ROI matches this query' : 'refined ROIs match this query'}</p>
+        <p class="eyebrow">Resolved workload</p><h2>{previewing ? 'Counting refined ROIs…' : `${formatCount(queueableModels.reduce((sum, model) => sum + (previews[modelKey(model)]?.target_count ?? 0), 0))}`}</h2><p>{queueableModels.length ? `${queueableModels.length} selected model${queueableModels.length === 1 ? '' : 's'} have matching refined ROIs` : 'Select models and a target query to resolve work'}</p>
+        {#if selectedModels.length && !previewing}
+          <dl class="workload-list">
+            {#each selectedModels as model (modelKey(model))}
+              <div><dt>{model.alias}</dt><dd>{formatCount(previews[modelKey(model)]?.target_count ?? 0)} ROIs</dd></div>
+            {/each}
+          </dl>
+        {/if}
         {#if previewError}<p class="preview-error" role="alert">{previewError}</p>{/if}
-        {#if evidenceState === 'all'}<p class="rerun-warning">This intentionally includes ROIs that already have evidence from this model. New evidence will be retained as another inference run.</p>{/if}
-        <button class="primary queue-action" type="button" disabled={loading || previewing || queueing || !selectedModel || !preview?.target_count} on:click={queueEvidence}>{queueing ? 'Queueing…' : 'Queue ML evidence'}</button>
-        <small>The worker loads bbox-only crops in bounded batches and records model identity, progress, embeddings, similarities, and inference provenance.</small>
+        {#if evidenceState === 'all'}<p class="rerun-warning">This intentionally includes ROIs that already have evidence from each selected model. New evidence is retained as a separate inference run.</p>{/if}
+        <button class="primary queue-action" type="button" disabled={loading || previewing || queueing || !queueableModels.length} on:click={queueEvidence}>{queueing ? 'Queueing…' : `Queue ${queueableModels.length || ''} evidence job${queueableModels.length === 1 ? '' : 's'}`}</button>
+        <small>The worker loads bbox-only crops in bounded batches and records each model’s identity, evidence type, progress, embeddings, similarities, and inference provenance.</small>
       </section>
     </aside>
   </div>
 
-  <QueueStatusSummary title="ML evidence jobs" eyebrow="Classification" stage="classification" jobIds={submittedJobIds} mode="detailed" />
+  <QueueStatusSummary title="ML evidence jobs" eyebrow="Classification and clustering" stage="classification" jobIds={submittedJobIds} mode="detailed" />
 </div>
 
 <style>
-  .ml-evidence-page{display:grid;gap:14px;max-width:1500px;margin:0 auto}.workflow-page-intro{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid var(--border,#dce4e2);padding:2px 0 14px}.workflow-page-intro h1{margin:0 0 4px;font-size:1.45rem}.workflow-page-intro p{max-width:850px;margin:0;color:var(--muted,#667);font-size:.83rem;line-height:1.5}.workflow-page-intro>span{border:1px solid var(--border,#ccd);border-radius:999px;padding:5px 9px;color:var(--muted,#667);font-size:.7rem;font-weight:800;white-space:nowrap}.workflow-page-intro>span.ready{border-color:color-mix(in srgb,var(--accent,#176f62) 45%,var(--border,#ccd));color:var(--accent,#176f62);background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}.evidence-workspace{display:grid;grid-template-columns:minmax(0,1fr)minmax(280px,340px);gap:12px;align-items:start}.target-panel,.model-panel,.queue-panel{padding:14px}.target-panel>header{display:flex;justify-content:space-between;gap:15px;align-items:start;border-bottom:1px solid var(--border,#dde4e3);padding-bottom:10px}.target-panel h2,.model-panel h2{margin:0;font-size:1.05rem}.target-panel>header small{color:var(--muted,#667)}.filter-selector-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px 0;border-bottom:1px solid var(--border,#dde4e3)}.filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;padding-top:12px}.filter-grid label,.model-panel>label{display:grid;gap:4px;margin:0;color:var(--muted,#667);font-size:.68rem;font-weight:750}.evidence-control-column{display:grid;gap:12px;position:sticky;top:8px}.model-panel>.eyebrow,.queue-panel>.eyebrow{margin:0 0 3px}.model-summary{margin-top:10px;border-top:1px solid var(--border,#dde4e3);padding-top:10px}.model-summary header{display:flex;justify-content:space-between}.model-summary header span{color:var(--accent,#176f62);font-size:.68rem;font-weight:800}.model-summary p{color:var(--muted,#667);font-size:.72rem}.model-summary dl{display:grid;grid-template-columns:60px 1fr;gap:5px;margin:0;font-size:.68rem}.model-summary dt{color:var(--muted,#667)}.model-summary dd{margin:0}.queue-panel h2{margin:0;font-size:1.75rem}.queue-panel>p:not(.eyebrow){margin:2px 0 12px;color:var(--muted,#667);font-size:.75rem}.queue-panel .preview-error{border-left:3px solid var(--danger,#a23c34);padding:8px;color:var(--danger,#a23c34)!important;background:color-mix(in srgb,var(--danger,#a23c34) 8%,transparent)}.queue-panel .rerun-warning{border-left:3px solid #b77a35;padding:7px;color:#87551e!important;background:color-mix(in srgb,#b77a35 8%,transparent)}.queue-action{width:100%;margin:4px 0 9px}.queue-panel>small{display:block;color:var(--muted,#667);font-size:.65rem;line-height:1.45}.empty{color:var(--muted,#667);font-size:.75rem}.form-success{margin:0;border-left:3px solid var(--accent,#176f62);padding:8px 10px;background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}@media(max-width:1050px){.evidence-workspace{grid-template-columns:minmax(0,1fr)}.evidence-control-column{grid-template-columns:repeat(2,minmax(0,1fr));position:static}}@media(max-width:720px){.workflow-page-intro{display:grid}.filter-selector-grid,.filter-grid,.evidence-control-column{grid-template-columns:minmax(0,1fr)}}
-  .filter-grid label,.model-panel>label,.model-summary header span,.model-summary dl,
-  .queue-panel>small{font-size:var(--wb-font-caption,.75rem)}
-  .model-summary p,.queue-panel>p:not(.eyebrow),.empty{font-size:var(--wb-font-small,.8125rem)}
+  .ml-evidence-page{display:grid;gap:14px;max-width:1500px;margin:0 auto}.workflow-page-intro{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid var(--border,#dce4e2);padding:2px 0 14px}.workflow-page-intro h1{margin:0 0 4px;font-size:1.45rem}.workflow-page-intro p{max-width:850px;margin:0;color:var(--muted,#667);font-size:.83rem;line-height:1.5}.workflow-page-intro>span{border:1px solid var(--border,#ccd);border-radius:999px;padding:5px 9px;color:var(--muted,#667);font-size:.7rem;font-weight:800;white-space:nowrap}.workflow-page-intro>span.ready{border-color:color-mix(in srgb,var(--accent,#176f62) 45%,var(--border,#ccd));color:var(--accent,#176f62);background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}.evidence-workspace{display:grid;grid-template-columns:minmax(0,1fr)minmax(280px,340px);gap:12px;align-items:start}.target-panel,.model-panel,.queue-panel{padding:14px}.target-panel>header{display:flex;justify-content:space-between;gap:15px;align-items:start;border-bottom:1px solid var(--border,#dde4e3);padding-bottom:10px}.target-panel h2,.model-panel h2{margin:0;font-size:1.05rem}.target-panel>header small{color:var(--muted,#667)}.filter-selector-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px 0;border-bottom:1px solid var(--border,#dde4e3)}.filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;padding-top:12px}.filter-grid label{display:grid;gap:4px;margin:0;color:var(--muted,#667);font-size:.68rem;font-weight:750}.evidence-control-column{display:grid;gap:12px;position:sticky;top:8px}.model-panel>.eyebrow,.queue-panel>.eyebrow{margin:0 0 3px}.model-help{margin:5px 0 10px;color:var(--muted,#667);font-size:.72rem;line-height:1.4}.model-group{display:grid;gap:5px;margin:10px 0 0;padding:9px;border:1px solid var(--border,#dde4e3);border-radius:6px}.model-group legend{padding:0 4px;color:var(--muted,#667);font-size:.68rem;font-weight:800}.model-group legend span{margin-left:5px;color:var(--accent,#176f62)}.model-choice{display:flex;gap:7px;align-items:flex-start;color:inherit;cursor:pointer}.model-choice input{margin-top:3px}.model-choice span{display:grid;gap:2px;min-width:0}.model-choice strong{font-size:.76rem}.model-choice small{color:var(--muted,#667);font-size:.65rem;line-height:1.35}.queue-panel h2{margin:0;font-size:1.75rem}.queue-panel>p:not(.eyebrow){margin:2px 0 12px;color:var(--muted,#667);font-size:.75rem}.workload-list{display:grid;gap:4px;margin:0 0 10px;font-size:.7rem}.workload-list div{display:flex;justify-content:space-between;gap:8px}.workload-list dt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workload-list dd{margin:0;color:var(--muted,#667);white-space:nowrap}.queue-panel .preview-error{border-left:3px solid var(--danger,#a23c34);padding:8px;color:var(--danger,#a23c34)!important;background:color-mix(in srgb,var(--danger,#a23c34) 8%,transparent)}.queue-panel .rerun-warning{border-left:3px solid #b77a35;padding:7px;color:#87551e!important;background:color-mix(in srgb,#b77a35 8%,transparent)}.queue-action{width:100%;margin:4px 0 9px}.queue-panel>small{display:block;color:var(--muted,#667);font-size:.65rem;line-height:1.45}.empty{color:var(--muted,#667);font-size:.75rem}.form-success{margin:0;border-left:3px solid var(--accent,#176f62);padding:8px 10px;background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}@media(max-width:1050px){.evidence-workspace{grid-template-columns:minmax(0,1fr)}.evidence-control-column{grid-template-columns:repeat(2,minmax(0,1fr));position:static}}@media(max-width:720px){.workflow-page-intro{display:grid}.filter-selector-grid,.filter-grid,.evidence-control-column{grid-template-columns:minmax(0,1fr)}}
+  .filter-grid label,.queue-panel>small{font-size:var(--wb-font-caption,.75rem)}
+  .model-help,.queue-panel>p:not(.eyebrow),.empty{font-size:var(--wb-font-small,.8125rem)}
   .queue-panel>small{line-height:var(--wb-line-reading,1.5)}
 </style>

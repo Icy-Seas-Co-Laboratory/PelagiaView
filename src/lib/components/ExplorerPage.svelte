@@ -5,9 +5,7 @@
   import HelpChip from '$lib/components/HelpChip.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
-  import ProcessingPresetControls from '$lib/components/ProcessingPresetControls.svelte';
   import { ApiError, authenticatedFetch } from '$lib/api/client';
-  import { listProcessingPresets, saveProcessingPreset } from '$lib/api/processingPresets';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
   import type {
@@ -45,13 +43,11 @@
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
     PROCESSING_PRESET_APPLIED_EVENT,
-    processingPresetByKey,
     processingSettingChangedFromBaseline,
     processingSettingsBaseline,
     pruneProcessingSettings
   } from '$lib/processing/settings';
   import {
-    applyProcessingPresetToSession,
     currentLiveProcessingPreset,
     processingPresetSession,
     setLiveProcessingPresetFromSettings
@@ -245,12 +241,6 @@
   let thresholdPreviewTimer: number | null = null;
   let thresholdPreviewSerial = 0;
   let detectionPreviewSerial = 0;
-  let processingPresets: ProcessingPreset[] = [];
-  let selectedProcessingPresetKey = 'live:live';
-  let presetMessage: string | null = null;
-  let presetError: string | null = null;
-  let presetsLoading = false;
-  let lastProcessingPresetSessionKey = '';
 
   let activeExplorerTab: ExplorerStage = 'preprocessing';
   $: activeExplorerTab = explorerStageFromUrl($page.url);
@@ -335,8 +325,6 @@
   $: selectedFrame = findFrameByNumber(selectedFrameNum);
   $: explorerPreferenceSnapshot = buildPreferenceSnapshot();
   $: if (preferencesReady) writePreferences(explorerPreferenceKey(), explorerPreferenceSnapshot);
-  $: liveProcessingPreset = $processingPresetSession.livePreset;
-  $: availableProcessingPresets = [liveProcessingPreset, ...processingPresets];
   $: if (preferencesReady) {
     explorerPreferenceSnapshot;
     setLiveProcessingPresetFromSettings(captureProcessingSettings());
@@ -345,10 +333,6 @@
     globalDefaultProcessingSettings,
     $processingPresetSession.selectedPreset
   );
-  $: if ($processingPresetSession.selectedKey !== lastProcessingPresetSessionKey) {
-    lastProcessingPresetSessionKey = $processingPresetSession.selectedKey;
-    selectedProcessingPresetKey = $processingPresetSession.selectedKey;
-  }
   $: framePayloadKind = payloadKindForDisplay(frameDisplayMode);
   $: imageInverted = framePayloadKind !== 'original' && $imageInversionEnabled;
   $: imageUrl =
@@ -537,7 +521,6 @@
       restorePreferences();
       applyStoredLiveProcessingPreset();
       enforceCodecAvailability();
-      await loadProcessingPresets();
       assets = await client.listAssets('video');
       if (!assets.some((asset) => asset.id === selectedAssetId)) {
         selectedAssetId = assets[0]?.id ?? '';
@@ -810,59 +793,6 @@
     enforceCodecAvailability();
   }
 
-  async function loadProcessingPresets() {
-    presetsLoading = true;
-    presetError = null;
-    try {
-      processingPresets = await listProcessingPresets();
-    } catch (err) {
-      presetError = err instanceof Error ? err.message : String(err);
-    } finally {
-      presetsLoading = false;
-    }
-  }
-
-  function selectedProcessingPreset(): ProcessingPreset | null {
-    return processingPresetByKey(availableProcessingPresets, selectedProcessingPresetKey);
-  }
-
-  function applySelectedProcessingPreset(preset = selectedProcessingPreset()) {
-    if (!preset) return;
-    presetMessage = null;
-    presetError = null;
-    if (preset.source === 'live') {
-      presetMessage = 'Current session settings are already active.';
-      return;
-    }
-    const resolvedSettings = applyProcessingPresetSettings(preset, { updateSession: false });
-    applyProcessingPresetToSession(preset, { appliedSettings: resolvedSettings });
-    presetMessage = `Applied ${preset.name}.`;
-  }
-
-  async function saveCurrentProcessingPreset(nameInput: string, descriptionInput: string) {
-    presetMessage = null;
-    presetError = null;
-    const name = nameInput.trim();
-    if (!name) {
-      presetError = 'Enter a preset name before saving.';
-      return;
-    }
-    try {
-      const preset = await saveProcessingPreset({
-        name,
-        description: descriptionInput,
-        settings: captureProcessingSettings()
-      });
-      await loadProcessingPresets();
-      applyProcessingPresetToSession(preset, {
-        appliedSettings: processingSettingsWithDefaults(preset.settings)
-      });
-      presetMessage = `Saved ${preset.name}.`;
-    } catch (err) {
-      presetError = err instanceof Error ? err.message : String(err);
-    }
-  }
-
   function applyStoredLiveProcessingPreset() {
     const preset = currentLiveProcessingPreset();
     if (preset?.source === 'live' && preset.settings) {
@@ -878,8 +808,6 @@
     const preset = (event as CustomEvent<ProcessingPreset>).detail;
     if (!preset?.settings) return;
     applyProcessingPresetSettings(preset, { updateSession: true });
-    presetMessage = 'Applied header preset.';
-    presetError = null;
   }
 
   function commitLivePresetSettings() {
@@ -3194,8 +3122,7 @@
 </script>
 
 <section class="explorer-workbench">
-  {#if activeExplorerTab !== 'presets'}
-    <div class="asset-row explorer-toolbar" aria-label="Explorer source selection">
+  <div class="asset-row explorer-toolbar" aria-label="Explorer source selection">
       <label>
         Asset
         <select bind:value={selectedAssetId} on:change={loadFrames}>
@@ -3216,14 +3143,12 @@
         />
       </label>
       <span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span>
-    </div>
-  {/if}
+  </div>
 <div
-  class:segmentation-layout={activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'}
+  class:segmentation-layout={activeExplorerTab !== 'refinement'}
   class:single-panel-layout={activeExplorerTab === 'refinement'}
-  class:preset-panel-layout={activeExplorerTab === 'presets'}
 >
-  {#if activeExplorerTab !== 'refinement' && activeExplorerTab !== 'presets'}
+  {#if activeExplorerTab !== 'refinement'}
   <section class="panel image-panel">
     <div class="panel-heading">
       <div>
@@ -3290,19 +3215,7 @@
     </div>
     {/if}
 
-    {#if activeExplorerTab === 'presets'}
-      <ProcessingPresetControls
-        presets={availableProcessingPresets}
-        bind:selectedKey={selectedProcessingPresetKey}
-        loading={presetsLoading}
-        message={presetMessage}
-        error={presetError}
-        allowSave={true}
-        onApply={applySelectedProcessingPreset}
-        onRefresh={loadProcessingPresets}
-        onSave={saveCurrentProcessingPreset}
-      />
-    {:else if activeExplorerTab === 'preprocessing'}
+    {#if activeExplorerTab === 'preprocessing'}
 
     <div class="form-section">
       <div class="section-heading">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ProcessingPreset } from '$lib/processing/settings';
   import { processingPresetByKey, processingPresetKey } from '$lib/processing/settings';
+  import { presetSettingGroups as groupedPresetSettings } from '$lib/processing/presetDisplay';
 
   export let presets: ProcessingPreset[] = [];
   export let selectedKey = 'live:live';
@@ -16,7 +17,7 @@
   let saveDescription = '';
 
   $: selectedPreset = processingPresetByKey(presets, selectedKey) ?? presets[0] ?? null;
-  $: selectedPresetGroups = selectedPreset ? presetSettingGroups(selectedPreset) : [];
+  $: selectedPresetGroups = selectedPreset ? groupedPresetSettings(selectedPreset) : [];
   $: selectedPresetEntryCount = selectedPresetGroups.reduce((total, group) => total + group.entries.length, 0);
 
   type PresetSettingEntry = { key: string; label: string; value: string };

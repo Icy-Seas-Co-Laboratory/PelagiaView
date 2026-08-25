@@ -17,6 +17,11 @@ import type {
   CurationOptions,
   CurationRoi,
   CurationRoiPage,
+  FeatureSpaceClusterMembers,
+  FeatureSpaceClusterResult,
+  FeatureSpaceSimilarityResult,
+  FeatureSpaceSourceRois,
+  FeatureSpaceSource,
   DetectionListResponse,
   DetectionFilters,
   DetectionSummary,
@@ -31,6 +36,11 @@ import type {
   Job,
   JobEventListOptions,
   JobListOptions,
+  JobSeries,
+  JobSeriesEligibility,
+  JobSeriesListOptions,
+  JobSeriesRequest,
+  JobSeriesSubmitResponse,
   JobEvent,
   JobsClearOptions,
   JobsClearResponse,
@@ -458,6 +468,37 @@ export class PelagiaApiClient {
   async retryJob(jobId: string): Promise<Job> {
     const response = await this.post<{ job: Job }>(`/jobs/${encodeURIComponent(jobId)}/retry`);
     return response.job;
+  }
+
+  async listJobSeries(options: JobSeriesListOptions = {}): Promise<JobSeries[]> {
+    const response = await this.get<{ series?: JobSeries[] } | JobSeries[]>('/processing/series', compact(options), 0, { cache: 'no-store' });
+    return Array.isArray(response) ? response : response.series ?? [];
+  }
+
+  async getJobSeries(seriesId: string): Promise<JobSeries> {
+    const response = await this.get<{ series?: JobSeries } | JobSeries>(`/processing/series/${encodeURIComponent(seriesId)}`, undefined, 0, { cache: 'no-store' });
+    if (Object.prototype.hasOwnProperty.call(response, 'series')) {
+      return (response as { series?: JobSeries }).series ?? ({} as JobSeries);
+    }
+    return response as JobSeries;
+  }
+
+  async previewJobSeries(body: JobSeriesRequest): Promise<JobSeriesEligibility> {
+    const response = await this.post<{ eligibility?: JobSeriesEligibility } | JobSeriesEligibility>('/processing/series', { ...body, dry_run: true });
+    const wrapped = response as { eligibility?: JobSeriesEligibility };
+    return wrapped.eligibility ?? (response as JobSeriesEligibility);
+  }
+
+  async submitJobSeries(body: JobSeriesRequest): Promise<JobSeriesSubmitResponse> {
+    return this.post<JobSeriesSubmitResponse>('/processing/series', body);
+  }
+
+  async controlJobSeries(seriesId: string, action: 'pause' | 'resume' | 'cancel' | 'retry'): Promise<JobSeries> {
+    const response = await this.post<{ series?: JobSeries } | JobSeries>(`/processing/series/${encodeURIComponent(seriesId)}/${action}`);
+    if (Object.prototype.hasOwnProperty.call(response, 'series')) {
+      return (response as { series?: JobSeries }).series ?? ({} as JobSeries);
+    }
+    return response as JobSeries;
   }
 
   async listWorkers(limit = 100): Promise<WorkerSession[]> {
@@ -914,6 +955,46 @@ export class PelagiaApiClient {
     return response.roi;
   }
 
+  async featureSpaceSources(): Promise<FeatureSpaceSource[]> {
+    const response = await this.get<{ sources: FeatureSpaceSource[] }>('/curation/feature-space/sources', {}, 0);
+    return response.sources ?? [];
+  }
+
+  async featureSpaceRois(sourceKey: string, options: { limit?: number } = {}): Promise<FeatureSpaceSourceRois> {
+    return this.get('/curation/feature-space/rois', compact({
+      source_key: sourceKey,
+      limit: options.limit
+    }) as Record<string, QueryParamValue>, 0);
+  }
+
+  async similarCurationRois(
+    roiId: string,
+    sourceKey: string,
+    options: { limit?: number; minimum?: number } = {}
+  ): Promise<FeatureSpaceSimilarityResult> {
+    return this.get(`/curation/feature-space/similar/${encodeURIComponent(roiId)}`, compact({
+      source_key: sourceKey,
+      limit: options.limit,
+      minimum: options.minimum
+    }) as Record<string, QueryParamValue>, 0);
+  }
+
+  async featureSpaceClusters(sourceKey: string): Promise<FeatureSpaceClusterResult> {
+    return this.get('/curation/feature-space/clusters', { source_key: sourceKey }, 0);
+  }
+
+  async featureSpaceClusterMembers(
+    sourceKey: string,
+    clusterId: string,
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<FeatureSpaceClusterMembers> {
+    return this.get(`/curation/feature-space/clusters/${encodeURIComponent(clusterId)}/rois`, compact({
+      source_key: sourceKey,
+      limit: options.limit,
+      offset: options.offset
+    }) as Record<string, QueryParamValue>, 0);
+  }
+
   async annotateCurationRois(
     roiIds: string[],
     labelId: string,
@@ -937,18 +1018,26 @@ export class PelagiaApiClient {
   async queueClassificationJob(body: {
     roi_ids?: string[];
     model_ref?: string | null;
+    evidence_kind?: 'classification' | 'clustering';
     selection?: ClassificationTargetSelection | null;
     priority?: number | null;
   }): Promise<ClassificationJobResponse> {
-    return this.post('/curation/classification-jobs', compact(body));
+    return this.post(
+      body.evidence_kind === 'clustering' ? '/curation/clustering-jobs' : '/curation/classification-jobs',
+      compact(body)
+    );
   }
 
   async previewClassificationTargets(body: {
     roi_ids?: string[];
     model_ref?: string | null;
+    evidence_kind?: 'classification' | 'clustering';
     selection?: ClassificationTargetSelection | null;
   }): Promise<ClassificationTargetPreview> {
-    return this.post('/curation/classification-targets/preview', compact(body));
+    return this.post(
+      body.evidence_kind === 'clustering' ? '/curation/clustering-targets/preview' : '/curation/classification-targets/preview',
+      compact(body)
+    );
   }
 
   async previewRegistryDataset(body: {

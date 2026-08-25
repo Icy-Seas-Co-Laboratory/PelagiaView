@@ -428,21 +428,24 @@ summary:focus-visible {
 }
 
 .analysis-layout .roi-browser-layout.browser-top-layout > .panel,
-.analysis-layout .curation-workspace > .panel {
+.analysis-layout .curation-workspace > .panel,
+.analysis-layout .cluster-workspace > .panel {
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
 
 .analysis-layout .browser-filter-bar,
-.analysis-layout .curation-rail {
+.analysis-layout .curation-rail,
+.analysis-layout .cluster-rail {
   border-right: 1px solid var(--wb-divider) !important;
   padding: var(--wb-space-3) !important;
   background: var(--wb-surface-subtle) !important;
 }
 
 .analysis-layout .roi-results-panel,
-.analysis-layout .curation-gallery {
+.analysis-layout .curation-gallery,
+.analysis-layout .cluster-gallery {
   min-height: 0;
   overflow: hidden;
   padding: 0;
@@ -487,13 +490,15 @@ summary:focus-visible {
 }
 
 .analysis-layout .roi-results-panel > .panel-heading,
-.analysis-layout .curation-gallery > header {
+.analysis-layout .curation-gallery > header,
+.analysis-layout .cluster-gallery > header {
   min-height: 3.25rem;
   padding: var(--wb-space-3);
 }
 
 .analysis-layout .browser-inspector-panel,
-.analysis-layout .curation-inspector {
+.analysis-layout .curation-inspector,
+.analysis-layout .cluster-inspector {
   border-left: 1px solid var(--wb-divider) !important;
   padding: var(--wb-space-3) !important;
   background: var(--wb-surface-subtle) !important;
@@ -501,8 +506,37 @@ summary:focus-visible {
 
 .analysis-layout .browser-inspector-panel > .panel-heading .eyebrow,
 .analysis-layout .curation-inspector > .inspector-heading .eyebrow,
-.analysis-layout .curation-gallery > header .eyebrow {
+.analysis-layout .curation-gallery > header .eyebrow,
+.analysis-layout .cluster-gallery > header .eyebrow {
   display: none;
+}
+
+.analysis-layout .cluster-workspace {
+  height: 100%;
+  min-height: 0;
+  grid-template-columns: minmax(14rem, 18rem) minmax(28rem, 1fr) minmax(17rem, 22rem);
+}
+
+.analysis-layout .cluster-rail,
+.analysis-layout .cluster-inspector {
+  max-height: none;
+}
+
+.analysis-layout .cluster-gallery {
+  height: 100%;
+}
+
+.analysis-layout .cluster-gallery > .roi-grid {
+  grid-row: 2;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.analysis-layout .cluster-gallery.clusters-mode > .roi-grid {
+  grid-row: 3;
 }
 
 .analysis-layout .advanced-search-panel,
