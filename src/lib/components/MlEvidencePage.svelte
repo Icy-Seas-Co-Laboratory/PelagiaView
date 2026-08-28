@@ -234,6 +234,23 @@
     return model?.architecture || model?.model?.architecture || 'Architecture not reported';
   }
 
+  function modelExecution(model: OracleModelSummary): string {
+    const execution = model.runtime?.execution ?? model.parameters?.execution;
+    if (!execution) return 'Execution device not reported';
+    const device = execution.device_name || execution.device_type || execution.accelerator;
+    const count = execution.device_count && execution.device_count > 1 ? ` · ${execution.device_count} devices` : '';
+    if (execution.gpu_accelerated || execution.accelerator?.toLowerCase() === 'gpu' || execution.device_type?.toUpperCase() === 'GPU') {
+      return `GPU${device ? ` · ${device}` : ''}${count}`;
+    }
+    return `CPU fallback${device && device.toUpperCase() !== 'CPU' ? ` · ${device}` : ''}${count}`;
+  }
+
+  function modelExecutionClass(model: OracleModelSummary): 'gpu' | 'cpu' | 'unknown' {
+    const execution = model.runtime?.execution ?? model.parameters?.execution;
+    if (!execution) return 'unknown';
+    return execution.gpu_accelerated || execution.accelerator?.toLowerCase() === 'gpu' || execution.device_type?.toUpperCase() === 'GPU' ? 'gpu' : 'cpu';
+  }
+
   function modelFeatures(model: OracleModelSummary | null): string[] {
     if (!model) return [];
     const features: string[] = [];
@@ -372,7 +389,7 @@
               {#each group as model (modelKey(model))}
                 <label class="model-choice">
                   <input type="checkbox" checked={selectedModelRefs.has(modelKey(model))} on:change={(event) => toggleModel(model, (event.currentTarget as HTMLInputElement).checked)} />
-                  <span><strong>{model.alias}</strong><small>{modelArchitecture(model)} · {modelFeatures(model).join(', ') || (evidenceKind === 'clustering' ? 'cluster evidence' : 'probabilities')}</small></span>
+                  <span><strong>{model.alias}</strong><small>{modelArchitecture(model)} · {modelFeatures(model).join(', ') || (evidenceKind === 'clustering' ? 'cluster evidence' : 'probabilities')}</small><small class:gpu={modelExecutionClass(model) === 'gpu'} class:cpu={modelExecutionClass(model) === 'cpu'}>{modelExecution(model)}</small></span>
                 </label>
               {/each}
             {:else if !loading}
@@ -387,7 +404,7 @@
         {#if selectedModels.length && !previewing}
           <dl class="workload-list">
             {#each selectedModels as model (modelKey(model))}
-              <div><dt>{model.alias}</dt><dd>{formatCount(previews[modelKey(model)]?.target_count ?? 0)} ROIs</dd></div>
+              <div><dt>{model.alias}<small class:gpu={modelExecutionClass(model) === 'gpu'} class:cpu={modelExecutionClass(model) === 'cpu'}>{modelExecution(model)}</small></dt><dd>{formatCount(previews[modelKey(model)]?.target_count ?? 0)} ROIs</dd></div>
             {/each}
           </dl>
         {/if}
@@ -404,6 +421,7 @@
 
 <style>
   .ml-evidence-page{display:grid;gap:14px;max-width:1500px;margin:0 auto}.workflow-page-intro{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid var(--border,#dce4e2);padding:2px 0 14px}.workflow-page-intro h1{margin:0 0 4px;font-size:1.45rem}.workflow-page-intro p{max-width:850px;margin:0;color:var(--muted,#667);font-size:.83rem;line-height:1.5}.workflow-page-intro>span{border:1px solid var(--border,#ccd);border-radius:999px;padding:5px 9px;color:var(--muted,#667);font-size:.7rem;font-weight:800;white-space:nowrap}.workflow-page-intro>span.ready{border-color:color-mix(in srgb,var(--accent,#176f62) 45%,var(--border,#ccd));color:var(--accent,#176f62);background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}.evidence-workspace{display:grid;grid-template-columns:minmax(0,1fr)minmax(280px,340px);gap:12px;align-items:start}.target-panel,.model-panel,.queue-panel{padding:14px}.target-panel>header{display:flex;justify-content:space-between;gap:15px;align-items:start;border-bottom:1px solid var(--border,#dde4e3);padding-bottom:10px}.target-panel h2,.model-panel h2{margin:0;font-size:1.05rem}.target-panel>header small{color:var(--muted,#667)}.filter-selector-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px 0;border-bottom:1px solid var(--border,#dde4e3)}.filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;padding-top:12px}.filter-grid label{display:grid;gap:4px;margin:0;color:var(--muted,#667);font-size:.68rem;font-weight:750}.evidence-control-column{display:grid;gap:12px;position:sticky;top:8px}.model-panel>.eyebrow,.queue-panel>.eyebrow{margin:0 0 3px}.model-help{margin:5px 0 10px;color:var(--muted,#667);font-size:.72rem;line-height:1.4}.model-group{display:grid;gap:5px;margin:10px 0 0;padding:9px;border:1px solid var(--border,#dde4e3);border-radius:6px}.model-group legend{padding:0 4px;color:var(--muted,#667);font-size:.68rem;font-weight:800}.model-group legend span{margin-left:5px;color:var(--accent,#176f62)}.model-choice{display:flex;gap:7px;align-items:flex-start;color:inherit;cursor:pointer}.model-choice input{margin-top:3px}.model-choice span{display:grid;gap:2px;min-width:0}.model-choice strong{font-size:.76rem}.model-choice small{color:var(--muted,#667);font-size:.65rem;line-height:1.35}.queue-panel h2{margin:0;font-size:1.75rem}.queue-panel>p:not(.eyebrow){margin:2px 0 12px;color:var(--muted,#667);font-size:.75rem}.workload-list{display:grid;gap:4px;margin:0 0 10px;font-size:.7rem}.workload-list div{display:flex;justify-content:space-between;gap:8px}.workload-list dt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workload-list dd{margin:0;color:var(--muted,#667);white-space:nowrap}.queue-panel .preview-error{border-left:3px solid var(--danger,#a23c34);padding:8px;color:var(--danger,#a23c34)!important;background:color-mix(in srgb,var(--danger,#a23c34) 8%,transparent)}.queue-panel .rerun-warning{border-left:3px solid #b77a35;padding:7px;color:#87551e!important;background:color-mix(in srgb,#b77a35 8%,transparent)}.queue-action{width:100%;margin:4px 0 9px}.queue-panel>small{display:block;color:var(--muted,#667);font-size:.65rem;line-height:1.45}.empty{color:var(--muted,#667);font-size:.75rem}.form-success{margin:0;border-left:3px solid var(--accent,#176f62);padding:8px 10px;background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}@media(max-width:1050px){.evidence-workspace{grid-template-columns:minmax(0,1fr)}.evidence-control-column{grid-template-columns:repeat(2,minmax(0,1fr));position:static}}@media(max-width:720px){.workflow-page-intro{display:grid}.filter-selector-grid,.filter-grid,.evidence-control-column{grid-template-columns:minmax(0,1fr)}}
+  .workload-list small{display:block;font-size:.62rem}.model-choice small.gpu,.workload-list small.gpu{color:var(--accent,#176f62);font-weight:750}.model-choice small.cpu,.workload-list small.cpu{color:#87551e}
   .filter-grid label,.queue-panel>small{font-size:var(--wb-font-caption,.75rem)}
   .model-help,.queue-panel>p:not(.eyebrow),.empty{font-size:var(--wb-font-small,.8125rem)}
   .queue-panel>small{line-height:var(--wb-line-reading,1.5)}

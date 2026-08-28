@@ -310,7 +310,7 @@ export type JobSeriesPresetSnapshot = {
   settings?: Record<string, unknown>;
 };
 
-export type JobSeriesFailurePolicy = 'continue' | 'stop_series' | 'retry_failed';
+export type JobSeriesFailurePolicy = 'continue' | 'fail_fast';
 
 export type JobSeriesRequest = {
   targets: JobSeriesTarget;
@@ -343,6 +343,7 @@ export type JobSeries = {
   id: string;
   status?: string | null;
   targets?: JobSeriesTarget;
+  selection?: JobSeriesTarget;
   preset_snapshot?: JobSeriesPresetSnapshot | null;
   steps?: JobSeriesStep[];
   priority?: number | null;
@@ -1336,6 +1337,14 @@ export type CurationLabelImportResult = {
   labels: CurationLabel[];
 };
 
+export type OracleExecution = {
+  gpu_accelerated?: boolean;
+  accelerator?: string;
+  device_type?: string;
+  device_name?: string;
+  device_count?: number;
+};
+
 export type OracleModelSummary = {
   alias: string;
   loaded: boolean;
@@ -1343,6 +1352,8 @@ export type OracleModelSummary = {
   load_error?: string | null;
   task?: string | null;
   architecture?: string | null;
+  runtime?: { execution?: OracleExecution };
+  parameters?: { execution?: OracleExecution };
   model?: {
     artifact_id?: string | null;
     run_id?: string | null;
@@ -1515,6 +1526,8 @@ export type FeatureSpaceRoi = {
   asset_filename?: string | null;
   roi_index?: number | null;
   area?: number | null;
+  bbox_w?: number | null;
+  bbox_h?: number | null;
   roi_shape?: number[] | null;
   label_display_name?: string | null;
   review_decision?: string | null;
@@ -1549,6 +1562,54 @@ export type FeatureSpaceSourceRois = {
   items: FeatureSpaceRoi[];
   source_key: string;
   limit: number;
+};
+
+export type FeatureSpaceUmapRoi = FeatureSpaceRoi & {
+  umap_coordinates: number[];
+  hdbscan_label: number;
+  hdbscan_cluster_id?: string | null;
+  hdbscan_membership_strength: number;
+};
+
+export type FeatureSpaceUmapResult = {
+  items: FeatureSpaceUmapRoi[];
+  source_key: string;
+  component_count: number;
+  random_seed: number;
+  clustering: 'hdbscan';
+  cluster_count: number;
+  noise_count: number;
+  hdbscan_parameters: {
+    min_cluster_size: number;
+    min_samples: number | null;
+    cluster_selection_epsilon: number;
+    metric: string;
+  };
+  component_ranges: Array<{
+    component: number;
+    minimum: number;
+    maximum: number;
+  }>;
+  readable_embedding_count: number;
+  unreadable_embedding_count: number;
+  scanned_vector_count?: number;
+  total_vector_count?: number;
+  projection_scope?: string;
+};
+
+export type FeatureSpaceUmapAnalysisRequest = {
+  source_key: string;
+  min_cluster_size?: number;
+  min_samples?: number | null;
+  cluster_selection_epsilon?: number;
+  force?: boolean;
+};
+
+export type FeatureSpaceUmapAnalysisResponse = {
+  job: Job;
+  disposition?: 'cached' | 'existing' | 'queued' | string;
+  cache_key?: string | null;
+  ephemeral?: boolean;
 };
 
 export type FeatureSpaceCluster = {

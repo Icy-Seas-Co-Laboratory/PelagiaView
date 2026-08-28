@@ -19,6 +19,8 @@ import type {
   CurationRoiPage,
   FeatureSpaceClusterMembers,
   FeatureSpaceClusterResult,
+  FeatureSpaceUmapAnalysisRequest,
+  FeatureSpaceUmapAnalysisResponse,
   FeatureSpaceSimilarityResult,
   FeatureSpaceSourceRois,
   FeatureSpaceSource,
@@ -965,6 +967,10 @@ export class PelagiaApiClient {
       source_key: sourceKey,
       limit: options.limit
     }) as Record<string, QueryParamValue>, 0);
+  }
+
+  async queueFeatureSpaceUmapAnalysis(body: FeatureSpaceUmapAnalysisRequest): Promise<FeatureSpaceUmapAnalysisResponse> {
+    return this.post('/curation/feature-space/umap/analysis', compact(body));
   }
 
   async similarCurationRois(

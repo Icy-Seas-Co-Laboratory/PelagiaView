@@ -539,6 +539,219 @@ summary:focus-visible {
   grid-row: 3;
 }
 
+.analysis-layout .cluster-gallery.pca-mode {
+  /* Keep the linked plots useful without allowing their intrinsic square SVGs
+   * to consume the flexible result row.  The ROI grid is the pane that owns
+   * scrolling in the desktop analysis workspace. */
+  grid-template-rows: auto minmax(5rem, 8rem) minmax(0, 1fr);
+}
+
+.analysis-layout .cluster-gallery.pca-mode > .pca-plots {
+  grid-row: 2;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.analysis-layout .cluster-gallery.pca-mode > .roi-grid {
+  grid-row: 3;
+  min-height: 0;
+  height: auto;
+}
+
+/* UMAP filter controls share a single track for each dimension.  The two
+ * native inputs retain keyboard and assistive-technology semantics while
+ * their overlapping thumbs expose a min:max range. */
+.analysis-layout .pca-plot-body {
+  display: grid;
+  grid-template-columns: 2.35rem minmax(0, 1fr);
+  gap: 0.2rem;
+  align-items: stretch;
+}
+
+.analysis-layout .pca-plot {
+  min-width: 150px !important;
+  padding: 5px;
+}
+
+.analysis-layout .pca-range-y .pca-dual-range {
+  min-height: 4.75rem;
+}
+
+.analysis-layout .pca-plot-body > svg {
+  grid-column: 2;
+  margin: 0;
+  /* This must override the component's default `width: 100%`; otherwise
+   * narrow layouts still expand each square plot to the full gallery width. */
+  width: min(100%, 12rem) !important;
+  justify-self: center;
+}
+
+.analysis-layout .pca-range-y {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+  margin: 0;
+  text-align: center;
+}
+
+.analysis-layout .pca-range-x {
+  margin-top: 0.35rem;
+}
+
+.analysis-layout .pca-dual-range {
+  position: relative;
+  isolation: isolate;
+  min-height: 1.35rem;
+}
+
+.analysis-layout .pca-dual-range::before {
+  position: absolute;
+  z-index: 0;
+  top: calc(50% - 1px);
+  right: 0.45rem;
+  left: 0.45rem;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--wb-divider);
+  content: '';
+}
+
+.analysis-layout .pca-range-fill {
+  position: absolute;
+  z-index: 1;
+  top: calc(50% - 2px);
+  height: 4px;
+  border-radius: 999px;
+  background: var(--wb-accent);
+  pointer-events: none;
+}
+
+.analysis-layout .pca-dual-range input {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+
+.analysis-layout .pca-dual-range input::-webkit-slider-runnable-track {
+  height: 2px;
+  background: transparent;
+}
+
+.analysis-layout .pca-dual-range input::-moz-range-track {
+  height: 2px;
+  background: transparent;
+}
+
+.analysis-layout .pca-dual-range input::-webkit-slider-thumb {
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-top: -0.3rem;
+  border: 2px solid var(--wb-surface);
+  border-radius: 50%;
+  background: var(--wb-accent);
+  box-shadow: 0 0 0 1px var(--wb-accent);
+  cursor: ew-resize;
+  pointer-events: auto;
+  -webkit-appearance: none;
+}
+
+.analysis-layout .pca-dual-range input::-moz-range-thumb {
+  width: 0.65rem;
+  height: 0.65rem;
+  border: 2px solid var(--wb-surface);
+  border-radius: 50%;
+  background: var(--wb-accent);
+  box-shadow: 0 0 0 1px var(--wb-accent);
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+
+.analysis-layout .pca-range-y .pca-dual-range {
+  min-height: 4rem;
+  margin: 0.1rem auto;
+  width: 1.35rem;
+}
+
+.analysis-layout .pca-range-y .pca-dual-range::before {
+  top: 0.45rem;
+  right: calc(50% - 1px);
+  bottom: 0.45rem;
+  left: auto;
+  width: 2px;
+  height: auto;
+}
+
+.analysis-layout .pca-range-y .pca-range-fill {
+  top: auto;
+  right: calc(50% - 2px);
+  left: auto;
+  width: 4px;
+  height: auto;
+}
+
+.analysis-layout .pca-range-y .pca-dual-range input {
+  appearance: slider-vertical;
+  -webkit-appearance: slider-vertical;
+  cursor: ns-resize;
+  direction: rtl;
+  writing-mode: vertical-lr;
+}
+
+.analysis-layout .pca-range-y .pca-dual-range input::-webkit-slider-thumb,
+.analysis-layout .pca-range-y .pca-dual-range input::-moz-range-thumb {
+  cursor: ns-resize;
+}
+
+.analysis-layout .pca-range-y small {
+  font-size: 0.55rem;
+  line-height: 1.2;
+}
+
+.analysis-layout .pca-range-y-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.15rem;
+}
+
+.analysis-layout .pca-reset {
+  display: inline-grid;
+  width: 1.55rem;
+  height: 1.55rem;
+  place-items: center;
+  margin-left: auto;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  color: var(--wb-accent);
+  font-size: 1rem !important;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.analysis-layout .pca-range-y .pca-reset {
+  margin: 0;
+}
+
+.analysis-layout .pca-filter-line {
+  stroke: var(--wb-accent) !important;
+  stroke-dasharray: 2 1.5;
+  stroke-width: 0.45 !important;
+}
+
+.analysis-layout .pca-filter-region {
+  fill: color-mix(in srgb, var(--wb-accent) 14%, transparent);
+  pointer-events: none;
+}
+
 .analysis-layout .advanced-search-panel,
 .analysis-layout .browser-view-group,
 .analysis-layout .curation-inspector section,
