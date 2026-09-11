@@ -9,7 +9,7 @@ ingestionBackgroundWindowWidth = 25
 ingestionBackgroundWindowStride = 25
 
 [settings.preprocessing]
-minFieldValue = 50
+minFieldValue = 30
 maxFieldValue = 255
 applyMask = false
 cropEnabled = true

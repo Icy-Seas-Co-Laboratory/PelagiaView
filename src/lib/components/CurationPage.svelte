@@ -4,6 +4,7 @@
   import InspectorImageControls from '$lib/components/InspectorImageControls.svelte';
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import RegistryDatasetExportModal from '$lib/components/RegistryDatasetExportModal.svelte';
+  import ExportBundleModal from '$lib/components/ExportBundleModal.svelte';
   import TelemetryFilterModal from '$lib/components/TelemetryFilterModal.svelte';
   import TelemetrySummary from '$lib/components/TelemetrySummary.svelte';
   import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
@@ -23,7 +24,7 @@
     expandableCurationLabelIds,
     visibleCurationTaxonomy
   } from '$lib/utils/curationTaxonomy';
-  import type { CurationLabel, CurationOptions, CurationRoi, FrameContextResponse, TelemetryRangeFilter } from '$lib/api/types';
+  import type { CurationLabel, CurationOptions, CurationRoi, ExportScope, FrameContextResponse, TelemetryRangeFilter } from '$lib/api/types';
   import type { ImageRenderSpec } from '$lib/utils/imageRenderSpec';
 
   let options: CurationOptions | null = null;
@@ -65,10 +66,12 @@
   let curationInspectorShowScaleBar = true;
   let preferencesReady = false;
   let registryExportOpen = false;
+  let exportOpen = false;
   let telemetryContext: FrameContextResponse | null = null;
   let focusSerial = 0;
 
   $: selectedItems = items.filter((item) => selected.has(item.id));
+  $: exportScope = curationExportScope();
   $: currentEvidence = (detail?.evidence?.[0] as Record<string, any> | undefined) ?? null;
   $: probabilityRows = (currentEvidence?.probabilities ?? []) as Array<Record<string, any>>;
   $: evidencePacket = (currentEvidence?.evidence_packet ?? {}) as Record<string, any>;
@@ -560,6 +563,23 @@
     return votes.every((value) => value === votes[0]) ? 'All evidence agrees' : 'Evidence disagreement';
   }
 
+  function curationExportScope(): ExportScope {
+    const roiIds = [...selected];
+    const filters: Record<string, unknown> = roiIds.length
+      ? { roi_ids: roiIds }
+      : {
+          annotation_state: annotationState,
+          review_state: reviewState,
+          evidence_state: evidenceState
+        };
+    return {
+      filters,
+      description: roiIds.length
+        ? `${roiIds.length} selected refined ROI${roiIds.length === 1 ? '' : 's'} on this page.`
+        : 'Refined ROIs matching the current annotation, review, and evidence filters.'
+    };
+  }
+
 </script>
 
 <div
@@ -609,7 +629,7 @@
   <main class="curation-gallery panel">
     <header class="curation-gallery-toolbar">
       <div><p class="eyebrow">Refined ROI workspace</p><h2>{total.toLocaleString()} curatable ROIs</h2></div>
-      <button class="registry-export-button" disabled={!options} on:click={() => (registryExportOpen = true)}>Create Registry dataset</button>
+      <div class="curation-export-actions"><button class="registry-export-button" disabled={!options} on:click={() => (exportOpen = true)}>Export ROI data…</button><button class="registry-export-button secondary-export" disabled={!options} on:click={() => (registryExportOpen = true)}>Create Registry dataset</button></div>
       <fieldset class="gallery-scale-modes" aria-label="Curation image scaling">
         <label><input type="radio" bind:group={galleryScaleMode} value="fit" />Fit tiles</label>
         <label><input type="radio" bind:group={galleryScaleMode} value="original" />Original pixels</label>
@@ -690,6 +710,12 @@
         <section><h3>Feature-space organization</h3><dl><dt>Cluster</dt><dd>{clusterEvidence.cluster_id || 'Novel / unassigned'}</dd><dt>Similarity</dt><dd>{similarity(clusterEvidence.similarity)}</dd><dt>Novelty</dt><dd>{clusterEvidence.abstained ? 'Abstained' : clusterEvidence.novel ? 'Novel' : 'Assigned'}</dd></dl>{#if clusterPacket.clusters?.length}<div class="neighbor-list">{#each clusterPacket.clusters.slice(0,5) as cluster}<div><b>{cluster.cluster_id}</b><span>{cluster.size} ROIs</span><em>{similarity(cluster.similarity)}</em></div>{/each}</div>{/if}<small>Cluster IDs are run-local evidence, not taxonomy labels.</small></section>
       {/if}
 
+      {#if detail?.embedding_evidence?.length}
+        {@const embeddingEvidence = detail.embedding_evidence[0] as Record<string, any>}
+        {@const embeddingShape = Array.isArray(embeddingEvidence.embedding_shape) ? embeddingEvidence.embedding_shape.join(' × ') : 'Unknown'}
+        <section><h3>Embedding feature-space evidence</h3><dl><dt>Vector</dt><dd>{embeddingShape}</dd><dt>Normalized</dt><dd>{embeddingEvidence.embedding_normalized ? 'Yes' : 'No'}</dd><dt>Model selector</dt><dd>{embeddingEvidence.model_selector || 'Unknown'}</dd><dt>Artifact</dt><dd>{embeddingEvidence.artifact_id || 'Unknown'}</dd><dt>Inference run</dt><dd>{embeddingEvidence.inference_run_id || 'Unknown'}</dd></dl><small>Embedding vectors are model-scoped feature-space evidence, not taxonomy labels or recorded clusters.</small></section>
+      {/if}
+
       <section><h3>Annotation history</h3>{#if detail.annotations?.length}{#each detail.annotations as annotation}<div class="history"><strong>{annotation.label_display_name}</strong><span>{annotation.actor_username} · {annotation.is_current ? 'current' : 'replaced'}</span></div>{/each}{:else}<p>No human annotation history.</p>{/if}</section>
     {:else}<div class="empty">Select an ROI to review its evidence and annotation history.</div>{/if}
   </aside>
@@ -697,6 +723,10 @@
 
 {#if registryExportOpen && options}
   <RegistryDatasetExportModal {options} on:close={() => (registryExportOpen = false)} />
+{/if}
+
+{#if exportOpen}
+  <ExportBundleModal scope={exportScope} initialProducts={['raw_roi_statistics', 'roi_evidence']} on:close={() => (exportOpen = false)} />
 {/if}
 
 {#if telemetryFilterModalOpen}
@@ -713,6 +743,7 @@
 
 <style>
   .curation-workspace{display:grid;grid-template-columns:250px minmax(420px,1fr)330px;gap:12px;min-height:calc(100vh - 128px)}
+  .curation-export-actions{display:flex;gap:.35rem;align-items:center}.secondary-export{background:transparent;color:inherit}
   .panel{background:var(--surface,#fff);border:1px solid var(--border,#cbd5d9);border-radius:10px;min-width:0}
   .curation-rail,.curation-inspector{padding:14px;overflow:auto;max-height:calc(100vh - 128px)}
   .rail-heading h2,.inspector-heading h2,.curation-gallery h2{margin:0 0 12px}.eyebrow{margin:0;color:var(--muted,#667);font-size:10px;text-transform:uppercase;letter-spacing:.08em}

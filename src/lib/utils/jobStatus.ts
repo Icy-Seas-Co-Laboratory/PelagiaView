@@ -1,7 +1,55 @@
 import type { Job } from '$lib/api/types';
 
 export type JobAction = 'pause' | 'resume' | 'retry';
-export type JobStageKey = 'ingestion' | 'preprocessing' | 'segmentation' | 'roi_refinement' | 'classification';
+export type JobStageKey = 'ingestion' | 'preprocessing' | 'segmentation' | 'roi_refinement' | 'classification' | 'export';
+/**
+ * Presentation categories deliberately sit above the wire-level job status.
+ * Keep components from independently deciding that, for example, a leased
+ * job is queued while a working job with a pause request is running.
+ */
+export type JobStatusCategory = 'queued' | 'running' | 'control_requested' | 'paused' | 'succeeded' | 'failed' | 'terminal' | 'other';
+
+export const activeJobStatuses = ['queued', 'leased', 'working', 'paused'] as const;
+export const runningJobStatuses = ['leased', 'working'] as const;
+
+const queuedStatuses = new Set(['queued', 'pending']);
+const runningStatuses = new Set(['leased', 'working', 'running', 'started', 'active']);
+const pausedStatuses = new Set(['paused', 'pause']);
+const succeededStatuses = new Set(['succeeded', 'success', 'completed', 'complete']);
+const failedStatuses = new Set(['failed', 'error', 'dead_lettered']);
+const cancelledStatuses = new Set(['cancelled', 'canceled']);
+
+export function isControlRequested(job: Job): boolean {
+  const reason = String(job.control_reason ?? '').trim().toLowerCase();
+  const status = normalizedJobStatus(job);
+  return (
+    status === 'pause_requested' ||
+    status === 'cancel_requested' ||
+    status === 'cancelling' ||
+    reason.startsWith('pause_requested:') ||
+    reason.startsWith('cancel_requested:')
+  );
+}
+
+export function jobStatusCategory(job: Job): JobStatusCategory {
+  const status = normalizedJobStatus(job);
+  if (isControlRequested(job)) return 'control_requested';
+  if (queuedStatuses.has(status)) return 'queued';
+  if (runningStatuses.has(status)) return 'running';
+  if (pausedStatuses.has(status)) return 'paused';
+  if (succeededStatuses.has(status)) return 'succeeded';
+  if (failedStatuses.has(status)) return 'failed';
+  if (cancelledStatuses.has(status)) return 'terminal';
+  return 'other';
+}
+
+export function jobStatusLabel(job: Job): string {
+  const category = jobStatusCategory(job);
+  if (category === 'control_requested') {
+    return String(job.control_reason ?? '').toLowerCase().startsWith('cancel_requested') ? 'cancel requested' : 'pause requested';
+  }
+  return job.status ?? 'unknown';
+}
 
 export type JobStatusCounts = {
   total: number;
@@ -18,7 +66,8 @@ export const jobStageAliases: Record<JobStageKey, string[]> = {
   preprocessing: ['preprocess', 'preprocessing', 'frame_preprocess', 'frame_preprocessing', 'preprocess_frames'],
   segmentation: ['segment', 'segmentation', 'candidate', 'candidates', 'detection', 'detection-candidate', 'candidate-generation'],
   roi_refinement: ['roi_refinement', 'refinement', 'refine', 'refined_roi', 'roi_refine'],
-  classification: ['classify', 'classification', 'ml_evidence']
+  classification: ['classify', 'classification', 'ml_evidence'],
+  export: ['export_bundle', 'export', 'exports']
 };
 
 export function normalizedJobStatus(job: Job): string {
@@ -61,23 +110,23 @@ export function countJobs(jobs: Job[]): JobStatusCounts {
     other: 0
   };
   for (const job of jobs) {
-    const status = normalizedJobStatus(job);
-    if (status === 'queued' || status === 'pending') counts.queued += 1;
-    else if (status === 'leased' || status === 'working' || status === 'running' || status === 'started' || status === 'active') counts.running += 1;
-    else if (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') counts.succeeded += 1;
-    else if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') counts.failed += 1;
-    else if (status === 'paused' || status === 'pause') counts.paused += 1;
+    const category = jobStatusCategory(job);
+    if (category === 'queued') counts.queued += 1;
+    else if (category === 'running' || category === 'control_requested') counts.running += 1;
+    else if (category === 'succeeded') counts.succeeded += 1;
+    else if (category === 'failed' || category === 'terminal') counts.failed += 1;
+    else if (category === 'paused') counts.paused += 1;
     else counts.other += 1;
   }
   return counts;
 }
 
 export function jobActions(job: Job): JobAction[] {
-  const status = normalizedJobStatus(job);
-  if (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') return ['retry'];
-  if (status === 'queued' || status === 'leased' || status === 'working' || status === 'running') return ['pause', 'retry'];
-  if (status === 'paused' || status === 'pause') return ['resume', 'retry'];
-  if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') return ['retry'];
+  const category = jobStatusCategory(job);
+  if (category === 'succeeded' || category === 'failed' || category === 'terminal') return ['retry'];
+  if (category === 'queued' || category === 'running') return ['pause', 'retry'];
+  if (category === 'paused') return ['resume', 'retry'];
+  if (category === 'control_requested') return [];
   return ['pause', 'resume', 'retry'];
 }
 
@@ -88,14 +137,14 @@ export function jobActionLabel(action: JobAction): string {
 }
 
 export function jobActionClass(job: Job, action: JobAction): string {
-  const status = normalizedJobStatus(job);
+  const category = jobStatusCategory(job);
   return [
     'ghost',
     'job-action',
-    (status === 'succeeded' || status === 'success' || status === 'completed' || status === 'complete') && action === 'retry'
+    category === 'succeeded' && action === 'retry'
       ? 'job-action-muted'
       : '',
-    (status === 'queued' || status === 'leased' || status === 'working' || status === 'running') && (action === 'pause' || action === 'retry')
+    (category === 'queued' || category === 'running') && (action === 'pause' || action === 'retry')
       ? 'job-action-muted'
       : ''
   ]

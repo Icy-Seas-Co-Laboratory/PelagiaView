@@ -21,6 +21,8 @@
   import ExplorerPage from './ExplorerPage.svelte';
   import PresetLibraryPage from './PresetLibraryPage.svelte';
   import StatusPage from './StatusPage.svelte';
+  import DeadLetterQueuePage from './DeadLetterQueuePage.svelte';
+  import ExportsPage from './ExportsPage.svelte';
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import {
     dashboardViewDefinition,
@@ -83,6 +85,8 @@
         {#key activeTab}
           {#if activeTab === 'status'}
             <StatusPage />
+          {:else if activeTab === 'dead_letters'}
+            <DeadLetterQueuePage />
           {:else if activeTab === 'assets'}
             <AssetsPage />
           {:else if activeTab === 'ingestion'}
@@ -111,6 +115,8 @@
             <CurationPage />
           {:else if activeTab === 'clusters'}
             <ClustersPage />
+          {:else if activeTab === 'exports'}
+            <ExportsPage />
           {:else if activeTab === 'frames'}
             <FrameBrowserPage />
           {:else if activeTab === 'admin'}

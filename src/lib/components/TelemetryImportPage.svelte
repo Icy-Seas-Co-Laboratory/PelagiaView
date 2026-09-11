@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
+  import ExportBundleModal from '$lib/components/ExportBundleModal.svelte';
   import { getClient } from '$lib/stores/session';
   import type {
     DirectoryListing,
@@ -8,7 +9,8 @@
     RunSummary,
     TelemetryAnalyzeResponse,
     TelemetryCatalogResponse,
-    TelemetryImportRequest
+    TelemetryImportRequest,
+    ExportScope
   } from '$lib/api/types';
 
   type StreamMapping = {
@@ -68,6 +70,7 @@
   let queuedJob: Job | null = null;
   let jobTimer: number | null = null;
   let jobError: string | null = null;
+  let exportOpen = false;
 
   $: parameterOptions = [
     ...builtInParameters,
@@ -107,6 +110,7 @@
   $: importCompleted = numericProgressValue(queuedJob?.progress?.completed);
   $: importTotal = numericProgressValue(queuedJob?.progress?.total);
   $: importRate = numericProgressValue(queuedJob?.progress?.rates?.units_per_second);
+  $: telemetryExportScope = telemetryScope();
 
   onMount(() => {
     void initialize();
@@ -402,6 +406,16 @@
       cancelled: 'Import cancelled'
     }[status] ?? 'Import status unavailable';
   }
+
+  function telemetryScope(): ExportScope {
+    const id = runId.trim();
+    return {
+      runIds: id ? [id] : [],
+      description: id
+        ? 'Telemetry sources associated with the selected run. The original source, import profile, catalog, observations, and timeline context are included.'
+        : 'All telemetry sources in the active project. Select a run below to narrow the export.'
+    };
+  }
 </script>
 
 <div class="telemetry-page">
@@ -411,7 +425,7 @@
       <h1>Import telemetry</h1>
       <p>Select a server-side sensor file, verify its time base, map columns to Pelagia vocabulary, and queue a traceable import.</p>
     </div>
-    <span class="stage-pill">telemetry_import</span>
+    <div class="header-actions"><span class="stage-pill">telemetry_import</span><button class="export-button" type="button" on:click={() => exportOpen = true}>Export telemetry…</button></div>
   </header>
 
   {#if loading}<p class="notice">Loading telemetry vocabulary and available runs…</p>{/if}
@@ -478,9 +492,13 @@
   {/if}
 </div>
 
+{#if exportOpen}
+  <ExportBundleModal scope={telemetryExportScope} initialProducts={['telemetry']} on:close={() => (exportOpen = false)} />
+{/if}
+
 <style>
   .telemetry-page { max-width: 1180px; margin: 0 auto; padding: 1.5rem clamp(1rem, 3vw, 2.5rem) 3rem; }
-  .page-heading, .step-title, .action-row, .panel-heading, .review-card { display: flex; justify-content: space-between; gap: 1rem; }
+  .page-heading, .step-title, .action-row, .panel-heading, .review-card { display: flex; justify-content: space-between; gap: 1rem; }.header-actions{display:flex;align-items:center;gap:.55rem}.export-button{background:transparent;border:1px solid var(--border,#cbd7da);color:inherit}
   .page-heading { align-items: flex-start; margin-bottom: 1.25rem; } h1, h2, h3, p { margin: 0; } h1 { margin-top: .15rem; } h2 { font-size: 1.05rem; } h3 { font-size: .9rem; }
   .page-heading p:last-child, .step-title p, .review-card p:last-child { margin-top: .35rem; color: var(--muted, #66777b); }
   .eyebrow { color: var(--accent, #197997); font-size: .7rem; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }

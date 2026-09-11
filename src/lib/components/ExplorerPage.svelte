@@ -8,6 +8,7 @@
   import { ApiError, authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
+  import { explorerWorkflow, type ExplorerWorkflowState } from '$lib/stores/explorerWorkflow';
   import type {
     DetectionSummary,
     FrameSummary,
@@ -174,7 +175,7 @@
   let maskDifferenceUrls = new Map<string, string>();
   let maskDifferenceKey = '';
   let maskDifferenceSerial = 0;
-  let refinementMethod: 'oracle' | 'identity' = 'oracle';
+  let refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity' = 'heuristic_edge_v1';
   let refinementModelRef = '';
   let refinementModelRefs: string[] = [];
   let oracleStatus = 'unknown';
@@ -182,10 +183,15 @@
   let refinementMaxIterations = 3;
   let refinementExpansionPixels: number | null = null;
   let refinementEdgeTouchMargin = 1;
+  let heuristicGradientPercentile = 90;
+  let heuristicAxisExclusionDegrees = 10;
+  let heuristicMaxGrowthPixels = 32;
   let refinementEncoding = 'auto';
   let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw'];
   let imageCodecAvailability: CodecAvailability = {};
   let refining = false;
+  let refinementReviewStatus = 'No persisted refinement is loaded for this frame.';
+  let selectedInspection: { kind: 'frame' | 'candidate' | 'refined'; detection?: DetectionSummary } = { kind: 'frame' };
   let applyMask = false;
   let cropEnabled = false;
   let cropX: number | null = null;
@@ -200,7 +206,10 @@
   let globalDefaultProcessingSettings: ProcessingSettings = {};
   const cropPreviewWidth = 220;
   const cropPreviewHeight = 160;
-  const frameImageWidth = 1100;
+  // Keep the frame prominent without letting it crowd out the persistent controls and inspector.
+  // These are approximately 70% of the former 1100 × 760 viewer bounds.
+  const frameImageWidth = 770;
+  const frameImageMaxHeight = 532;
   const liveSandboxDeletionDelayMs = 900 * 1000;
   const pendingLiveSandboxDeletions = new Map<string, number>();
   let lastFrameImageKey = '';
@@ -234,8 +243,8 @@
   let refinementMaskOverlayColorMode: ImageOverlayColorMode = 'red';
   let refinementMaskOverlayBlendMode: ImageOverlayBlendMode | 'auto' = 'auto';
   let refinementMaskOverlayOpacity = 1;
-  const refinementRoiDisplayMaxWidth = 360;
-  const refinementRoiDisplayMaxHeight = 280;
+  const refinementRoiDisplayMaxWidth = 220;
+  const refinementRoiDisplayMaxHeight = 150;
   let lastDetectionPreviewKey = '';
   let lastAutoThresholdPreviewKey = '';
   let thresholdPreviewTimer: number | null = null;
@@ -243,6 +252,10 @@
   let detectionPreviewSerial = 0;
 
   let activeExplorerTab: ExplorerStage = 'preprocessing';
+  // Progress records completed actions, rather than the presence of transient preview data.
+  // A preview may be cleared when a new frame or option is selected, but that must not relock
+  // a stage that the user has already completed in this Explorer session.
+  let workflowProgress = 0;
   $: activeExplorerTab = explorerStageFromUrl($page.url);
 
   type ExplorerPreferences = {
@@ -348,6 +361,8 @@
   $: targetBoxes = detections.map(toTargetBox).filter((box): box is BBox => box !== null);
   $: detectionOverlayKey = detectionOverlaySignature(boxes, targetBoxes, bboxCoordinateBasis);
   $: hasRefinementResults = refinedDetections.length > 0;
+  $: workflowAvailability = explorerWorkflowAvailability(workflowProgress);
+  $: explorerWorkflow.set(workflowAvailability);
   $: refinementRoiPairs = buildRefinementRoiPairs(detections, refinedDetections);
   $: refinementSummary = summarizeRefinedDetections(refinedDetections);
   $: preprocessingAdvancedActive = Boolean(
@@ -998,6 +1013,10 @@
     storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
 
     refinementModelRef = stringDefault(roiRefinement, 'model_ref', refinementModelRef);
+    const configuredRefinementMethod = stringDefault(roiRefinement, 'method', refinementMethod);
+    refinementMethod = configuredRefinementMethod === 'oracle' || configuredRefinementMethod === 'identity'
+      ? configuredRefinementMethod
+      : 'heuristic_edge_v1';
     refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
     refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
@@ -1053,14 +1072,61 @@
     if (!frame?.id) {
       detections = [];
       refinedDetections = [];
+      refinementReviewStatus = 'No persisted refinement is available because this frame could not be loaded.';
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       return;
     }
     detections = await client.listDetections(selectedAssetId, frame.id);
-    refinedDetections = [];
+    await loadPersistedRefinedDetections(client, detections);
+    if (detections.length) completeExplorerStage('detection');
+    if (refinedDetections.length) completeExplorerStage('refinement');
     stageCounts = {};
     bboxCoordinateBasis = 'original-frame';
+    selectedInspection = { kind: 'frame' };
+    if (activeExplorerTab === 'detection') void previewDetectionCandidatesNow({ silent: true });
+  }
+
+  function completeExplorerStage(stage: ExplorerStage) {
+    const completionIndex: Record<ExplorerStage, number> = {
+      preprocessing: 1,
+      threshold: 2,
+      detection: 3,
+      refinement: 4
+    };
+    workflowProgress = Math.max(workflowProgress, completionIndex[stage]);
+  }
+
+  function explorerWorkflowAvailability(progress: number): ExplorerWorkflowState {
+    return {
+      preprocessing: progress >= 1 ? 'complete' : 'ready',
+      threshold: progress >= 1 ? (progress >= 2 ? 'complete' : 'ready') : 'locked',
+      detection: progress >= 2 ? (progress >= 3 ? 'complete' : 'ready') : 'locked',
+      refinement: progress >= 3 ? (progress >= 4 ? 'complete' : 'ready') : 'locked'
+    };
+  }
+
+  function isRoiReviewStage(stage: ExplorerStage): boolean {
+    return stage === 'refinement';
+  }
+
+  async function loadPersistedRefinedDetections(client: ReturnType<typeof getClient>, candidates: DetectionSummary[]) {
+    if (!client) return;
+    const ids = [...new Set(candidates.map((candidate) => candidate.refined_detection_id).filter((id): id is string => Boolean(id)))];
+    await hydratePersistedRefinedDetections(client, ids);
+  }
+
+  async function hydratePersistedRefinedDetections(client: NonNullable<ReturnType<typeof getClient>>, ids: string[]) {
+    if (!ids.length) {
+      refinedDetections = [];
+      refinementReviewStatus = 'No persisted refinement is available for this frame.';
+      return;
+    }
+    const loaded = await Promise.all(ids.map((id) => client.getRefinedDetection(id).catch(() => null)));
+    refinedDetections = loaded.filter((detection): detection is DetectionSummary => detection !== null);
+    refinementReviewStatus = refinedDetections.length
+      ? `Reviewing ${refinedDetections.length} persisted refined ROI${refinedDetections.length === 1 ? '' : 's'} for this frame.`
+      : 'Refinement references were present, but their persisted ROI records could not be loaded.';
   }
 
   function options() {
@@ -1188,11 +1254,14 @@
   function roiRefinementOptions(): Record<string, unknown> {
     return {
       method: refinementMethod,
-      model_ref: refinementModelRef || undefined,
+      model_ref: refinementMethod === 'oracle' ? refinementModelRef || undefined : undefined,
       allow_frame_expansion: refinementAllowFrameExpansion,
       max_iterations: refinementMaxIterations,
       expansion_pixels: refinementExpansionPixels,
       edge_touch_margin: refinementEdgeTouchMargin,
+      heuristic_gradient_percentile: refinementMethod === 'heuristic_edge_v1' ? heuristicGradientPercentile : undefined,
+      heuristic_axis_exclusion_degrees: refinementMethod === 'heuristic_edge_v1' ? heuristicAxisExclusionDegrees : undefined,
+      heuristic_max_growth_pixels: refinementMethod === 'heuristic_edge_v1' ? heuristicMaxGrowthPixels : undefined,
       encoding: refinementEncoding === 'auto' ? undefined : refinementEncoding
     };
   }
@@ -1652,6 +1721,7 @@
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
+      completeExplorerStage('threshold');
       commitLivePresetSettings();
       if (!options.silent) message = `Previewed threshold mask for frame ${selectedFrameNum}.`;
     } catch (err) {
@@ -1660,12 +1730,12 @@
     }
   }
 
-  async function previewDetectionCandidatesNow() {
+  async function previewDetectionCandidatesNow(options: { silent?: boolean } = {}) {
     const client = getClient();
     const frame = await ensureSelectedFrame();
     if (!client || !frame?.id) return;
     const serial = ++detectionPreviewSerial;
-    message = null;
+    if (!options.silent) message = null;
     error = null;
     try {
       const sandboxFrameId = await ensureLivePreprocessedFrame(frame);
@@ -1684,9 +1754,10 @@
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
+      completeExplorerStage('detection');
       commitLivePresetSettings();
       const count = result.candidate_detection_count ?? result.detection_count ?? detections.length;
-      message = `Previewed frame ${selectedFrameNum}; ${count} candidate ROI${count === 1 ? '' : 's'} detected.`;
+      if (!options.silent) message = `Previewed frame ${selectedFrameNum}; ${count} candidate ROI${count === 1 ? '' : 's'} detected.`;
     } catch (err) {
       if (serial !== detectionPreviewSerial) return;
       error = err instanceof Error ? err.message : String(err);
@@ -1708,6 +1779,7 @@
       clearThresholdMaskUrl();
       thresholdForegroundPixels = null;
       thresholdForegroundFraction = null;
+      completeExplorerStage('preprocessing');
       commitLivePresetSettings();
       message = `Previewed preprocessing for frame ${selectedFrameNum} in a live sandbox.`;
     } catch (err) {
@@ -1762,9 +1834,13 @@
           store: true,
           dry_run: false
         });
-        refinedDetections = result.refined_detections ?? [];
+        const resultIds = (result.refined_detections ?? [])
+          .map((detection) => detection.id)
+          .filter((id): id is string => Boolean(id));
+        await hydratePersistedRefinedDetections(client, resultIds);
+        completeExplorerStage('refinement');
         const refinedCount = result.refined_count ?? refinedDetections.length;
-        message = `${refreshedRoiPayloads ? 'Saved ROI payload data, then r' : 'R'}efined ${refinedCount} ROI${refinedCount === 1 ? '' : 's'} for frame ${selectedFrameNum}.`;
+        message = `${refreshedRoiPayloads ? 'Saved ROI payload data, then r' : 'R'}efined ${refinedCount} ROI${refinedCount === 1 ? '' : 's'} for frame ${selectedFrameNum}. The comparison below uses persisted ROI records.`;
       } catch (err) {
         if (!(err instanceof ApiError) || err.status !== 0) throw err;
         const response = await client.queueRoiRefinementJob({
@@ -1775,6 +1851,8 @@
           dry_run: false
         });
         message = `${refreshedRoiPayloads ? 'Saved ROI payload data. ' : ''}Direct refinement lost the API connection, so queued refinement job ${response.job.id} for ${detectionIds.length} ROI${detectionIds.length === 1 ? '' : 's'}.`;
+        refinedDetections = [];
+        refinementReviewStatus = 'Refinement is queued. Reload this frame after the job succeeds before reviewing ROI results.';
       }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -3073,7 +3151,7 @@
       },
       display: {
         maxWidth: frameImageWidth,
-        maxHeight: 760,
+        maxHeight: frameImageMaxHeight,
         background: '#050807'
       }
     };
@@ -3121,34 +3199,12 @@
   }
 </script>
 
-<section class="explorer-workbench">
-  <div class="asset-row explorer-toolbar" aria-label="Explorer source selection">
-      <label>
-        Asset
-        <select bind:value={selectedAssetId} on:change={loadFrames}>
-          {#each assets as asset}
-            <option value={asset.id}>{asset.filename ?? asset.id}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        Frame
-        <input
-          type="range"
-          min="1"
-          max={Math.max(frameCount, 1)}
-          bind:value={selectedFrameNum}
-          on:change={loadDetections}
-          disabled={frameCount < 1}
-        />
-      </label>
-      <span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span>
-  </div>
+<section class="explorer-workbench" class:refinement-workbench={isRoiReviewStage(activeExplorerTab)}>
 <div
-  class:segmentation-layout={activeExplorerTab !== 'refinement'}
-  class:single-panel-layout={activeExplorerTab === 'refinement'}
+  class:segmentation-layout={!isRoiReviewStage(activeExplorerTab)}
+  class:single-panel-layout={isRoiReviewStage(activeExplorerTab)}
 >
-  {#if activeExplorerTab !== 'refinement'}
+  {#if !isRoiReviewStage(activeExplorerTab)}
   <section class="panel image-panel">
     <div class="panel-heading">
       <div>
@@ -3200,6 +3256,10 @@
         <p class="eyebrow">Options</p>
         <h2>Controls</h2>
       </div>
+    </div>
+    <div class="explorer-source-controls" aria-label="Explorer source selection">
+      <label>Asset<select bind:value={selectedAssetId} on:change={loadFrames}>{#each assets as asset}<option value={asset.id}>{asset.filename ?? asset.id}</option>{/each}</select></label>
+      <label>Frame<input type="range" min="1" max={Math.max(frameCount, 1)} bind:value={selectedFrameNum} on:change={loadDetections} disabled={frameCount < 1} /><span class="frame-readout">{frameCount ? `${selectedFrameNum} / ${frameCount}` : 'No frames'}</span></label>
     </div>
     {#if activeExplorerTab === 'preprocessing'}
     <div class="explorer-display-row">
@@ -3746,7 +3806,7 @@
     </details>
 
     <div class="button-row">
-      <button type="button" on:click={previewDetectionCandidatesNow} disabled={frameCount < 1}>Refresh candidates</button>
+      <button type="button" on:click={() => previewDetectionCandidatesNow()} disabled={frameCount < 1}>Refresh candidates</button>
     </div>
 
     {:else if activeExplorerTab === 'refinement'}
@@ -3794,12 +3854,15 @@
       <label>
         Refinement method
         <select bind:value={refinementMethod}>
+          <option value="heuristic_edge_v1">Heuristic edge refinement — default</option>
           <option value="oracle">Oracle mask refinement</option>
           <option value="identity">Identity — promote candidates unchanged</option>
         </select>
       </label>
       {#if refinementMethod === 'identity'}
         <p class="muted">Promotes candidate ROIs without model inference or boundary changes.</p>
+      {:else if refinementMethod === 'heuristic_edge_v1'}
+        <p class="muted">Uses deterministic seed growth and strong oblique edges; horizontal and vertical line-scan sensor edges are ignored.</p>
       {:else}
       <p class="muted">Oracle Builder status: {oracleStatus}</p>
       {#if refinementModelRefs.length}
@@ -3827,8 +3890,15 @@
           Allow frame expansion
         </label>
         {/if}
+        {#if refinementMethod === 'heuristic_edge_v1'}
         <div class="form-grid compact-grid">
-          {#if refinementMethod === 'oracle'}
+          <label>Strong-gradient percentile<input type="number" min="0" max="100" step="1" bind:value={heuristicGradientPercentile} /></label>
+          <label>Axis exclusion (degrees)<input type="number" min="0" max="44" step="1" bind:value={heuristicAxisExclusionDegrees} /></label>
+          <label>Maximum seed growth (px)<input type="number" min="0" step="1" bind:value={heuristicMaxGrowthPixels} /></label>
+        </div>
+        {/if}
+        {#if refinementMethod === 'oracle'}
+        <div class="form-grid compact-grid">
           <label class:has-field-override={fieldChanged('refinementMaxIterations', refinementMaxIterations)}>
             Max iterations
             <input type="number" min="1" step="1" bind:value={refinementMaxIterations} />
@@ -3841,39 +3911,47 @@
             Edge touch margin (px)
             <input type="number" min="1" step="1" bind:value={refinementEdgeTouchMargin} />
           </label>
-          {/if}
-          <label class:has-field-override={fieldChanged('refinementEncoding', refinementEncoding)}>
-            Encoding
-            <select bind:value={refinementEncoding}>
-              <option value="auto">default</option>
-              {#each refinementEncodingOptions as encoding}
-                {#if encoding !== 'auto'}
-                  <option
-                    value={encoding}
-                    disabled={!codecAvailable(imageCodecAvailability, encoding)}
-                    title={codecUnavailableTitle(imageCodecAvailability, encoding)}
-                  >{encoding}</option>
-                {/if}
-              {/each}
-            </select>
-          </label>
         </div>
+        {/if}
       </details>
     </details>
 
     <div class="button-row">
-      <button class="ghost" type="button" on:click={refineCurrentDetections} disabled={frameCount < 1 || refining}>
-        {refining ? 'Refining' : 'Refine current ROIs'}
+      <button type="button" on:click={refineCurrentDetections} disabled={frameCount < 1 || detections.length < 1 || refining}>
+        {refining ? 'Applying refinement' : 'Apply selected refinement to current ROIs'}
       </button>
+      <button class="ghost" type="button" on:click={loadDetections} disabled={frameCount < 1 || refining}>Refresh persisted results</button>
+      {#if detections.length < 1}<p class="soft">Refresh candidate ROIs before applying refinement.</p>{/if}
      </div>
     {/if}
 
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
   </section>
+  <aside class="panel explorer-inspector" aria-label="Selected frame or ROI details">
+    <div class="panel-heading"><div><p class="eyebrow">Selection</p><h2>Inspector</h2></div></div>
+    {#if selectedInspection.kind === 'frame'}
+      <p class="soft">Selected frame</p>
+      <dl class="explorer-inspector-metrics">
+        <div><dt>Frame</dt><dd>{selectedFrameNum} of {frameCount}</dd></div>
+        <div><dt>Dimensions</dt><dd>{selectedFrame?.width ?? 'Unknown'} × {selectedFrame?.height ?? 'Unknown'} px</dd></div>
+        <div><dt>Payload</dt><dd>{framePayloadKind}</dd></div>
+      </dl>
+      <p class="muted">Histogram inspection will use exact stored pixel values once the read-only inspection endpoint is available.</p>
+    {:else if selectedInspection.detection}
+      <p class="soft">Selected {selectedInspection.kind} ROI</p>
+      <dl class="explorer-inspector-metrics">
+        <div><dt>ROI</dt><dd>{selectedInspection.detection.roi_index ?? 'Unknown'}</dd></div>
+        <div><dt>Bounds</dt><dd>{refinementRoiBboxLabel(selectedInspection.detection, 0)}</dd></div>
+        <div><dt>Area</dt><dd>{formatStat(selectedInspection.detection.area)} px²</dd></div>
+        <div><dt>Method</dt><dd>{selectedInspection.detection.refinement_method ?? selectedInspection.detection.metadata?.refinement_method ?? 'Candidate'}</dd></div>
+      </dl>
+      <p class="muted">Histogram inspection will use exact stored pixel values once the read-only inspection endpoint is available.</p>
+    {/if}
+  </aside>
 </div>
 
-{#if activeExplorerTab === 'refinement'}
+{#if isRoiReviewStage(activeExplorerTab)}
 <section class="panel bbox-panel refinement-roi-panel">
   <div class="panel-heading">
     <div>
@@ -3884,37 +3962,7 @@
       {detections.length} candidate{detections.length === 1 ? '' : 's'}, {refinedDetections.length} refined, {refinementRoiPairs.length} comparison{refinementRoiPairs.length === 1 ? '' : 's'}
     </span>
   </div>
-
-  {#if hasRefinementResults}
-    <div class="refinement-summary-grid">
-      <div>
-        <span>Refined ROIs</span>
-        <strong>{formatCount(refinementSummary.count)}</strong>
-      </div>
-      <div>
-        <span>Total ROI area (px²)</span>
-        <strong>{formatStat(refinementSummary.areaCount ? refinementSummary.totalArea : null)}</strong>
-        <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} with area` : 'area unavailable'}</small>
-      </div>
-      <div>
-        <span>Mean area (px²)</span>
-        <strong>{formatStat(refinementSummary.meanArea)}</strong>
-      </div>
-      <div>
-        <span>Median area (px²)</span>
-        <strong>{formatStat(refinementSummary.medianArea)}</strong>
-      </div>
-      <div>
-        <span>Area range (px²)</span>
-        <strong>{formatStat(refinementSummary.minArea)}-{formatStat(refinementSummary.maxArea)}</strong>
-      </div>
-      <div>
-        <span>Total bbox area (px²)</span>
-        <strong>{formatStat(refinementSummary.totalBboxArea)}</strong>
-        <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} boxes` : 'bbox unavailable'}</small>
-      </div>
-    </div>
-  {/if}
+  <p class="soft">{refinementReviewStatus}</p>
 
   {#if refinementRoiPairs.length}
     <div class="refinement-roi-compare">
@@ -3934,7 +3982,7 @@
         <div class="refinement-roi-stack">
           {#if pair.candidates.length}
             {#each pair.candidates as candidate, candidateIndex}
-              <div class="roi-tile refinement-roi-tile">
+              <div class="roi-tile refinement-roi-tile" class:tile-selected={selectedInspection.detection?.id === candidate.id} role="button" tabindex="0" on:click={() => (selectedInspection = { kind: 'candidate', detection: candidate })} on:keydown={(event) => (event.key === 'Enter' || event.key === ' ') && (selectedInspection = { kind: 'candidate', detection: candidate })}>
                 {#if candidate.id && hasRoiPayload(candidate)}
                   <div class="roi-image-frame">
                     {#if refinementTileRelationLabel(pair, 'candidate')}
@@ -3971,7 +4019,7 @@
         <div class="refinement-roi-stack">
           {#if pair.refinedDetections.length}
             {#each pair.refinedDetections as refinedDetection, refinedIndex}
-              <div class="roi-tile refinement-roi-tile">
+              <div class="roi-tile refinement-roi-tile" class:tile-selected={selectedInspection.detection?.id === refinedDetection.id} role="button" tabindex="0" on:click={() => (selectedInspection = { kind: 'refined', detection: refinedDetection })} on:keydown={(event) => (event.key === 'Enter' || event.key === ' ') && (selectedInspection = { kind: 'refined', detection: refinedDetection })}>
                 <div class="roi-image-frame">
                   {#if refinementTileRelationLabel(pair, 'refined')}
                     <span class={`refinement-tile-badge relation-${pair.relation}`}>
@@ -4004,13 +4052,6 @@
     <p class="empty-state">Refresh candidates before refining ROIs.</p>
   {/if}
 
-  {#if stageCountEntries(stageCounts).length}
-    <div class="stage-counts">
-      {#each stageCountEntries(stageCounts) as [key, value]}
-        <span><strong>{value}</strong> {key.replaceAll('_', ' ')}</span>
-      {/each}
-    </div>
-  {/if}
 </section>
 {:else if activeExplorerTab === 'detection'}
 <section class="panel bbox-panel">

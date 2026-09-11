@@ -8,11 +8,12 @@ export const explorerStages: Array<{ id: ExplorerStage; label: string; detail: s
   { id: 'preprocessing', label: 'Preprocessing', detail: 'Prepare and preview a selected frame' },
   { id: 'threshold', label: 'Threshold', detail: 'Tune foreground separation' },
   { id: 'detection', label: 'Candidate ROIs', detail: 'Preview candidate detections' },
-  { id: 'refinement', label: 'ROI Refinement', detail: 'Inspect refinement behavior' }
+  { id: 'refinement', label: 'ROI Refinement', detail: 'Apply and compare persisted refinement' }
 ];
 
 export type DashboardView =
   | 'status'
+  | 'dead_letters'
   | 'assets'
   | 'ingestion'
   | 'telemetry'
@@ -28,6 +29,7 @@ export type DashboardView =
   | 'rois'
   | 'curation'
   | 'clusters'
+  | 'exports'
   | 'logs'
   | 'admin';
 
@@ -49,6 +51,7 @@ export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'frames', label: 'Frames', detail: 'Inspect raw and processed imagery', group: 'analysis', path: 'frames', hidden: true },
   { id: 'curation', label: 'Curation', detail: 'Human and ML-assisted review', group: 'analysis', path: 'curation' },
   { id: 'clusters', label: 'Clusters', detail: 'Explore ROIs by feature similarity', group: 'analysis', path: 'clusters' },
+  { id: 'exports', label: 'Exports', detail: 'Create and download reproducible data bundles', group: 'analysis', path: 'exports' },
   { id: 'explorer', label: 'Explorer', detail: 'Test processing interactively', group: 'explorer', path: 'workspace' },
   { id: 'assets', label: 'Assets', detail: 'Review the project data catalog', group: 'workflow', path: 'assets', nextView: 'ingestion' },
   { id: 'ingestion', label: 'Ingestion', shortLabel: 'Ingest', detail: 'Register source imagery', group: 'workflow', path: 'ingestion', nextView: 'preprocessing' },
@@ -56,11 +59,12 @@ export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'preprocessing', label: 'Preprocessing', shortLabel: 'Prepare', detail: 'Prepare frames for detection', group: 'workflow', path: 'preprocessing', nextView: 'segmentation' },
   { id: 'segmentation', label: 'Candidate ROIs', shortLabel: 'Detect', detail: 'Generate candidate detections', group: 'workflow', path: 'candidates', nextView: 'roi_refinement' },
   { id: 'roi_refinement', label: 'ROI Refinement', shortLabel: 'Refine', detail: 'Produce curatable ROIs', group: 'workflow', path: 'refinement', nextView: 'ml_evidence' },
-  { id: 'ml_evidence', label: 'ML Evidence', shortLabel: 'Evidence', detail: 'Generate classification and clustering evidence', group: 'workflow', path: 'ml-evidence', nextView: 'rois' },
+  { id: 'ml_evidence', label: 'ML Evidence', shortLabel: 'Evidence', detail: 'Generate classification and embedding evidence', group: 'workflow', path: 'ml-evidence', nextView: 'rois' },
   { id: 'job_series', label: 'Job Series', shortLabel: 'Series', detail: 'Build ordered processing work', group: 'workflow', path: 'job-series', nextView: 'job_series_monitor' },
   { id: 'job_series_monitor', label: 'Series Monitor', shortLabel: 'Monitor', detail: 'Track and control submitted work', group: 'workflow', path: 'job-series-monitor', nextView: 'preset_library' },
   { id: 'preset_library', label: 'Preset Library', shortLabel: 'Presets', detail: 'Review, apply, and save processing settings', group: 'workflow', path: 'preset-library' },
   { id: 'status', label: 'Status', detail: 'Jobs, workers, and capacity', group: 'system', path: 'status' },
+  { id: 'dead_letters', label: 'Dead letters', shortLabel: 'DLQ', detail: 'Review failed work and explicitly replay it', group: 'system', path: 'dead-letters' },
   { id: 'logs', label: 'Event Log', shortLabel: 'Logs', detail: 'Inspect operational events', group: 'system', path: 'logs' },
   { id: 'admin', label: 'Administration', shortLabel: 'Admin', detail: 'Manage projects and users', group: 'system', path: 'administration' }
 ];
@@ -115,8 +119,10 @@ export function dashboardViewHref(view: DashboardView, currentUrl?: URL): string
 }
 
 export function explorerStageFromUrl(url: URL): ExplorerStage {
-  const value = url.searchParams.get('stage') as ExplorerStage | null;
-  return explorerStages.some((stage) => stage.id === value) ? value! : 'preprocessing';
+  const value = url.searchParams.get('stage');
+  // Preserve existing shared URLs from the short-lived separate review stage.
+  if (value === 'review') return 'refinement';
+  return explorerStages.some((stage) => stage.id === value) ? (value as ExplorerStage) : 'preprocessing';
 }
 
 export function explorerStageHref(stage: ExplorerStage, currentUrl?: URL): string {

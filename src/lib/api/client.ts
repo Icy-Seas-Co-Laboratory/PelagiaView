@@ -29,6 +29,10 @@ import type {
   DetectionSummary,
   DirectoryEntry,
   DirectoryListing,
+  ExportArtifact,
+  ExportCreateResponse,
+  ExportOptions,
+  ExportRequest,
   FrameContextResponse,
   FramePreprocessOptions,
   FramePreprocessResponse,
@@ -429,6 +433,24 @@ export class PelagiaApiClient {
     return response.job;
   }
 
+  async exportOptions(): Promise<ExportOptions> {
+    return this.get<ExportOptions>('/exports/options', {}, 0, { cache: 'no-store' });
+  }
+
+  async createExport(body: ExportRequest): Promise<ExportCreateResponse> {
+    return this.post<ExportCreateResponse>('/exports', body);
+  }
+
+  async listExports(limit = 100, offset = 0): Promise<ExportArtifact[]> {
+    const response = await this.get<{ exports: ExportArtifact[] }>('/exports', { limit, offset }, 0, { cache: 'no-store' });
+    return response.exports ?? [];
+  }
+
+  async getExport(exportId: string): Promise<ExportArtifact> {
+    const response = await this.get<{ export: ExportArtifact }>(`/exports/${encodeURIComponent(exportId)}`, {}, 0, { cache: 'no-store' });
+    return response.export;
+  }
+
   async jobsSummary(options: JobsSummaryOptions = {}): Promise<JobsSummaryResponse> {
     return this.get<JobsSummaryResponse>('/jobs/summary', options, 0, { cache: 'no-store' });
   }
@@ -467,8 +489,8 @@ export class PelagiaApiClient {
     return response.job;
   }
 
-  async retryJob(jobId: string): Promise<Job> {
-    const response = await this.post<{ job: Job }>(`/jobs/${encodeURIComponent(jobId)}/retry`);
+  async retryJob(jobId: string, reason?: string): Promise<Job> {
+    const response = await this.post<{ job: Job }>(`/jobs/${encodeURIComponent(jobId)}/retry`, reason ? { reason } : undefined);
     return response.job;
   }
 
@@ -709,7 +731,10 @@ export class PelagiaApiClient {
   }
 
   async getRefinedDetection(refinedDetectionId: string): Promise<DetectionSummary> {
-    return this.get<DetectionSummary>(`/refined-detections/${encodeURIComponent(refinedDetectionId)}`);
+    const response = await this.get<{ detection: DetectionSummary }>(
+      `/refined-detections/${encodeURIComponent(refinedDetectionId)}`
+    );
+    return response.detection;
   }
 
   refinedDetectionRecordImageUrl(refinedDetectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
@@ -906,6 +931,17 @@ export class PelagiaApiClient {
     return this.post('/roi-refinement/jobs', compact(body));
   }
 
+  async queueRoiContinuityJob(body: {
+    asset_id: string;
+    scan_axis?: 'x' | 'y' | null;
+    boundary_band_pixels?: number | null;
+    min_link_score?: number | null;
+    priority?: number | null;
+    depends_on?: string[];
+  }): Promise<{ job: Job }> {
+    return this.post('/roi-refinement/continuity/jobs', compact(body));
+  }
+
   async refineRois(body: RoiRefinementOptions): Promise<{
     dry_run?: boolean;
     stored?: boolean;
@@ -962,10 +998,16 @@ export class PelagiaApiClient {
     return response.sources ?? [];
   }
 
-  async featureSpaceRois(sourceKey: string, options: { limit?: number } = {}): Promise<FeatureSpaceSourceRois> {
+  async featureSpaceRois(sourceKey: string, options: {
+    limit?: number;
+    offset?: number;
+    sort_by?: 'original' | 'image_area_asc' | 'image_area_desc' | 'longest_side_asc' | 'longest_side_desc';
+  } = {}): Promise<FeatureSpaceSourceRois> {
     return this.get('/curation/feature-space/rois', compact({
       source_key: sourceKey,
-      limit: options.limit
+      limit: options.limit,
+      offset: options.offset,
+      sort_by: options.sort_by
     }) as Record<string, QueryParamValue>, 0);
   }
 
@@ -976,12 +1018,13 @@ export class PelagiaApiClient {
   async similarCurationRois(
     roiId: string,
     sourceKey: string,
-    options: { limit?: number; minimum?: number } = {}
+    options: { limit?: number; minimum?: number; offset?: number } = {}
   ): Promise<FeatureSpaceSimilarityResult> {
     return this.get(`/curation/feature-space/similar/${encodeURIComponent(roiId)}`, compact({
       source_key: sourceKey,
       limit: options.limit,
-      minimum: options.minimum
+      minimum: options.minimum,
+      offset: options.offset
     }) as Record<string, QueryParamValue>, 0);
   }
 
@@ -1024,12 +1067,14 @@ export class PelagiaApiClient {
   async queueClassificationJob(body: {
     roi_ids?: string[];
     model_ref?: string | null;
-    evidence_kind?: 'classification' | 'clustering';
+    evidence_kind?: 'classification' | 'clustering' | 'embedding';
     selection?: ClassificationTargetSelection | null;
     priority?: number | null;
   }): Promise<ClassificationJobResponse> {
     return this.post(
-      body.evidence_kind === 'clustering' ? '/curation/clustering-jobs' : '/curation/classification-jobs',
+      body.evidence_kind === 'clustering' ? '/curation/clustering-jobs'
+        : body.evidence_kind === 'embedding' ? '/curation/embedding-jobs'
+        : '/curation/classification-jobs',
       compact(body)
     );
   }
@@ -1037,11 +1082,13 @@ export class PelagiaApiClient {
   async previewClassificationTargets(body: {
     roi_ids?: string[];
     model_ref?: string | null;
-    evidence_kind?: 'classification' | 'clustering';
+    evidence_kind?: 'classification' | 'clustering' | 'embedding';
     selection?: ClassificationTargetSelection | null;
   }): Promise<ClassificationTargetPreview> {
     return this.post(
-      body.evidence_kind === 'clustering' ? '/curation/clustering-targets/preview' : '/curation/classification-targets/preview',
+      body.evidence_kind === 'clustering' ? '/curation/clustering-targets/preview'
+        : body.evidence_kind === 'embedding' ? '/curation/embedding-targets/preview'
+        : '/curation/classification-targets/preview',
       compact(body)
     );
   }

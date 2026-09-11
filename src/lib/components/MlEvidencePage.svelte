@@ -22,7 +22,7 @@
   type ReviewState = NonNullable<ClassificationTargetSelection['review_state']>;
   type EvidenceState = NonNullable<ClassificationTargetSelection['evidence_state']>;
   type LabelSource = NonNullable<ClassificationTargetSelection['label_source']>;
-  type EvidenceKind = 'classification' | 'clustering';
+  type EvidenceKind = 'classification' | 'clustering' | 'embedding';
   type EvidenceModel = OracleModelSummary & { evidenceKind: EvidenceKind };
 
   let options: CurationOptions | null = null;
@@ -57,7 +57,7 @@
 
   $: models = [
     ...(options?.models ?? []).map((model) => ({ ...model, evidenceKind: 'classification' as const })),
-    ...(options?.clustering_models ?? []).map((model) => ({ ...model, evidenceKind: 'clustering' as const }))
+    ...(options?.embedding_models ?? []).map((model) => ({ ...model, evidenceKind: 'embedding' as const }))
   ];
   $: availableModels = models.filter((model) => model.available !== false);
   $: selectedModels = availableModels.filter((model) => selectedModelRefs.has(modelKey(model)));
@@ -127,7 +127,7 @@
       restorePreferences();
       const usableModels: EvidenceModel[] = [
         ...nextOptions.models.map((model) => ({ ...model, evidenceKind: 'classification' as const })),
-        ...(nextOptions.clustering_models ?? []).map((model) => ({ ...model, evidenceKind: 'clustering' as const }))
+        ...(nextOptions.embedding_models ?? []).map((model) => ({ ...model, evidenceKind: 'embedding' as const }))
       ].filter((model) => model.available !== false);
       const validSelection = new Set([...selectedModelRefs].filter((ref) => usableModels.some((model) => modelKey(model) === ref)));
       if (!validSelection.size) {
@@ -381,15 +381,15 @@
       <section class="panel model-panel">
         <p class="eyebrow">Inference</p><h2>Oracle Builder models</h2>
         <p class="model-help">Each selection produces a separate, provenance-scoped evidence job. {selectedModels.length ? `${selectedModels.length} selected.` : 'Select at least one ready model.'}</p>
-        {#each ['classification', 'clustering'] as evidenceKind (evidenceKind)}
+        {#each ['classification', 'embedding'] as evidenceKind (evidenceKind)}
           {@const group = availableModels.filter((model) => model.evidenceKind === evidenceKind)}
           <fieldset class="model-group">
-            <legend>{evidenceKind === 'classification' ? 'Classification' : 'Self-supervised clustering'} <span>{selectedCountFor(evidenceKind as EvidenceKind)}/{group.length}</span></legend>
+            <legend>{evidenceKind === 'classification' ? 'Classification' : 'Embedding'} <span>{selectedCountFor(evidenceKind as EvidenceKind)}/{group.length}</span></legend>
             {#if group.length}
               {#each group as model (modelKey(model))}
                 <label class="model-choice">
                   <input type="checkbox" checked={selectedModelRefs.has(modelKey(model))} on:change={(event) => toggleModel(model, (event.currentTarget as HTMLInputElement).checked)} />
-                  <span><strong>{model.alias}</strong><small>{modelArchitecture(model)} · {modelFeatures(model).join(', ') || (evidenceKind === 'clustering' ? 'cluster evidence' : 'probabilities')}</small><small class:gpu={modelExecutionClass(model) === 'gpu'} class:cpu={modelExecutionClass(model) === 'cpu'}>{modelExecution(model)}</small></span>
+                  <span><strong>{model.alias}</strong><small>{modelArchitecture(model)} · {modelFeatures(model).join(', ') || (evidenceKind === 'embedding' ? 'representation embeddings' : 'probabilities')}</small><small class:gpu={modelExecutionClass(model) === 'gpu'} class:cpu={modelExecutionClass(model) === 'cpu'}>{modelExecution(model)}</small></span>
                 </label>
               {/each}
             {:else if !loading}
@@ -416,7 +416,7 @@
     </aside>
   </div>
 
-  <QueueStatusSummary title="ML evidence jobs" eyebrow="Classification and clustering" stage="classification" jobIds={submittedJobIds} mode="detailed" />
+  <QueueStatusSummary title="ML evidence jobs" eyebrow="Classification and embedding" stage="classification" jobIds={submittedJobIds} mode="detailed" />
 </div>
 
 <style>

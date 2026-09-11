@@ -10,7 +10,7 @@ ingestionFlatfieldWindowWidth = 1
 ingestionFlatfieldWindowStride = 1
 
 [settings.preprocessing]
-minFieldValue = 25
+minFieldValue = 20
 maxFieldValue = 255
 
 [settings.threshold]

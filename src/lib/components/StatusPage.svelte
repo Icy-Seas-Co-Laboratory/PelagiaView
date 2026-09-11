@@ -25,7 +25,8 @@
     { stage: 'preprocess_frames', label: 'Preprocessing', short: 'Frame correction and normalization' },
     { stage: 'segment', label: 'Candidate ROIs', short: 'Thresholding and candidate detection' },
     { stage: 'roi_refinement', label: 'ROI refinement', short: 'Candidate-to-refined ROI promotion' },
-    { stage: 'classify', label: 'ML evidence', short: 'Oracle classification and similarity evidence' }
+    { stage: 'classify', label: 'ML evidence', short: 'Oracle classification and similarity evidence' },
+    { stage: 'export_bundle', label: 'Exports', short: 'Reproducible bundle preparation and delivery' }
   ];
   const activeStatuses = ['queued', 'leased', 'working', 'paused'];
   const stoppedStatuses = ['failed', 'dead_lettered', 'cancelled'];
@@ -316,7 +317,7 @@
   }
 
   function stageActive(item: JobAggregateSummary): number {
-    return number(item.queued) + stageRunning(item);
+    return number(item.queued) + number(item.paused) + stageRunning(item);
   }
 
   function progressPercent(job: Job): number | null {
@@ -355,7 +356,7 @@
   function etaLabel(job: Job): string {
     if (job.status === 'queued') return 'Awaiting worker';
     if (job.status === 'paused') return 'Paused';
-    if (job.status === 'failed' || job.status === 'dead_lettered') return 'Stopped';
+    if (job.status === 'failed' || job.status === 'dead_lettered' || job.status === 'cancelled') return 'Stopped';
     const total = numericValue(job.progress?.total);
     const completed = numericValue(job.progress?.completed);
     const rate = jobRate(job);
@@ -466,7 +467,7 @@
   <div class="operations-main-grid">
     <section class="section-shell stages-section">
       <div class="section-heading">
-        <div><h2>Pipeline queues</h2><p>Expand a stage to inspect and control its active jobs.</p></div>
+        <div><h2>Pipeline queues</h2><p>Expand a stage to inspect and control its active jobs. Export progress and ETA are scope-based estimates.</p></div>
         <div class="queue-controls" aria-label="Global queue controls">
           <button class="quiet" type="button" on:click={() => controlQueue('pause')} disabled={runningCount + queuedCount === 0 || actionKeys['pause:all']}>Pause all</button>
           <button class="quiet" type="button" on:click={() => controlQueue('resume')} disabled={pausedCount === 0 || actionKeys['resume:all']}>Resume all</button>
@@ -516,7 +517,7 @@
                       <strong>{jobPercent === null ? '—' : `${Math.round(jobPercent)}%`}</strong>
                     </div>
                     <div class="stage-job-metadata">
-                      <span><small>ETA</small><b>{etaLabel(job)}</b></span>
+                      <span><small>{job.stage === 'export_bundle' ? 'Estimated ETA' : 'ETA'}</small><b>{etaLabel(job)}</b></span>
                       <span><small>User</small><b>{userLabel(job)}</b></span>
                       <span><small>Worker</small><b>{job.worker_id ? shortId(job.worker_id) : 'Unassigned'}</b></span>
                       <span><small>Rate</small><b>{rateLabel(jobRate(job), job.progress?.unit)}</b></span>
@@ -580,7 +581,7 @@
           </div>
           <div class="job-metadata">
             <span><small>Status</small><b>{displayStatus(job)}</b></span>
-            <span><small>ETA</small><b>{etaLabel(job)}</b></span>
+            <span><small>{job.stage === 'export_bundle' ? 'Estimated ETA' : 'ETA'}</small><b>{etaLabel(job)}</b></span>
             <span><small>User</small><b>{userLabel(job)}</b></span>
             <span><small>Job type</small><b>{stageLabel(job.stage)}</b></span>
             <span><small>Progress</small><b>{jobProgressLabel(job)}</b></span>

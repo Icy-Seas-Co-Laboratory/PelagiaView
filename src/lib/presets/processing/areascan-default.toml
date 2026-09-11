@@ -9,7 +9,7 @@ ingestionBackgroundWindowWidth = 25
 ingestionBackgroundWindowStride = 25
 
 [settings.preprocessing]
-minFieldValue = 25
+minFieldValue = 20
 maxFieldValue = 255
 applyMask = false
 cropEnabled = false
@@ -21,6 +21,6 @@ manualThreshold = 100
 [settings.candidate_detection]
 roiAssemblyMethod = "connected_components"
 roiAssemblyConnectivity = 8
-minWidth = 12
-minHeight = 12
+minWidth = 8
+minHeight = 8
 padding = 50

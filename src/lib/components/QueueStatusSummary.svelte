@@ -43,7 +43,8 @@
     preprocessing: 'preprocess_frames',
     segmentation: 'segment',
     roi_refinement: 'roi_refinement',
-    classification: 'classify'
+    classification: 'classify',
+    export: 'export_bundle'
   };
 
   $: stageAliases = stages ?? (stage ? jobStageAliases[stage] : null);

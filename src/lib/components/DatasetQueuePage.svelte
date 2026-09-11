@@ -200,7 +200,7 @@
   let storeRoiPayloadMinHeight: number | null = null;
   let storeRoiPayloadMinWidthPlusHeight: number | null = null;
 
-  let refinementMethod: 'oracle' | 'identity' = 'oracle';
+  let refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity' = 'heuristic_edge_v1';
   let refinementModelRef = '';
   let refinementModelRefs: string[] = [];
   let oracleStatus = 'unknown';
@@ -208,6 +208,9 @@
   let refinementMaxIterations = 3;
   let refinementExpansionPixels: number | null = null;
   let refinementEdgeTouchMargin = 1;
+  let heuristicGradientPercentile = 90;
+  let heuristicAxisExclusionDegrees = 10;
+  let heuristicMaxGrowthPixels = 32;
   let refinementEncoding = 'auto';
   let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw'];
   let refinementStore = true;
@@ -284,7 +287,7 @@
     storeRoiPayloadMinHeight: number | null;
     storeRoiPayloadMinWidthPlusHeight: number | null;
     refinementModelRef: string;
-    refinementMethod: 'oracle' | 'identity';
+    refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity';
     refinementAllowFrameExpansion: boolean;
     refinementMaxIterations: number;
     refinementExpansionPixels: number | null;
@@ -636,7 +639,9 @@
     storeRoiPayloadMinHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
     refinementModelRef = stringPreference(preferences.refinementModelRef, refinementModelRef);
-    refinementMethod = preferences.refinementMethod === 'identity' ? 'identity' : 'oracle';
+    refinementMethod = preferences.refinementMethod === 'oracle' || preferences.refinementMethod === 'identity'
+      ? preferences.refinementMethod
+      : 'heuristic_edge_v1';
     refinementAllowFrameExpansion = booleanPreference(preferences.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
     refinementMaxIterations = numberPreference(preferences.refinementMaxIterations, refinementMaxIterations);
     refinementExpansionPixels = nullablePreferenceNumber(preferences.refinementExpansionPixels, refinementExpansionPixels);
@@ -942,9 +947,14 @@
     storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
 
     refinementModelRef = stringDefault(roiRefinement, 'model_ref', refinementModelRef);
+    const configuredMethod = stringDefault(roiRefinement, 'method', refinementMethod);
+    refinementMethod = configuredMethod === 'oracle' || configuredMethod === 'identity' ? configuredMethod : 'heuristic_edge_v1';
     refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
     refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
+    heuristicGradientPercentile = numberDefault(roiRefinement, 'heuristic_gradient_percentile', heuristicGradientPercentile);
+    heuristicAxisExclusionDegrees = numberDefault(roiRefinement, 'heuristic_axis_exclusion_degrees', heuristicAxisExclusionDegrees);
+    heuristicMaxGrowthPixels = numberDefault(roiRefinement, 'heuristic_max_growth_pixels', heuristicMaxGrowthPixels);
     refinementEncoding = ensureAvailableCodec(
       stringDefault(roiRefinement, 'encoding', refinementEncoding),
       refinementEncodingOptions,
@@ -1190,6 +1200,28 @@
     queueing = false;
   }
 
+  async function queueLineScanContinuity() {
+    const client = getClient();
+    const assetIds = [...selectedAssetIds];
+    if (!client || assetIds.length !== 1) {
+      error = 'Select exactly one line-scan asset before queuing continuity assembly.';
+      return;
+    }
+    queueing = true;
+    message = null;
+    error = null;
+    try {
+      const response = await client.queueRoiContinuityJob({ asset_id: assetIds[0] });
+      const jobId = response.job?.id;
+      if (jobId) submittedJobIds = [jobId, ...submittedJobIds].slice(0, 100);
+      message = 'Queued audited line-scan continuity assembly. It will retain frame-local ROI segments and record accepted and rejected links.';
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      queueing = false;
+    }
+  }
+
   function thresholdOptions(): Record<string, unknown> {
     const method = thresholdMethod;
     const options: Record<string, unknown> = { threshold_method: method };
@@ -1288,11 +1320,14 @@
   function roiRefinementOptions(): Record<string, unknown> {
     return {
       method: refinementMethod,
-      model_ref: refinementModelRef || undefined,
+      model_ref: refinementMethod === 'oracle' ? refinementModelRef || undefined : undefined,
       allow_frame_expansion: refinementAllowFrameExpansion,
       max_iterations: refinementMaxIterations,
       expansion_pixels: refinementExpansionPixels,
       edge_touch_margin: refinementEdgeTouchMargin,
+      heuristic_gradient_percentile: refinementMethod === 'heuristic_edge_v1' ? heuristicGradientPercentile : undefined,
+      heuristic_axis_exclusion_degrees: refinementMethod === 'heuristic_edge_v1' ? heuristicAxisExclusionDegrees : undefined,
+      heuristic_max_growth_pixels: refinementMethod === 'heuristic_edge_v1' ? heuristicMaxGrowthPixels : undefined,
       encoding: refinementEncoding,
       store: refinementStore,
       dry_run: refinementDryRun
@@ -1957,12 +1992,15 @@
         <label>
           Refinement method
           <select bind:value={refinementMethod}>
+            <option value="heuristic_edge_v1">Heuristic edge refinement — default</option>
             <option value="oracle">Oracle mask refinement</option>
             <option value="identity">Identity — promote candidates unchanged</option>
           </select>
         </label>
         {#if refinementMethod === 'identity'}
           <p class="muted">Selected candidate ROIs will become refined ROIs without model inference, expansion, residual discovery, or overlap reconciliation.</p>
+        {:else if refinementMethod === 'heuristic_edge_v1'}
+          <p class="muted">Uses deterministic, CPU-only seed growth. Strong oblique edges constrain growth; horizontal and vertical sensor edges are ignored.</p>
         {:else}
         <p class="muted">Oracle Builder status: {oracleStatus}</p>
         {#if refinementModelRefs.length}
@@ -2014,26 +2052,30 @@
         </details>
         {/if}
 
+        {#if refinementMethod === 'heuristic_edge_v1'}
+        <details class="control-details" open>
+          <summary>Heuristic edge controls</summary>
+          <p class="muted">Keep axis exclusion above zero to reject line-scan horizontal and vertical artifacts.</p>
+          <label>
+            Strong-gradient percentile
+            <input type="number" min="0" max="100" step="1" bind:value={heuristicGradientPercentile} />
+          </label>
+          <label>
+            Axis exclusion (degrees)
+            <input type="number" min="0" max="44" step="1" bind:value={heuristicAxisExclusionDegrees} />
+          </label>
+          <label>
+            Maximum seed growth (px)
+            <input type="number" min="0" step="1" bind:value={heuristicMaxGrowthPixels} />
+          </label>
+        </details>
+        {/if}
+
         <details class="control-details" open>
           <summary>Refined detections</summary>
           <label class="check-row" class:has-field-override={fieldChanged('refinementStore', refinementStore)}>
             <input type="checkbox" bind:checked={refinementStore} />
             Store refined detections
-          </label>
-          <label class:has-field-override={fieldChanged('refinementEncoding', refinementEncoding)}>
-            Encoding
-            <select bind:value={refinementEncoding}>
-              <option value="auto">default</option>
-              {#each refinementEncodingOptions as encoding}
-                {#if encoding !== 'auto'}
-                  <option
-                    value={encoding}
-                    disabled={!codecAvailable(imageCodecAvailability, encoding)}
-                    title={codecUnavailableTitle(imageCodecAvailability, encoding)}
-                  >{encoding}</option>
-                {/if}
-              {/each}
-            </select>
           </label>
           <label class="check-row" class:has-field-override={fieldChanged('refinementDryRun', refinementDryRun)}>
             <input type="checkbox" bind:checked={refinementDryRun} />
@@ -2054,6 +2096,12 @@
     <button type="button" on:click={queueJobs} disabled={queueing || prospectiveQueueItemCount === 0 || queueBlocked}>
       {queueing ? 'Queueing' : actionLabel}
     </button>
+    {#if mode === 'roi_refinement'}
+      <button type="button" class="secondary" on:click={queueLineScanContinuity} disabled={queueing || selectedAssetIds.size !== 1}>
+        Queue line-scan continuity
+      </button>
+      <p class="soft">For one selected asset with declared line-scan geometry. Run after its ROI refinement jobs finish.</p>
+    {/if}
     <p class="soft">
       The backend will plan optimized jobs for {formatCount(prospectiveQueueItemCount)} selected {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}.
     </p>

@@ -3,6 +3,7 @@
   import { getClient } from '$lib/stores/session';
   import type { Job } from '$lib/api/types';
   import { formatCount, formatDate, formatPercent, numericValue, statusTone } from '$lib/utils/format';
+  import { jobStatusCategory, jobStatusLabel, runningJobStatuses } from '$lib/utils/jobStatus';
 
   export let title = 'Now running';
   export let poll = true;
@@ -23,7 +24,7 @@
       error = null;
       try {
         const nextJobs = await client.listJobs({
-          status: ['leased', 'queued', 'paused'],
+          status: [...runningJobStatuses],
           include_progress: true,
           limit,
           sort: 'updated_at',
@@ -46,11 +47,7 @@
   });
 
   function statusRank(job: Job): number {
-    const status = String(job.status ?? '').toLowerCase();
-    if (status === 'leased') return 0;
-    if (status === 'queued') return 1;
-    if (status === 'paused') return 2;
-    return 3;
+    return jobStatusCategory(job) === 'running' ? 0 : 1;
   }
 
   function dateValue(value: string | undefined): number {
@@ -103,13 +100,13 @@
             <span>{formatPercent(job.progress?.percent)} · {progressText(job)}</span>
           </div>
           <div class="active-job-meta">
-            <span>{job.status ?? 'unknown'}</span>
+            <span>{jobStatusLabel(job)}</span>
             <span>{formatDate(job.updated_at ?? job.created_at)}</span>
           </div>
         </article>
       {/each}
     </div>
   {:else}
-    <p class="empty">No active, queued, or paused jobs right now.</p>
+    <p class="empty">No jobs are running right now.</p>
   {/if}
 </section>

@@ -2,12 +2,15 @@
   import { getClient } from '$lib/stores/session';
   import type { Job } from '$lib/api/types';
   import { formatDate, statusTone } from '$lib/utils/format';
-  import { jobActionClass, jobActionLabel, jobActions, type JobAction } from '$lib/utils/jobStatus';
+  import { jobActionClass, jobActionLabel, jobActions, jobStatusLabel, type JobAction } from '$lib/utils/jobStatus';
 
   export let jobs: Job[] = [];
   export let pageSize = 20;
   export let compact = false;
   export let emptyLabel = 'No jobs found.';
+  /** Re-fetches the parent's current query after a control action. */
+  export let refreshJobs: (() => Promise<void> | void) | null = null;
+  /** @deprecated Prefer refreshJobs so query filters and pagination stay intact. */
   export let onJobsRefresh: ((jobs: Job[]) => void) | null = null;
 
   let page = 1;
@@ -25,11 +28,17 @@
     if (!client) return;
     actionError = null;
     try {
-      if (action === 'pause') await client.pauseJob(job.id);
-      if (action === 'resume') await client.resumeJob(job.id);
-      if (action === 'retry') await client.retryJob(job.id);
-      const nextJobs = await client.listJobs();
-      onJobsRefresh?.(nextJobs);
+      const updatedJob = action === 'pause'
+        ? await client.pauseJob(job.id)
+        : action === 'resume'
+          ? await client.resumeJob(job.id)
+          : await client.retryJob(job.id);
+      if (refreshJobs) {
+        await refreshJobs();
+      } else {
+        // Preserve the current input scope when no parent refresh callback is supplied.
+        onJobsRefresh?.(jobs.map((current) => current.id === updatedJob.id ? updatedJob : current));
+      }
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     }
@@ -63,7 +72,7 @@
       {#each pagedJobs as job}
         <tr>
           <td>{job.stage ?? 'unknown'}</td>
-          <td><span class="status-dot {statusTone(job.status)}"></span>{job.status ?? 'unknown'}</td>
+          <td><span class="status-dot {statusTone(job.status)}"></span>{jobStatusLabel(job)}</td>
           <td>{job.summary ?? job.id}</td>
           <td>{formatDate(job.updated_at ?? job.created_at)}</td>
           <td class="actions">

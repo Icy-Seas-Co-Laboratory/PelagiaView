@@ -276,9 +276,57 @@ export type Job = {
   lease_expires_at?: string | null;
   progress?: JobProgress | null;
   error_message?: string | null;
+  /** Stable category assigned by the worker/retry policy when a job stops. */
+  failure_category?: string | null;
+  /** Earliest time a retry is eligible to be claimed. */
+  available_at?: string | null;
   control_reason?: string | null;
   payload?: Record<string, unknown>;
   result?: Record<string, unknown>;
+};
+
+export type ExportProduct = 'raw_roi_statistics' | 'binned_roi_statistics' | 'roi_evidence' | 'telemetry';
+export type ExportFormat = 'json' | 'sqlite' | 'xlsx';
+
+export type ExportRequest = {
+  products: ExportProduct[];
+  formats?: Partial<Record<ExportProduct, ExportFormat>>;
+  asset_ids?: string[];
+  run_ids?: string[];
+  telemetry_source_ids?: string[];
+  roi_stage?: 'refined';
+  filters?: Record<string, unknown>;
+};
+
+export type ExportArtifact = {
+  id: string;
+  status?: string | null;
+  request?: ExportRequest;
+  job_id?: string | null;
+  download_url?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  error_message?: string | null;
+  manifest?: Record<string, unknown> | null;
+  job?: Job | null;
+};
+
+export type ExportOptions = {
+  products: ExportProduct[];
+  formats: ExportFormat[];
+  roi_stages: Array<'refined'>;
+  bundle_format_version?: string;
+};
+
+export type ExportCreateResponse = { export: ExportArtifact; job: Job };
+
+export type ExportScope = {
+  assetIds?: string[];
+  runIds?: string[];
+  telemetrySourceIds?: string[];
+  filters?: Record<string, unknown>;
+  description?: string;
 };
 
 /** A reproducible, ordered submission of one or more processing stages. */
@@ -1277,11 +1325,14 @@ export type SegmentationCapabilities = {
 
 export type RoiRefinementOptions = {
   detection_ids?: string[];
-  method?: 'oracle' | 'identity';
+  method?: 'heuristic_edge_v1' | 'oracle' | 'identity';
   model_ref?: string | null;
   max_iterations?: number | null;
   expansion_pixels?: number | null;
   edge_touch_margin?: number | null;
+  heuristic_gradient_percentile?: number | null;
+  heuristic_axis_exclusion_degrees?: number | null;
+  heuristic_max_growth_pixels?: number | null;
   encoding?: 'png' | 'jpg' | 'jxl' | 'jxs' | 'raw' | 'zstd' | 'auto' | null;
   allow_frame_expansion?: boolean | null;
   store?: boolean | null;
@@ -1292,9 +1343,10 @@ export type RoiRefinementCapabilities = {
   pipeline_stage_order?: string[];
   supported?: {
     model_refs?: string[];
-    methods?: Array<'oracle' | 'identity'>;
+    methods?: Array<'heuristic_edge_v1' | 'oracle' | 'identity'>;
     models?: Array<Record<string, unknown>>;
     inference_backend?: string;
+    inference_backends?: string[];
     oracle?: { enabled?: boolean; status?: string; error?: string };
     roi_encoding_options?: string[];
   };
@@ -1403,6 +1455,10 @@ export type CurationEvidenceSummary = {
   cluster_similarity?: number | null;
   cluster_novel?: boolean | null;
   cluster_abstained?: boolean | null;
+  embedding_evidence_id?: string | null;
+  embedding_inference_run_id?: string | null;
+  embedding_model_artifact_id?: string | null;
+  embedding_normalized?: boolean | null;
 };
 
 export type CurationRoi = CurationEvidenceSummary & {
@@ -1411,9 +1467,20 @@ export type CurationRoi = CurationEvidenceSummary & {
   asset_filename?: string | null;
   frame_id?: string | null;
   frame_index?: number | null;
+  captured_at?: string | null;
+  frame_width?: number | null;
+  frame_height?: number | null;
   roi_index?: number | null;
   area?: number | null;
   roi_shape?: number[];
+  bbox_x?: number | string | null;
+  bbox_y?: number | string | null;
+  bbox_w?: number | string | null;
+  bbox_h?: number | string | null;
+  crop_bbox_x?: number | string | null;
+  crop_bbox_y?: number | string | null;
+  crop_bbox_w?: number | string | null;
+  crop_bbox_h?: number | string | null;
   roi_url?: string;
   thumbnail_url?: string;
   annotation_id?: string | null;
@@ -1427,6 +1494,7 @@ export type CurationRoi = CurationEvidenceSummary & {
   reviews?: Array<Record<string, unknown>>;
   evidence?: Array<Record<string, any>>;
   clustering_evidence?: Array<Record<string, any>>;
+  embedding_evidence?: Array<Record<string, any>>;
 };
 
 export type CurationOptions = {
@@ -1439,6 +1507,7 @@ export type CurationOptions = {
   };
   models: OracleModelSummary[];
   clustering_models?: OracleModelSummary[];
+  embedding_models?: OracleModelSummary[];
   default_model_ref: string;
   labels: CurationLabel[];
   assets?: Array<{ id: string; filename: string; kind?: string }>;
@@ -1487,7 +1556,7 @@ export type ClassificationTargetSelection = {
 
 export type ClassificationTargetPreview = {
   model_ref: string;
-  evidence_kind?: 'classification' | 'clustering';
+  evidence_kind?: 'classification' | 'clustering' | 'embedding';
   selection: ClassificationTargetSelection;
   target_count: number;
   explicit_roi_count: number;
@@ -1506,7 +1575,7 @@ export type CurationRoiPage = {
 
 export type FeatureSpaceSource = {
   source_key: string;
-  source_kind: 'classification' | 'clustering';
+  source_kind: 'classification' | 'clustering' | 'embedding';
   inference_run_id: string;
   model_selector?: string | null;
   artifact_id?: string | null;
@@ -1555,6 +1624,8 @@ export type FeatureSpaceSimilarityResult = {
   readable_embedding_count: number | null;
   unreadable_embedding_count: number;
   limit: number;
+  offset: number;
+  total: number;
   cluster_id?: string;
 };
 
@@ -1562,6 +1633,9 @@ export type FeatureSpaceSourceRois = {
   items: FeatureSpaceRoi[];
   source_key: string;
   limit: number;
+  offset: number;
+  total: number;
+  sort_by?: string;
 };
 
 export type FeatureSpaceUmapRoi = FeatureSpaceRoi & {
@@ -1583,6 +1657,7 @@ export type FeatureSpaceUmapResult = {
     min_cluster_size: number;
     min_samples: number | null;
     cluster_selection_epsilon: number;
+    cluster_selection_method: 'eom' | 'leaf';
     metric: string;
   };
   component_ranges: Array<{
@@ -1602,6 +1677,7 @@ export type FeatureSpaceUmapAnalysisRequest = {
   min_cluster_size?: number;
   min_samples?: number | null;
   cluster_selection_epsilon?: number;
+  cluster_selection_method?: 'eom' | 'leaf';
   force?: boolean;
 };
 

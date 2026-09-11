@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { getClient } from '$lib/stores/session';
+  import { processingPresetSession } from '$lib/stores/processingPresetSession';
   import { listProcessingPresets } from '$lib/api/processingPresets';
   import type {
     CollectionSummary,
@@ -11,7 +12,7 @@
     JobSeriesRequest,
     RawAsset
   } from '$lib/api/types';
-  import type { ProcessingPreset } from '$lib/processing/settings';
+  import { processingPresetKey, type ProcessingPreset } from '$lib/processing/settings';
   import { formatCount, numericValue } from '$lib/utils/format';
   import { dashboardViewHref } from '$lib/utils/dashboardNavigation';
 
@@ -43,10 +44,14 @@
   let submitting = false;
   let error: string | null = null;
   let message: string | null = null;
+  let eligibilityRequestKey: string | null = null;
+  let submitConfirmed = false;
 
-  $: selectedPreset = presets.find((preset) => `${preset.source}:${preset.id}` === selectedPresetKey) ?? null;
+  // A series stores its own immutable settings snapshot. The active browser
+  // session is therefore a valid default even if saved presets cannot load.
+  $: availablePresets = [$processingPresetSession.livePreset, ...presets];
+  $: selectedPreset = availablePresets.find((preset) => processingPresetKey(preset) === selectedPresetKey) ?? null;
   $: selectedFrameIds = uniqueValues(frameIdsText);
-  $: request = buildRequest();
   $: filteredAssets = filterAssets(assets, assetSearch);
   $: filteredCollections = collections.filter((item) => item.collection.toLowerCase().includes(collectionSearch.trim().toLowerCase()));
   $: hasExplicitTarget = targetMode === 'assets'
@@ -56,8 +61,34 @@
       : selectedFrameIds.length > 0;
   $: selectedTargetCount = targetMode === 'assets' ? selectedAssetIds.size : targetMode === 'collections' ? selectedCollections.size : selectedFrameIds.length;
   $: selectedStageList = availableStages.filter(({ stage }) => enabledStages.has(stage));
+  // A cleared numeric input is bound as undefined by the browser, while the
+  // initial state uses null. Both mean that this optional range is unbounded.
+  $: frameRangeValid = startFrame == null || endFrame == null || startFrame <= endFrame;
+  $: configurationReady = Boolean(selectedPreset && hasExplicitTarget && selectedStageList.length && frameRangeValid);
+  $: requestKey = JSON.stringify({
+    targets: {
+      asset_ids: targetMode === 'assets' ? [...selectedAssetIds] : [],
+      collections: targetMode === 'collections' ? [...selectedCollections] : [],
+      frame_ids: targetMode === 'frames' ? selectedFrameIds : [],
+      start_frame: targetMode === 'frames' ? null : startFrame,
+      end_frame: targetMode === 'frames' ? null : endFrame
+    },
+    preset: selectedPresetKey,
+    stages: availableStages.map(({ stage }) => ({ stage, enabled: enabledStages.has(stage) })),
+    priority,
+    failurePolicy
+  });
+  $: hasCurrentEligibility = Boolean(eligibility && eligibilityRequestKey === requestKey);
+  $: queueReady = configurationReady && (dryRun || (hasCurrentEligibility && submitConfirmed));
+  $: validationIssues = [
+    !hasExplicitTarget ? 'Choose a source scope.' : null,
+    !selectedPreset ? 'Choose the processing preset to freeze.' : null,
+    !selectedStageList.length ? 'Select at least one stage.' : null,
+    !frameRangeValid ? 'End frame must be greater than or equal to start frame.' : null
+  ].filter((issue): issue is string => Boolean(issue));
 
   onMount(() => {
+    selectedPresetKey = preferredPresetKey();
     void loadBuilderData();
   });
 
@@ -79,6 +110,7 @@
       assets = nextAssets;
       collections = nextCollections;
       presets = nextPresets;
+      selectedPresetKey = preferredPresetKey();
     } catch (err) {
       error = errorMessage(err);
     } finally {
@@ -109,6 +141,12 @@
       failure_policy: failurePolicy,
       dry_run: dryRun
     };
+  }
+
+  function preferredPresetKey(): string {
+    const sessionKey = $processingPresetSession.selectedKey;
+    if (availablePresets.some((preset) => processingPresetKey(preset) === sessionKey)) return sessionKey;
+    return processingPresetKey($processingPresetSession.livePreset);
   }
 
   function toggleAsset(assetId: string) {
@@ -149,12 +187,15 @@
 
   async function preview() {
     const client = getClient();
-    if (!client || previewing || !canSubmit()) return;
+    if (!client || previewing || !canConfigure()) return;
+    const request = buildRequest();
     previewing = true;
     error = null;
     message = null;
     try {
       eligibility = await client.previewJobSeries({ ...request, dry_run: true });
+      eligibilityRequestKey = requestKey;
+      submitConfirmed = false;
       message = 'Eligibility preview refreshed. No jobs were submitted.';
     } catch (err) {
       error = errorMessage(err);
@@ -165,7 +206,8 @@
 
   async function submit() {
     const client = getClient();
-    if (!client || submitting || !canSubmit()) return;
+    if (!client || submitting || !canQueue()) return;
+    const request = buildRequest();
     submitting = true;
     error = null;
     message = null;
@@ -192,8 +234,12 @@
     return [...new Set(value.split(/[\n,\s]+/).map((item) => item.trim()).filter(Boolean))];
   }
 
-  function canSubmit(): boolean {
-    return Boolean(selectedPreset && hasExplicitTarget && selectedStageList.length);
+  function canConfigure(): boolean {
+    return configurationReady;
+  }
+
+  function canQueue(): boolean {
+    return queueReady;
   }
 
   function toggleSet(values: Set<string>, value: string): Set<string> {
@@ -260,7 +306,7 @@
             <div class="group-heading"><h3>Assets</h3><span>{filteredAssets.length} shown</span></div>
             <div class="selection-list asset-list">
               {#each filteredAssets as asset}
-                <label class:selected={selectedAssetIds.has(asset.id)} class="selection-row"><input type="checkbox" checked={selectedAssetIds.has(asset.id)} on:change={() => toggleAsset(asset.id)} /><span><strong>{assetLabel(asset)}</strong><small>{asset.kind ?? 'source'} · {formatCount(asset.frame_count ?? 0)} frames</small></span></label>
+                <label class:selected={selectedAssetIds.has(asset.id)} class="selection-row"><input type="checkbox" checked={selectedAssetIds.has(asset.id)} on:change={() => toggleAsset(asset.id)} /><span><strong>{assetLabel(asset)}</strong><small>{asset.kind ?? 'source'} · {formatCount(asset.frame_count ?? asset.media_count ?? 0)} frames</small></span></label>
               {:else}<p class="empty-selection">{assets.length ? 'No assets match this search.' : 'No assets available.'}</p>{/each}
             </div>
           </section>
@@ -288,6 +334,7 @@
         {#if targetMode !== 'frames'}
           <div class="frame-range"><label>Start frame <span class="optional-label">optional</span><input type="number" bind:value={startFrame} on:input={() => eligibility = null} min="0" placeholder="Any" /></label><label>End frame <span class="optional-label">optional</span><input type="number" bind:value={endFrame} on:input={() => eligibility = null} min="0" placeholder="Any" /></label><p class="soft">Range narrows the selected {targetMode === 'assets' ? 'assets' : 'collections'}; it never creates a project-wide run.</p></div>
         {/if}
+        {#if !frameRangeValid}<p class="callout required-callout" role="alert">End frame must be greater than or equal to start frame.</p>{/if}
         {#if !hasExplicitTarget}<p class="callout required-callout">Choose at least one {targetMode === 'assets' ? 'asset' : targetMode === 'collections' ? 'collection' : 'frame ID'} before checking or submitting this series.</p>{/if}
       </section>
 
@@ -304,7 +351,7 @@
           <label>Processing preset <span class="required-label">Required</span>
           <select bind:value={selectedPresetKey} on:change={() => eligibility = null}>
             <option value="" disabled>Select a preset…</option>
-            {#each presets as preset}<option value={`${preset.source}:${preset.id}`}>{preset.name} · {preset.source}</option>{/each}
+            {#each availablePresets as preset}<option value={processingPresetKey(preset)}>{preset.name} · {preset.source}</option>{/each}
           </select>
         </label>
         {#if selectedPreset}
@@ -317,13 +364,27 @@
 
       <section id="submit" class="panel submit-panel">
         <header class="rail-heading"><div class="section-number">04</div><div><p class="eyebrow">Final review</p><h2>Submission policy</h2></div></header>
+        <ol class="review-checklist" aria-label="Submission readiness">
+          <li class:complete={hasExplicitTarget}><span>{hasExplicitTarget ? '✓' : '1'}</span> Source scope</li>
+          <li class:complete={Boolean(selectedPreset)}><span>{selectedPreset ? '✓' : '2'}</span> Frozen preset</li>
+          <li class:complete={selectedStageList.length > 0}><span>{selectedStageList.length ? '✓' : '3'}</span> Pipeline stages</li>
+          <li class:complete={hasCurrentEligibility}><span>{hasCurrentEligibility ? '✓' : '4'}</span> Eligibility check</li>
+        </ol>
         <div class="policy-grid">
           <label>Priority<input type="number" bind:value={priority} min="-100" max="100" /></label>
           <label>On failure<select bind:value={failurePolicy}><option value="fail_fast">Stop remaining stages</option><option value="continue">Continue eligible work</option></select></label>
         </div>
         <p class="soft">Failed work is not retried automatically. You can retry failed work from the monitor after reviewing its error.</p>
         <label class="checkbox policy-toggle"><input type="checkbox" bind:checked={dryRun} /><span><strong>Dry run</strong><small>Validate and plan without submitting jobs.</small></span></label>
-        <div class="submit-actions"><button class="ghost" type="button" on:click={preview} disabled={loading || previewing || submitting || !canSubmit()}>{previewing ? 'Checking…' : 'Check eligibility'}</button><button type="button" on:click={submit} disabled={loading || previewing || submitting || !canSubmit()}>{submitting ? 'Submitting…' : dryRun ? 'Run dry check' : 'Submit & monitor'}</button></div>
+        {#if !dryRun && hasCurrentEligibility}
+          <label class="checkbox confirmation-toggle"><input type="checkbox" bind:checked={submitConfirmed} /><span><strong>I reviewed this eligibility check</strong><small>The selected preset and source scope will be recorded with the series.</small></span></label>
+        {:else if !dryRun}
+          <p class="callout">Check eligibility after your final edits before submitting. Changing the source, preset, stages, or policy makes a previous check stale.</p>
+        {/if}
+        {#if validationIssues.length}
+          <p class="soft readiness-copy">Complete the required steps above to continue.</p>
+        {/if}
+        <div class="submit-actions"><button class="ghost" type="button" on:click={preview} disabled={previewing || submitting || !configurationReady}>{previewing ? 'Checking…' : 'Check eligibility'}</button><button type="button" on:click={submit} disabled={submitting || previewing || !queueReady}>{submitting ? 'Submitting…' : dryRun ? 'Run dry check' : 'Submit & monitor'}</button></div>
         {#if eligibility}
           <div class="eligibility" aria-live="polite">
             <div class="eligibility-head"><h3>Eligibility</h3><span class="status-pill">Ready to review</span></div>
@@ -353,7 +414,7 @@
   .frame-range { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; padding-top: .2rem; } .frame-range .soft { grid-column: 1 / -1; font-size: .72rem; }
   .compact-action { min-height: 1.8rem; padding: .25rem .45rem; font-size: .75rem; }
   .snapshot-details { border-top: 1px solid var(--app-border-soft, #dde7e3); padding-top: .75rem; } .snapshot-details summary { display: flex; justify-content: space-between; cursor: pointer; color: var(--app-text, #17201b); font-size: .75rem; } .snapshot-details summary span { color: var(--app-accent-strong, #115345); font-size: .68rem; } dl { display: grid; gap: .35rem; margin: .7rem 0 0; max-height: 12rem; overflow: auto; } dl div { display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: .6rem; padding-bottom: .3rem; border-bottom: 1px solid var(--app-border-soft, #dde7e3); font-size: .7rem; } dt { overflow-wrap: anywhere; color: var(--app-muted, #60746c); font-weight: 750; } dd { margin: 0; overflow-wrap: anywhere; } .callout { padding: .7rem; border-left: 3px solid var(--app-accent, #176b58); border-radius: .3rem; color: var(--app-muted, #60746c); background: var(--app-surface-soft, #f1f6f4); font-size: .75rem; line-height: 1.4; } .required-label { margin-left: auto; color: var(--app-danger, #a23c34); font-size: .65rem; font-weight: 850; text-transform: uppercase; } .required-callout { border-left-color: var(--app-danger, #a23c34); }
-  .submit-panel { border-color: color-mix(in srgb, var(--app-accent, #176b58) 25%, var(--app-border, #cedbd6)); } .policy-grid { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: .65rem; } .policy-toggle { display: flex; align-items: flex-start; gap: .55rem; padding: .7rem; border: 1px solid var(--app-border-soft, #dde7e3); border-radius: .45rem; background: var(--app-surface-soft, #f1f6f4); } .policy-toggle input { flex: 0 0 auto; width: 1rem; height: 1rem; padding: 0; accent-color: var(--app-accent, #176b58); } .policy-toggle span { display: grid; gap: .15rem; } .policy-toggle small { font-size: .68rem; font-weight: 500; } .submit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; } .submit-actions button { min-height: 2.35rem; }
+  .submit-panel { border-color: color-mix(in srgb, var(--app-accent, #176b58) 25%, var(--app-border, #cedbd6)); } .review-checklist { display: grid; gap: .35rem; margin: 0; padding: .7rem; list-style: none; border: 1px solid var(--app-border-soft, #dde7e3); border-radius: .5rem; background: var(--app-surface-soft, #f1f6f4); } .review-checklist li { display: flex; align-items: center; gap: .45rem; color: var(--app-muted, #60746c); font-size: .72rem; font-weight: 750; } .review-checklist li span { display: grid; width: 1.15rem; height: 1.15rem; place-items: center; border: 1px solid var(--app-border, #cedbd6); border-radius: 999px; background: var(--app-surface-raised, #fff); color: var(--app-muted, #60746c); font-size: .62rem; font-weight: 900; } .review-checklist li.complete { color: var(--app-accent-strong, #115345); } .review-checklist li.complete span { border-color: var(--app-accent, #176b58); background: var(--app-accent, #176b58); color: white; } .policy-grid { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: .65rem; } .policy-toggle, .confirmation-toggle { display: flex; align-items: flex-start; gap: .55rem; padding: .7rem; border: 1px solid var(--app-border-soft, #dde7e3); border-radius: .45rem; background: var(--app-surface-soft, #f1f6f4); } .confirmation-toggle { border-color: color-mix(in srgb, var(--app-accent, #176b58) 35%, var(--app-border, #cedbd6)); background: color-mix(in srgb, var(--app-accent-soft, #dceee8) 65%, white); } .policy-toggle input, .confirmation-toggle input { flex: 0 0 auto; width: 1rem; height: 1rem; padding: 0; accent-color: var(--app-accent, #176b58); } .policy-toggle span, .confirmation-toggle span { display: grid; gap: .15rem; } .policy-toggle small, .confirmation-toggle small { font-size: .68rem; font-weight: 500; } .readiness-copy { margin: 0; font-size: .7rem; } .submit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; } .submit-actions button { min-height: 2.35rem; }
   .eligibility { display: grid; gap: .55rem; border-top: 1px solid var(--app-border-soft, #dde7e3); padding-top: .85rem; } .eligibility-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; } .eligibility-head h3 { font-size: .82rem; } .status-pill { border-radius: 999px; padding: .24rem .5rem; color: var(--app-accent-strong, #115345); background: var(--app-accent-soft, #dceee8); font-size: .64rem; font-weight: 850; } .eligibility-counts { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: .2rem .45rem; align-items: baseline; } .eligibility-counts strong { color: var(--app-accent-strong, #115345); font-size: 1.25rem; } .eligibility-counts span { color: var(--app-muted, #60746c); font-size: .65rem; } .eligibility p { margin: 0; font-size: .7rem; }
   @media (max-width: 1050px) { .builder-layout { grid-template-columns: 1fr; } .builder-rail { position: static; grid-template-columns: 1fr 1fr; align-items: start; } }
   @media (max-width: 760px) { .series-hero { flex-direction: column; } .builder-progress { grid-template-columns: 1fr 1fr; } .series-summary, .target-toolbar, .scope-picker, .frame-range { grid-template-columns: 1fr; } .builder-rail { grid-template-columns: 1fr; } .frame-target-grid { grid-template-columns: 1fr 1fr; } .wide-field { grid-column: 1 / -1; } }

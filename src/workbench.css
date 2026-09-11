@@ -315,6 +315,24 @@ summary:focus-visible {
   padding: var(--wb-space-3);
 }
 
+/* Explorer workspace: parameters left, rendered frame/ROIs center, inspection right. */
+.explorer-workbench > .segmentation-layout {
+  grid-template-columns: minmax(16rem, 21rem) minmax(0, 1fr) minmax(16rem, 21rem);
+}
+
+.explorer-workbench > .segmentation-layout > .controls-panel { grid-column: 1; grid-row: 1; border-left: 0; border-right: 1px solid var(--wb-divider); }
+.explorer-workbench > .segmentation-layout > .image-panel { grid-column: 2; grid-row: 1; }
+.explorer-workbench > .segmentation-layout > .explorer-inspector { grid-column: 3; grid-row: 1; overflow-y: auto; border-left: 1px solid var(--wb-divider); background: var(--wb-surface-subtle); }
+
+.explorer-inspector { min-width: 0; padding: var(--wb-space-3); }
+.explorer-inspector-metrics { display: grid; gap: var(--wb-space-2); margin: var(--wb-space-3) 0; }
+.explorer-inspector-metrics div { display: grid; gap: .1rem; border-bottom: 1px solid var(--wb-divider); padding-bottom: var(--wb-space-2); }
+.explorer-inspector-metrics dt { color: var(--wb-text-muted); font-size: .75rem; font-weight: 700; }
+.explorer-inspector-metrics dd { margin: 0; overflow-wrap: anywhere; font-weight: 700; }
+.explorer-source-controls { display: grid; gap: var(--wb-space-3); padding: 0 0 var(--wb-space-3); border-bottom: 1px solid var(--wb-divider); }
+.explorer-source-controls label { display: grid; gap: var(--wb-space-1); font-weight: 700; }
+.explorer-source-controls input[type='range'] { width: 100%; }
+
 .explorer-workbench .image-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -380,6 +398,151 @@ summary:focus-visible {
 .explorer-workbench > .bbox-panel {
   border-top: 1px solid var(--wb-divider);
   padding: var(--wb-space-3);
+}
+
+/* Refinement uses the same three-pane workspace as frame stages. Its center is
+ * intentionally reserved for candidate/refined ROI comparison rather than a frame. */
+.explorer-workbench.refinement-workbench {
+  grid-template-columns: minmax(16rem, 21rem) minmax(0, 1fr) minmax(16rem, 21rem);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.explorer-workbench.refinement-workbench > .single-panel-layout {
+  display: contents;
+}
+
+.explorer-workbench.refinement-workbench > .single-panel-layout > .controls-panel {
+  grid-column: 1;
+  grid-row: 1;
+  height: 100%;
+  overflow-y: auto;
+  border-right: 1px solid var(--wb-divider);
+  border-left: 0;
+}
+
+.explorer-workbench.refinement-workbench > .bbox-panel {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 0;
+  border-right: 1px solid var(--wb-divider);
+  padding: var(--wb-space-3);
+}
+
+.explorer-workbench.refinement-workbench > .single-panel-layout > .explorer-inspector {
+  grid-column: 3;
+  grid-row: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 0;
+  background: var(--wb-surface-subtle);
+}
+
+.explorer-workbench.refinement-workbench .refinement-roi-stack {
+  gap: var(--wb-space-2);
+}
+
+.explorer-workbench.refinement-workbench .refinement-roi-tile .roi-image-frame,
+.explorer-workbench.refinement-workbench .refinement-roi-placeholder {
+  min-height: 7.5rem;
+  padding: var(--wb-space-2);
+}
+
+.explorer-workbench.refinement-workbench .refinement-roi-tile .roi-tile-meta {
+  gap: 0.1rem;
+  padding: var(--wb-space-2);
+  font-size: 0.76rem;
+}
+
+/*
+ * Explorer ROI review is a browsing surface, not a report.  Keep individual
+ * crops deliberately small so a scientist can compare several ROIs at once;
+ * selection/inspection state is supplied by ExplorerPage.
+ */
+.explorer-workbench .refinement-roi-panel {
+  min-width: 0;
+  align-content: start;
+}
+
+.explorer-workbench .refinement-roi-compare {
+  gap: var(--wb-space-2);
+}
+
+.explorer-workbench .refinement-roi-comparison-header {
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+
+.explorer-workbench .refinement-roi-stack {
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  gap: var(--wb-space-2);
+}
+
+.explorer-workbench .refinement-roi-tile {
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--wb-radius, 0.5rem);
+}
+
+.explorer-workbench .refinement-roi-tile .roi-image-frame,
+.explorer-workbench .refinement-roi-placeholder {
+  min-height: 6.5rem;
+  aspect-ratio: 4 / 3;
+}
+
+.explorer-workbench .refinement-roi-tile .roi-tile-meta {
+  min-height: 3.65rem;
+  overflow: hidden;
+  padding: 0.35rem 0.45rem;
+}
+
+.explorer-workbench .refinement-roi-tile .roi-tile-meta strong,
+.explorer-workbench .refinement-roi-tile .roi-tile-meta code,
+.explorer-workbench .refinement-roi-tile .roi-tile-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Hooks for the three-pane Explorer workspace.  They are intentionally
+ * independent of a particular processing stage, so candidate and refined
+ * results stay visually comparable. */
+.explorer-workbench .explorer-center-panel,
+.explorer-workbench .explorer-roi-gallery {
+  min-width: 0;
+  min-height: 0;
+}
+
+.explorer-workbench .explorer-roi-gallery,
+.explorer-workbench .explorer-roi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: var(--wb-space-2);
+  align-content: start;
+}
+
+.explorer-workbench .explorer-roi-grid .roi-tile {
+  min-width: 0;
+  min-height: 0;
+}
+
+.explorer-workbench .explorer-roi-grid .roi-image-frame {
+  min-height: 6.5rem;
+  aspect-ratio: 4 / 3;
+}
+
+.explorer-workbench .explorer-roi-grid .roi-tile-meta {
+  padding: 0.35rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 62rem) {
+  .explorer-workbench .refinement-roi-stack,
+  .explorer-workbench .explorer-roi-gallery,
+  .explorer-workbench .explorer-roi-grid {
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  }
 }
 
 /* Analysis browsers: one continuous three-column scientific workspace. */
@@ -1287,6 +1450,33 @@ summary:focus-visible {
 
   .explorer-workbench > .segmentation-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .explorer-workbench.refinement-workbench {
+    display: block;
+    height: auto;
+    overflow-y: auto;
+  }
+
+  .explorer-workbench.refinement-workbench > .single-panel-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .explorer-workbench.refinement-workbench > .single-panel-layout > .controls-panel,
+  .explorer-workbench.refinement-workbench > .single-panel-layout > .explorer-inspector,
+  .explorer-workbench.refinement-workbench > .bbox-panel {
+    grid-column: auto;
+    grid-row: auto;
+    height: auto;
+    overflow: visible;
+    border-right: 0;
+    border-left: 0;
+    border-top: 1px solid var(--wb-divider);
+  }
+
+  .explorer-workbench.refinement-workbench > .bbox-panel {
+    padding: var(--wb-space-2);
   }
 
   .explorer-workbench .image-panel {
