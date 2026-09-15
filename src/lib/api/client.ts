@@ -77,6 +77,7 @@ import type {
   QueueAssetsRequest,
   QueueAssetsResponse,
   RawAsset,
+  RegistryTag,
   RunSummary,
   RunsListResponse,
   RoiRefinementCapabilities,
@@ -540,6 +541,10 @@ export class PelagiaApiClient {
   async listAssets(kind?: string, limit = 200, offset = 0): Promise<RawAsset[]> {
     const response = await this.get<{ assets: RawAsset[] }>('/assets', { kind, limit, offset }, 2500);
     return response.assets ?? [];
+  }
+
+  async listRegistryTags(): Promise<RegistryTag[]> {
+    return this.get<RegistryTag[]>('/registry/tags', {}, 2500);
   }
 
   async listCollections(limit = 200, offset = 0): Promise<CollectionSummary[]> {

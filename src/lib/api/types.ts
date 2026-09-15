@@ -579,6 +579,15 @@ export type RawAsset = {
   metadata?: Record<string, unknown>;
 };
 
+export type RegistryTag = {
+  tag_id: string;
+  name: string;
+  scope?: 'target_tags' | 'image_tags' | string;
+  selectable?: boolean;
+  deprecated_at?: string | null;
+  item_count?: number;
+};
+
 export type AssetUpdateRequest = {
   collections?: string[] | string | null;
 };
