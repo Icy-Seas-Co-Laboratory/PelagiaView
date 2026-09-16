@@ -1203,7 +1203,10 @@ function compact<T extends Record<string, unknown>>(input: T): T {
 
 function isRootDirectoryRequest(path: string) {
   const trimmed = path.trim();
-  return !trimmed || trimmed === '.';
+  // `/` has historically been used by the file-browser UI to mean its root.
+  // The API deliberately does not expose the host filesystem root; omit the
+  // parameter instead so it returns the configured browse roots.
+  return !trimmed || trimmed === '.' || trimmed === '/';
 }
 
 function normalizeDirectoryEntry(
