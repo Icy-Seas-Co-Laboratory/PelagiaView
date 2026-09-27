@@ -1182,6 +1182,7 @@ export type DirectoryListing = {
   path: string;
   entries: DirectoryEntry[];
   source: 'live-files' | 'registered-assets';
+  rootPath?: string | null;
 };
 
 export type SegmentationOptions = {

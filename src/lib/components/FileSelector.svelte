@@ -103,6 +103,13 @@
     }
   }
 
+  function canOpenParent(path: string) {
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath || normalizedPath === '.') return false;
+    const rootPath = listings.get(normalizedPath)?.rootPath;
+    return !rootPath || normalizedPath !== normalizePath(rootPath);
+  }
+
   async function ensureListing(path: string) {
     const normalizedPath = normalizePath(path);
     if (listings.has(normalizedPath)) return listings.get(normalizedPath) as DirectoryListing;
@@ -422,7 +429,7 @@
           <section class="file-selector-folder-panel">
             <p class="eyebrow">{displayPath(column.path)}</p>
             <div>
-              {#if column.path !== '.'}
+              {#if canOpenParent(column.path)}
                 <button type="button" class="file-selector-folder-row" on:click={() => openDirectory(parentPath(column.path))} disabled={disabled || loading}>..</button>
               {/if}
               {#each column.entries as entry, index}
@@ -516,7 +523,7 @@
     </div>
   {:else}
     <div class="file-selector-wizard-menu" aria-label={label}>
-      {#if currentPath !== '.'}
+      {#if canOpenParent(currentPath)}
         <button class="file-selector-wizard-parent" type="button" on:click={() => openDirectory(parentPath(currentPath))} disabled={disabled || loading}>
           Parent folder
         </button>

@@ -1121,12 +1121,14 @@ export class PelagiaApiClient {
         directory?: string | null;
         entries?: Array<DirectoryEntry & { is_dir?: boolean; exists?: boolean }>;
         roots?: Array<DirectoryEntry & { is_dir?: boolean; exists?: boolean }>;
+        root?: DirectoryEntry | null;
       }>('/live/files', params, 0, { auth: 'none' });
       const directory = response.directory ?? '.';
       return {
         path: directory,
         entries: (response.entries ?? response.roots ?? []).map((entry) => normalizeDirectoryEntry(entry, directory)),
-        source: 'live-files'
+        source: 'live-files',
+        rootPath: response.root?.path ?? null
       };
     } catch (error) {
       if (!(error instanceof ApiError) || error.status !== 404) {
