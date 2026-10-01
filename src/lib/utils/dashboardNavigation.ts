@@ -59,7 +59,7 @@ export const dashboardViews: DashboardViewDefinition[] = [
   { id: 'preprocessing', label: 'Preprocessing', shortLabel: 'Prepare', detail: 'Prepare frames for detection', group: 'workflow', path: 'preprocessing', nextView: 'segmentation' },
   { id: 'segmentation', label: 'Candidate ROIs', shortLabel: 'Detect', detail: 'Generate candidate detections', group: 'workflow', path: 'candidates', nextView: 'roi_refinement' },
   { id: 'roi_refinement', label: 'ROI Refinement', shortLabel: 'Refine', detail: 'Produce curatable ROIs', group: 'workflow', path: 'refinement', nextView: 'ml_evidence' },
-  { id: 'ml_evidence', label: 'ML Evidence', shortLabel: 'Evidence', detail: 'Generate classification and embedding evidence', group: 'workflow', path: 'ml-evidence', nextView: 'rois' },
+  { id: 'ml_evidence', label: 'ML Evidence', shortLabel: 'Evidence', detail: 'Generate classification, embedding, and clustering evidence', group: 'workflow', path: 'ml-evidence', nextView: 'rois' },
   { id: 'job_series', label: 'Job Series', shortLabel: 'Series', detail: 'Build ordered processing work', group: 'workflow', path: 'job-series', nextView: 'job_series_monitor' },
   { id: 'job_series_monitor', label: 'Series Monitor', shortLabel: 'Monitor', detail: 'Track and control submitted work', group: 'workflow', path: 'job-series-monitor', nextView: 'preset_library' },
   { id: 'preset_library', label: 'Preset Library', shortLabel: 'Presets', detail: 'Review, apply, and save processing settings', group: 'workflow', path: 'preset-library' },

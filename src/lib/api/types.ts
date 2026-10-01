@@ -1399,47 +1399,15 @@ export type CurationLabelImportResult = {
   labels: CurationLabel[];
 };
 
-export type OracleExecution = {
-  gpu_accelerated?: boolean;
-  accelerator?: string;
-  device_type?: string;
-  device_name?: string;
-  device_count?: number;
-};
-
 export type OracleModelSummary = {
-  alias: string;
-  loaded: boolean;
-  available: boolean;
-  load_error?: string | null;
+  /** Sealed Oracle Builder model identity used for all inference requests. */
+  artifact_id: string;
+  /** Content fingerprint Pelagia pins when it creates an inference run. */
+  fingerprint_sha256: string;
+  /** Human-readable catalog label. */
+  name?: string | null;
   task?: string | null;
-  architecture?: string | null;
-  runtime?: { execution?: OracleExecution };
-  parameters?: { execution?: OracleExecution };
-  model?: {
-    artifact_id?: string | null;
-    run_id?: string | null;
-    artifact_fingerprint?: string | null;
-    task?: string | null;
-    architecture?: string | null;
-  };
-  capabilities?: {
-    contract_version?: string | null;
-    labels?: Array<{ class_index: number; label_id?: string | null; name?: string | null }>;
-    embedding?: { available?: boolean; dimension?: number | null; normalized?: boolean };
-    evidence?: {
-      available?: boolean;
-      prototype?: boolean;
-      knn?: boolean;
-      visual_exemplars?: boolean;
-    };
-    clustering?: {
-      available?: boolean;
-      cluster_count?: number | null;
-      method?: string | null;
-      embedding_dimension?: number | null;
-    };
-  };
+  status?: string | null;
 };
 
 export type CurationEvidenceSummary = {

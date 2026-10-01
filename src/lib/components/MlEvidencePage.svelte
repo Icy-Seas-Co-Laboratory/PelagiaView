@@ -57,9 +57,12 @@
 
   $: models = [
     ...(options?.models ?? []).map((model) => ({ ...model, evidenceKind: 'classification' as const })),
-    ...(options?.embedding_models ?? []).map((model) => ({ ...model, evidenceKind: 'embedding' as const }))
+    ...(options?.embedding_models ?? []).map((model) => ({ ...model, evidenceKind: 'embedding' as const })),
+    ...(options?.clustering_models ?? []).map((model) => ({ ...model, evidenceKind: 'clustering' as const }))
   ];
-  $: availableModels = models.filter((model) => model.available !== false);
+  // The V2 catalog only exposes eligible sealed models. Keep the status visible
+  // for provenance, but do not infer runtime availability from retired fields.
+  $: availableModels = models;
   $: selectedModels = availableModels.filter((model) => selectedModelRefs.has(modelKey(model)));
   $: queueableModels = selectedModels.filter((model) => (previews[modelKey(model)]?.target_count ?? 0) > 0);
   $: labels = options?.labels ?? [];
@@ -125,16 +128,14 @@
       assets = nextAssets;
       collections = nextCollections;
       restorePreferences();
-      const usableModels: EvidenceModel[] = [
-        ...nextOptions.models.map((model) => ({ ...model, evidenceKind: 'classification' as const })),
-        ...(nextOptions.embedding_models ?? []).map((model) => ({ ...model, evidenceKind: 'embedding' as const }))
-      ].filter((model) => model.available !== false);
-      const validSelection = new Set([...selectedModelRefs].filter((ref) => usableModels.some((model) => modelKey(model) === ref)));
+      const usableModels = evidenceModels(nextOptions);
+      const validSelection = reconcileModelRefs(selectedModelRefs, usableModels);
       if (!validSelection.size) {
-        const defaultModel = usableModels.find((model) => model.alias === nextOptions.default_model_ref) ?? usableModels[0];
+        const defaultModel = usableModels.find((model) => model.artifact_id === nextOptions.default_model_ref) ?? usableModels[0];
         if (defaultModel) validSelection.add(modelKey(defaultModel));
       }
       selectedModelRefs = validSelection;
+      persistPreferences();
       if (!selectedModelRefs.size && nextOptions.oracle.error) error = nextOptions.oracle.error;
     } catch (cause) {
       error = `Unable to load ML Evidence options: ${errorMessage(cause)}`;
@@ -181,7 +182,7 @@
       const next = await Promise.all(selectedModels.map(async (model) => [
         modelKey(model),
         await client.previewClassificationTargets({
-          model_ref: model.alias,
+          model_ref: model.artifact_id,
           evidence_kind: model.evidenceKind,
           selection
         })
@@ -204,17 +205,27 @@
     error = null;
     notice = null;
     try {
-      const results = await Promise.all(queueableModels.map((model) => client.queueClassificationJob({
-        model_ref: model.alias,
+      const results = await Promise.allSettled(queueableModels.map((model) => client.queueClassificationJob({
+        model_ref: model.artifact_id,
         evidence_kind: model.evidenceKind,
         selection
       })));
-      submittedJobIds = [
-        ...results.map((result) => result.job.id),
-        ...submittedJobIds.filter((id) => !results.some((result) => result.job.id === id))
-      ];
-      const targetCount = results.reduce((sum, result) => sum + result.target_count, 0);
-      notice = `Queued ${results.length} evidence job${results.length === 1 ? '' : 's'} for ${formatCount(targetCount)} model-ROI evaluations.`;
+      const queuedJobIds: string[] = [];
+      let targetCount = 0;
+      const failures: string[] = [];
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          queuedJobIds.push(result.value.job.id);
+          targetCount += result.value.target_count;
+        } else {
+          failures.push(errorMessage(result.reason));
+        }
+      }
+      if (queuedJobIds.length) {
+        submittedJobIds = [...queuedJobIds, ...submittedJobIds.filter((id) => !queuedJobIds.includes(id))];
+        notice = `Queued ${queuedJobIds.length} evidence job${queuedJobIds.length === 1 ? '' : 's'} for ${formatCount(targetCount)} model-ROI evaluations.${failures.length ? ` ${failures.length} model${failures.length === 1 ? '' : 's'} could not be queued.` : ''}`;
+      }
+      if (failures.length) error = `Unable to queue ${failures.length === queueableModels.length ? 'ML evidence' : 'some ML evidence'}: ${failures.join(' ')}`;
     } catch (cause) {
       error = `Unable to queue ML evidence: ${errorMessage(cause)}`;
     } finally {
@@ -230,41 +241,22 @@
     return `${depth ? `${'— '.repeat(depth)}` : ''}${labelName(label)}`;
   }
 
-  function modelArchitecture(model: OracleModelSummary | null): string {
-    return model?.architecture || model?.model?.architecture || 'Architecture not reported';
+  function modelPurpose(kind: EvidenceKind): string {
+    if (kind === 'embedding') return 'Image embeddings';
+    if (kind === 'clustering') return 'Cluster evidence';
+    return 'Class probabilities and decisions';
   }
 
-  function modelExecution(model: OracleModelSummary): string {
-    const execution = model.runtime?.execution ?? model.parameters?.execution;
-    if (!execution) return 'Execution device not reported';
-    const device = execution.device_name || execution.device_type || execution.accelerator;
-    const count = execution.device_count && execution.device_count > 1 ? ` · ${execution.device_count} devices` : '';
-    if (execution.gpu_accelerated || execution.accelerator?.toLowerCase() === 'gpu' || execution.device_type?.toUpperCase() === 'GPU') {
-      return `GPU${device ? ` · ${device}` : ''}${count}`;
-    }
-    return `CPU fallback${device && device.toUpperCase() !== 'CPU' ? ` · ${device}` : ''}${count}`;
+  function modelName(model: OracleModelSummary): string {
+    return model.name?.trim() || model.artifact_id;
   }
 
-  function modelExecutionClass(model: OracleModelSummary): 'gpu' | 'cpu' | 'unknown' {
-    const execution = model.runtime?.execution ?? model.parameters?.execution;
-    if (!execution) return 'unknown';
-    return execution.gpu_accelerated || execution.accelerator?.toLowerCase() === 'gpu' || execution.device_type?.toUpperCase() === 'GPU' ? 'gpu' : 'cpu';
+  function modelStatus(model: OracleModelSummary): string {
+    return model.status?.trim() || 'Catalog status not reported';
   }
 
-  function modelFeatures(model: OracleModelSummary | null): string[] {
-    if (!model) return [];
-    const features: string[] = [];
-    if (model.capabilities?.embedding?.available) features.push('embeddings');
-    if (model.capabilities?.evidence?.prototype) features.push('prototype similarity');
-    if (model.capabilities?.evidence?.knn) features.push('KNN context');
-    if (model.capabilities?.clustering?.available) {
-      features.push(`${model.capabilities.clustering.cluster_count ?? '?'} clusters`);
-    }
-    return features;
-  }
-
-  function modelKey(model: Pick<EvidenceModel, 'alias' | 'evidenceKind'>): string {
-    return `${model.evidenceKind}:${model.alias}`;
+  function modelKey(model: Pick<EvidenceModel, 'artifact_id' | 'evidenceKind'>): string {
+    return `${model.evidenceKind}:${model.artifact_id}`;
   }
 
   function toggleModel(model: EvidenceModel, checked: boolean) {
@@ -281,6 +273,52 @@
 
   function preferenceKey(): string {
     return projectPreferenceKey('ml-evidence-workflow', $session);
+  }
+
+  function evidenceModels(source: CurationOptions): EvidenceModel[] {
+    return [
+      ...source.models.map((model) => ({ ...model, evidenceKind: 'classification' as const })),
+      ...(source.embedding_models ?? []).map((model) => ({ ...model, evidenceKind: 'embedding' as const })),
+      ...(source.clustering_models ?? []).map((model) => ({ ...model, evidenceKind: 'clustering' as const }))
+    ];
+  }
+
+  function reconcileModelRefs(storedRefs: Iterable<string>, catalog: EvidenceModel[]): Set<string> {
+    const catalogKeys = new Set(catalog.map(modelKey));
+    const selected = new Set<string>();
+    for (const ref of storedRefs) {
+      if (catalogKeys.has(ref)) {
+        selected.add(ref);
+        continue;
+      }
+      // A pre-V2 preference may have stored a bare model reference. It is safe
+      // to retain it only when it already equals a current sealed artifact ID.
+      const separator = ref.indexOf(':');
+      const kind = separator >= 0 ? ref.slice(0, separator) : 'classification';
+      const candidate = separator >= 0 ? ref.slice(separator + 1) : ref;
+      const match = catalog.find((model) => model.evidenceKind === kind && model.artifact_id === candidate);
+      if (match) selected.add(modelKey(match));
+    }
+    return selected;
+  }
+
+  async function refreshModels() {
+    const client = getClient();
+    if (!client || loading) return;
+    error = null;
+    try {
+      const nextOptions = await client.getCurationOptions();
+      options = nextOptions;
+      selectedModelRefs = reconcileModelRefs(selectedModelRefs, evidenceModels(nextOptions));
+      if (!selectedModelRefs.size) {
+        const defaultModel = evidenceModels(nextOptions).find((model) => model.artifact_id === nextOptions.default_model_ref)
+          ?? evidenceModels(nextOptions)[0];
+        if (defaultModel) selectedModelRefs = new Set([modelKey(defaultModel)]);
+      }
+      persistPreferences();
+    } catch (cause) {
+      error = `Unable to refresh Oracle Builder models: ${errorMessage(cause)}`;
+    }
   }
 
   function restorePreferences() {
@@ -379,17 +417,17 @@
 
     <aside class="evidence-control-column">
       <section class="panel model-panel">
-        <p class="eyebrow">Inference</p><h2>Oracle Builder models</h2>
+        <div class="model-panel-heading"><div><p class="eyebrow">Inference</p><h2>Oracle Builder models</h2></div><button type="button" class="secondary compact" disabled={loading} on:click={refreshModels}>Refresh models</button></div>
         <p class="model-help">Each selection produces a separate, provenance-scoped evidence job. {selectedModels.length ? `${selectedModels.length} selected.` : 'Select at least one ready model.'}</p>
-        {#each ['classification', 'embedding'] as evidenceKind (evidenceKind)}
+        {#each ['classification', 'embedding', 'clustering'] as evidenceKind (evidenceKind)}
           {@const group = availableModels.filter((model) => model.evidenceKind === evidenceKind)}
           <fieldset class="model-group">
-            <legend>{evidenceKind === 'classification' ? 'Classification' : 'Embedding'} <span>{selectedCountFor(evidenceKind as EvidenceKind)}/{group.length}</span></legend>
+            <legend>{evidenceKind === 'classification' ? 'Classification' : evidenceKind === 'embedding' ? 'Embedding' : 'Clustering'} <span>{selectedCountFor(evidenceKind as EvidenceKind)}/{group.length}</span></legend>
             {#if group.length}
               {#each group as model (modelKey(model))}
                 <label class="model-choice">
                   <input type="checkbox" checked={selectedModelRefs.has(modelKey(model))} on:change={(event) => toggleModel(model, (event.currentTarget as HTMLInputElement).checked)} />
-                  <span><strong>{model.alias}</strong><small>{modelArchitecture(model)} · {modelFeatures(model).join(', ') || (evidenceKind === 'embedding' ? 'representation embeddings' : 'probabilities')}</small><small class:gpu={modelExecutionClass(model) === 'gpu'} class:cpu={modelExecutionClass(model) === 'cpu'}>{modelExecution(model)}</small></span>
+                  <span><strong>{modelName(model)}</strong><small>{modelPurpose(model.evidenceKind)} · {modelStatus(model)}</small><small title={model.artifact_id}>ID: {model.artifact_id}</small><small title={model.fingerprint_sha256 ?? ''}>Fingerprint: {model.fingerprint_sha256 || 'Not reported'}</small></span>
                 </label>
               {/each}
             {:else if !loading}
@@ -404,7 +442,7 @@
         {#if selectedModels.length && !previewing}
           <dl class="workload-list">
             {#each selectedModels as model (modelKey(model))}
-              <div><dt>{model.alias}<small class:gpu={modelExecutionClass(model) === 'gpu'} class:cpu={modelExecutionClass(model) === 'cpu'}>{modelExecution(model)}</small></dt><dd>{formatCount(previews[modelKey(model)]?.target_count ?? 0)} ROIs</dd></div>
+              <div><dt>{modelName(model)}<small title={model.artifact_id}>{model.artifact_id}</small><small title={model.fingerprint_sha256 ?? ''}>Fingerprint: {model.fingerprint_sha256 || 'Not reported'}</small></dt><dd>{formatCount(previews[modelKey(model)]?.target_count ?? 0)} ROIs</dd></div>
             {/each}
           </dl>
         {/if}
@@ -416,12 +454,12 @@
     </aside>
   </div>
 
-  <QueueStatusSummary title="ML evidence jobs" eyebrow="Classification and embedding" stage="classification" jobIds={submittedJobIds} mode="detailed" />
+  <QueueStatusSummary title="ML evidence jobs" eyebrow="Classification, embedding, and clustering" stage="classification" jobIds={submittedJobIds} mode="detailed" />
 </div>
 
 <style>
-  .ml-evidence-page{display:grid;gap:14px;max-width:1500px;margin:0 auto}.workflow-page-intro{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid var(--border,#dce4e2);padding:2px 0 14px}.workflow-page-intro h1{margin:0 0 4px;font-size:1.45rem}.workflow-page-intro p{max-width:850px;margin:0;color:var(--muted,#667);font-size:.83rem;line-height:1.5}.workflow-page-intro>span{border:1px solid var(--border,#ccd);border-radius:999px;padding:5px 9px;color:var(--muted,#667);font-size:.7rem;font-weight:800;white-space:nowrap}.workflow-page-intro>span.ready{border-color:color-mix(in srgb,var(--accent,#176f62) 45%,var(--border,#ccd));color:var(--accent,#176f62);background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}.evidence-workspace{display:grid;grid-template-columns:minmax(0,1fr)minmax(280px,340px);gap:12px;align-items:start}.target-panel,.model-panel,.queue-panel{padding:14px}.target-panel>header{display:flex;justify-content:space-between;gap:15px;align-items:start;border-bottom:1px solid var(--border,#dde4e3);padding-bottom:10px}.target-panel h2,.model-panel h2{margin:0;font-size:1.05rem}.target-panel>header small{color:var(--muted,#667)}.filter-selector-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px 0;border-bottom:1px solid var(--border,#dde4e3)}.filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;padding-top:12px}.filter-grid label{display:grid;gap:4px;margin:0;color:var(--muted,#667);font-size:.68rem;font-weight:750}.evidence-control-column{display:grid;gap:12px;position:sticky;top:8px}.model-panel>.eyebrow,.queue-panel>.eyebrow{margin:0 0 3px}.model-help{margin:5px 0 10px;color:var(--muted,#667);font-size:.72rem;line-height:1.4}.model-group{display:grid;gap:5px;margin:10px 0 0;padding:9px;border:1px solid var(--border,#dde4e3);border-radius:6px}.model-group legend{padding:0 4px;color:var(--muted,#667);font-size:.68rem;font-weight:800}.model-group legend span{margin-left:5px;color:var(--accent,#176f62)}.model-choice{display:flex;gap:7px;align-items:flex-start;color:inherit;cursor:pointer}.model-choice input{margin-top:3px}.model-choice span{display:grid;gap:2px;min-width:0}.model-choice strong{font-size:.76rem}.model-choice small{color:var(--muted,#667);font-size:.65rem;line-height:1.35}.queue-panel h2{margin:0;font-size:1.75rem}.queue-panel>p:not(.eyebrow){margin:2px 0 12px;color:var(--muted,#667);font-size:.75rem}.workload-list{display:grid;gap:4px;margin:0 0 10px;font-size:.7rem}.workload-list div{display:flex;justify-content:space-between;gap:8px}.workload-list dt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workload-list dd{margin:0;color:var(--muted,#667);white-space:nowrap}.queue-panel .preview-error{border-left:3px solid var(--danger,#a23c34);padding:8px;color:var(--danger,#a23c34)!important;background:color-mix(in srgb,var(--danger,#a23c34) 8%,transparent)}.queue-panel .rerun-warning{border-left:3px solid #b77a35;padding:7px;color:#87551e!important;background:color-mix(in srgb,#b77a35 8%,transparent)}.queue-action{width:100%;margin:4px 0 9px}.queue-panel>small{display:block;color:var(--muted,#667);font-size:.65rem;line-height:1.45}.empty{color:var(--muted,#667);font-size:.75rem}.form-success{margin:0;border-left:3px solid var(--accent,#176f62);padding:8px 10px;background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}@media(max-width:1050px){.evidence-workspace{grid-template-columns:minmax(0,1fr)}.evidence-control-column{grid-template-columns:repeat(2,minmax(0,1fr));position:static}}@media(max-width:720px){.workflow-page-intro{display:grid}.filter-selector-grid,.filter-grid,.evidence-control-column{grid-template-columns:minmax(0,1fr)}}
-  .workload-list small{display:block;font-size:.62rem}.model-choice small.gpu,.workload-list small.gpu{color:var(--accent,#176f62);font-weight:750}.model-choice small.cpu,.workload-list small.cpu{color:#87551e}
+  .ml-evidence-page{display:grid;gap:14px;max-width:1500px;margin:0 auto}.workflow-page-intro{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid var(--border,#dce4e2);padding:2px 0 14px}.workflow-page-intro h1{margin:0 0 4px;font-size:1.45rem}.workflow-page-intro p{max-width:850px;margin:0;color:var(--muted,#667);font-size:.83rem;line-height:1.5}.workflow-page-intro>span{border:1px solid var(--border,#ccd);border-radius:999px;padding:5px 9px;color:var(--muted,#667);font-size:.7rem;font-weight:800;white-space:nowrap}.workflow-page-intro>span.ready{border-color:color-mix(in srgb,var(--accent,#176f62) 45%,var(--border,#ccd));color:var(--accent,#176f62);background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}.evidence-workspace{display:grid;grid-template-columns:minmax(0,1fr)minmax(280px,340px);gap:12px;align-items:start}.target-panel,.model-panel,.queue-panel{padding:14px}.target-panel>header,.model-panel-heading{display:flex;justify-content:space-between;gap:15px;align-items:start;border-bottom:1px solid var(--border,#dde4e3);padding-bottom:10px}.target-panel h2,.model-panel h2{margin:0;font-size:1.05rem}.target-panel>header small{color:var(--muted,#667)}.compact{padding:4px 7px;font-size:.68rem}.filter-selector-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:12px 0;border-bottom:1px solid var(--border,#dde4e3)}.filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px 12px;padding-top:12px}.filter-grid label{display:grid;gap:4px;margin:0;color:var(--muted,#667);font-size:.68rem;font-weight:750}.evidence-control-column{display:grid;gap:12px;position:sticky;top:8px}.queue-panel>.eyebrow{margin:0 0 3px}.model-help{margin:5px 0 10px;color:var(--muted,#667);font-size:.72rem;line-height:1.4}.model-group{display:grid;gap:5px;margin:10px 0 0;padding:9px;border:1px solid var(--border,#dde4e3);border-radius:6px}.model-group legend{padding:0 4px;color:var(--muted,#667);font-size:.68rem;font-weight:800}.model-group legend span{margin-left:5px;color:var(--accent,#176f62)}.model-choice{display:flex;gap:7px;align-items:flex-start;color:inherit;cursor:pointer}.model-choice input{margin-top:3px}.model-choice span{display:grid;gap:2px;min-width:0}.model-choice strong{font-size:.76rem}.model-choice small{color:var(--muted,#667);font-size:.65rem;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.queue-panel h2{margin:0;font-size:1.75rem}.queue-panel>p:not(.eyebrow){margin:2px 0 12px;color:var(--muted,#667);font-size:.75rem}.workload-list{display:grid;gap:4px;margin:0 0 10px;font-size:.7rem}.workload-list div{display:flex;justify-content:space-between;gap:8px}.workload-list dt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.workload-list dd{margin:0;color:var(--muted,#667);white-space:nowrap}.queue-panel .preview-error{border-left:3px solid var(--danger,#a23c34);padding:8px;color:var(--danger,#a23c34)!important;background:color-mix(in srgb,var(--danger,#a23c34) 8%,transparent)}.queue-panel .rerun-warning{border-left:3px solid #b77a35;padding:7px;color:#87551e!important;background:color-mix(in srgb,#b77a35 8%,transparent)}.queue-action{width:100%;margin:4px 0 9px}.queue-panel>small{display:block;color:var(--muted,#667);font-size:.65rem;line-height:1.45}.empty{color:var(--muted,#667);font-size:.75rem}.form-success{margin:0;border-left:3px solid var(--accent,#176f62);padding:8px 10px;background:color-mix(in srgb,var(--accent,#176f62) 8%,transparent)}@media(max-width:1050px){.evidence-workspace{grid-template-columns:minmax(0,1fr)}.evidence-control-column{grid-template-columns:repeat(2,minmax(0,1fr));position:static}}@media(max-width:720px){.workflow-page-intro{display:grid}.filter-selector-grid,.filter-grid,.evidence-control-column{grid-template-columns:minmax(0,1fr)}}
+  .workload-list small{display:block;font-size:.62rem}
   .filter-grid label,.queue-panel>small{font-size:var(--wb-font-caption,.75rem)}
   .model-help,.queue-panel>p:not(.eyebrow),.empty{font-size:var(--wb-font-small,.8125rem)}
   .queue-panel>small{line-height:var(--wb-line-reading,1.5)}

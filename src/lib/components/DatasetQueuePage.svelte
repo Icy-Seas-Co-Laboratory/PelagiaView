@@ -61,6 +61,14 @@
 
   type QueueMode = 'preprocessing' | 'segmentation' | 'roi_refinement';
 
+  type RefinementModel = {
+    artifact_id: string;
+    name: string;
+    task?: string;
+    status?: string;
+    fingerprint_sha256?: string;
+  };
+
   export let mode: QueueMode;
 
   type Dataset = {
@@ -202,7 +210,8 @@
 
   let refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity' = 'heuristic_edge_v1';
   let refinementModelRef = '';
-  let refinementModelRefs: string[] = [];
+  let refinementModels: RefinementModel[] = [];
+  let refinementDefaultModelRef = '';
   let oracleStatus = 'unknown';
   let refinementAllowFrameExpansion = true;
   let refinementMaxIterations = 3;
@@ -870,7 +879,7 @@
       ? capabilities.supported.roi_assembly_methods
       : roiAssemblyMethods;
     imageCodecAvailability = systemCapabilities?.supported?.image_codec_availability ?? {};
-    refinementModelRefs = refinementCapabilities?.supported?.model_refs ?? refinementModelRefs;
+    refinementModels = refinementModelsFromCapabilities(refinementCapabilities);
     oracleStatus = refinementCapabilities?.supported?.oracle?.status ?? 'unknown';
     refinementEncodingOptions = uniqueCodecOptions(
       refinementCapabilities?.supported?.roi_encoding_options?.length
@@ -946,7 +955,10 @@
     storeRoiPayloadMinHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_height', storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullableNumberDefault(roiRecording, 'store_roi_payload_min_width_plus_height', storeRoiPayloadMinWidthPlusHeight);
 
-    refinementModelRef = stringDefault(roiRefinement, 'model_ref', refinementModelRef);
+    const configuredRefinementModel = stringDefault(roiRefinement, 'model_ref', '');
+    refinementDefaultModelRef = refinementModels.some((model) => model.artifact_id === configuredRefinementModel)
+      ? configuredRefinementModel : '';
+    refinementModelRef = refinementDefaultModelRef;
     const configuredMethod = stringDefault(roiRefinement, 'method', refinementMethod);
     refinementMethod = configuredMethod === 'oracle' || configuredMethod === 'identity' ? configuredMethod : 'heuristic_edge_v1';
     refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
@@ -1171,6 +1183,14 @@
     message = null;
     error = null;
 
+    if (mode === 'roi_refinement' && refinementMethod === 'oracle' &&
+        ((!refinementModelRef && !refinementDefaultModelRef) ||
+         (refinementModels.length > 0 && refinementModelRef && !refinementModels.some((model) => model.artifact_id === refinementModelRef)))) {
+      error = 'Select a sealed Oracle mask-model artifact before queuing refinement.';
+      queueing = false;
+      return;
+    }
+
     if (queueBlocked) {
       error =
         `Cannot queue segmentation from preprocessed frames because ${formatCount(missingPreprocessedFrameCount)} selected frame${missingPreprocessedFrameCount === 1 ? '' : 's'} lack preprocessed payloads.`;
@@ -1332,6 +1352,35 @@
       store: refinementStore,
       dry_run: refinementDryRun
     };
+  }
+
+  function refinementModelsFromCapabilities(capabilities: RoiRefinementCapabilities | null): RefinementModel[] {
+    const models = capabilities?.supported?.models ?? [];
+    const seen = new Set<string>();
+    const normalized: RefinementModel[] = [];
+    for (const candidate of models) {
+      const artifactId = typeof candidate.artifact_id === 'string' ? candidate.artifact_id.trim() : '';
+      if (!artifactId || seen.has(artifactId)) continue;
+      seen.add(artifactId);
+      normalized.push({
+        artifact_id: artifactId,
+        name: typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : artifactId,
+        task: typeof candidate.task === 'string' ? candidate.task : undefined,
+        status: typeof candidate.status === 'string' ? candidate.status : undefined,
+        fingerprint_sha256: typeof candidate.fingerprint_sha256 === 'string' ? candidate.fingerprint_sha256 : undefined
+      });
+    }
+    for (const artifactId of capabilities?.supported?.model_refs ?? []) {
+      if (!artifactId || seen.has(artifactId)) continue;
+      seen.add(artifactId);
+      normalized.push({ artifact_id: artifactId, name: artifactId });
+    }
+    return normalized;
+  }
+
+  function refinementModelLabel(model: RefinementModel): string {
+    const shortId = model.artifact_id.length > 12 ? `${model.artifact_id.slice(0, 12)}…` : model.artifact_id;
+    return model.name === model.artifact_id ? shortId : `${model.name} (${shortId})`;
   }
 
   function normalizedMaskSteps(): string[] {
@@ -2003,20 +2052,24 @@
           <p class="muted">Uses deterministic, CPU-only seed growth. Strong oblique edges constrain growth; horizontal and vertical sensor edges are ignored.</p>
         {:else}
         <p class="muted">Oracle Builder status: {oracleStatus}</p>
-        {#if refinementModelRefs.length}
+        {#if refinementModels.length}
           <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
-            Model reference
-            <select bind:value={refinementModelRef}>
-              <option value="">Default</option>
-              {#each refinementModelRefs as modelRef}
-                <option value={modelRef}>{modelRef}</option>
+            Sealed model artifact
+            <select bind:value={refinementModelRef} required={!refinementDefaultModelRef}>
+              {#if refinementDefaultModelRef}
+                <option value="">Configured default</option>
+              {:else}
+                <option value="" disabled>Select a sealed artifact</option>
+              {/if}
+              {#each refinementModels as model}
+                <option value={model.artifact_id}>{refinementModelLabel(model)}</option>
               {/each}
             </select>
           </label>
         {:else}
           <label class:has-field-override={fieldChanged('refinementModelRef', refinementModelRef)}>
-            Model reference
-            <input bind:value={refinementModelRef} placeholder="default" />
+            Sealed model artifact
+            <input bind:value={refinementModelRef} placeholder="artifact ID" required={!refinementDefaultModelRef} />
           </label>
         {/if}
         {/if}

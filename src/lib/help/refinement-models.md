@@ -6,7 +6,7 @@ ROI refinement takes candidate ROIs and produces refined ROI detections. Choose 
 - **Oracle mask refinement** sends each current ROI crop and candidate mask to Oracle Builder, which owns model loading, preprocessing, batching, and thresholding.
 - **Identity** promotes every selected candidate ROI unchanged. It does not call Oracle or perform expansion, residual discovery, or overlap reconciliation. Pelagia may still load a missing ROI crop from its source frame so the refined record has a usable payload.
 
-- **Oracle model** selects a registered model alias. Oracle Builder resolves that alias to a validated artifact and returns immutable model provenance with every result.
+- **Oracle model** selects a sealed artifact ID from Oracle Builder's catalog. The picker shows its friendly name; the ID and fingerprint identify the exact model used for inference.
 - Model input geometry and decision thresholds belong to the Oracle model product so operational runs remain reproducible.
 - Frame expansion, residual discovery, reconciliation, and storage remain Pelagia workflow settings.
 
