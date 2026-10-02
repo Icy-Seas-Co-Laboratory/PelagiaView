@@ -100,6 +100,10 @@ Build for production:
 npm run build
 ```
 
+The production build uses SvelteKit's Node adapter. A Docker image and the
+combined Pelagia, PelagiaView, and Oracle Builder deployment instructions are
+in [Pelagia's Docker guide](../Pelagia/deploy/docker/README.md).
+
 Run Svelte diagnostics:
 
 ```bash
