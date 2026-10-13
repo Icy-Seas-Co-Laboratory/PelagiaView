@@ -184,11 +184,11 @@
         {#if asset}
           <div class="dataset-title">
             <div><p class="eyebrow">{interchangeValue('state') ?? 'Interchange dataset'}</p><h3>{datasetTitle(asset) ?? asset.filename ?? 'Untitled dataset'}</h3></div>
-            <span class="status-pill good">Validated</span>
+          <span class="status-pill good">Metadata read</span>
           </div>
           <dl>
             <div><dt>Frames</dt><dd>{formatCount(asset.media_count ?? 0)}</dd></div>
-            <div><dt>Package size</dt><dd>{formatBytes(asset.size_bytes ?? 0)}</dd></div>
+            <div><dt>Estimated package size</dt><dd>{formatBytes(asset.size_bytes ?? 0)}</dd></div>
             <div><dt>Format version</dt><dd>{interchangeValue('format_version') ?? 'Unknown'}</dd></div>
             <div><dt>Schema version</dt><dd>{interchangeValue('schema_version') ?? 'Unknown'}</dd></div>
           </dl>
