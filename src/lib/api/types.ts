@@ -723,6 +723,7 @@ export type TelemetryImportRequest = {
 
 export type QueueIngestionAssetRequest = Omit<AnalyzedIngestionAsset, 'collections'> & {
   collections?: string | string[] | null;
+  source_foreground_polarity?: 'dark' | 'bright' | null;
   n_tile?: number | null;
   image_encoding?: 'zstd' | 'jxl' | 'jxs' | 'jpg' | 'png' | 'raw' | string | null;
   image_quality?: number | null;

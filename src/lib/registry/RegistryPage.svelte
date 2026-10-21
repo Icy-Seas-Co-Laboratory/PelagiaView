@@ -9,6 +9,7 @@
   import { assignmentOptions, type AssignmentOption } from '$lib/registry/assignmentOptions';
   import { clampPanelWidth, panelKeyDelta, PANEL_DEFAULT_WIDTH, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, type PanelSide } from '$lib/registry/panelSizing';
   import DescriptorPicker from '$lib/registry/DescriptorPicker.svelte';
+  import RegistryRoiModal from '$lib/registry/RegistryRoiModal.svelte';
   import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import HeaderImageInversionToggle from '$lib/components/HeaderImageInversionToggle.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
@@ -103,6 +104,9 @@
   let workspaces: RegistryWorkspace[] = [];
   let workspacesLoading = true;
   let workspaceOpening = '';
+  let roiModalItem: Record<string, any> | null = null;
+  let roiModalMasks: { candidate: any | null; current: any | null } = { candidate: null, current: null };
+  let roiModalTrigger: HTMLElement | null = null;
   const thumbnailCache = new AuthenticatedImageCache();
 
   $: activeLabels = labels.filter((label) => !label.deprecated_at);
@@ -742,6 +746,62 @@
       : registryUrl(`/api/items/${item.item_id}/thumbnail?size=${Math.max(192,tileSize*2)}`);
   }
 
+  function cropLocalBox(item: Record<string, any>): { x: number; y: number; w: number; h: number } | null {
+    const box = item.bbox; const crop = item.crop_bbox;
+    if (!box) return null;
+    return crop ? { x: box.x - crop.x, y: box.y - crop.y, w: box.w, h: box.h } : { ...box };
+  }
+
+  async function openRoiModal(item: Item, event: MouseEvent) {
+    event.preventDefault(); event.stopPropagation();
+    roiModalTrigger = event.currentTarget as HTMLElement;
+    try {
+      const [fullItem, masks] = await Promise.all([api.item(item.item_id), api.itemMasks(item.item_id)]);
+      const crop = fullItem.crop_bbox;
+      const width = Number(fullItem.image_width || fullItem.shape?.[1] || 0);
+      const height = Number(fullItem.image_height || fullItem.shape?.[0] || 0);
+      if (crop && (crop.w !== width || crop.h !== height)) {
+        throw new Error('This ROI image does not match its stored crop dimensions, so its bounding box cannot be edited safely.');
+      }
+      roiModalItem = fullItem; roiModalMasks = masks;
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+  }
+
+  async function saveModalGeometry(localBox: { x: number; y: number; w: number; h: number }) {
+    if (!roiModalItem) return;
+    const crop = roiModalItem.crop_bbox;
+    const rounded = { x: Math.round(localBox.x), y: Math.round(localBox.y), w: Math.round(localBox.w), h: Math.round(localBox.h) };
+    const canonical = crop ? {
+      x: Math.max(crop.x, Math.min(crop.x + crop.w - 1, rounded.x + crop.x)),
+      y: Math.max(crop.y, Math.min(crop.y + crop.h - 1, rounded.y + crop.y)),
+      w: Math.max(1, Math.min(crop.w - Math.max(0, rounded.x), rounded.w)),
+      h: Math.max(1, Math.min(crop.h - Math.max(0, rounded.y), rounded.h))
+    }
+      : { x: Math.round(localBox.x), y: Math.round(localBox.y), w: Math.round(localBox.w), h: Math.round(localBox.h) };
+    const updated = await api.updateItemGeometry(roiModalItem.item_id, { bbox: canonical, expected_updated_at: roiModalItem.updated_at });
+    roiModalItem = updated;
+    items = items.map((item) => item.item_id === updated.item_id ? { ...item, bbox: updated.bbox, crop_bbox: updated.crop_bbox } : item);
+    if (detail?.item_id === updated.item_id) detail = updated;
+  }
+
+  async function saveModalMask(dataUrl: string) {
+    if (!roiModalItem) return;
+    const encoded = dataUrl.replace(/^data:image\/png;base64,/, '');
+    const saved = await api.saveItemMask(roiModalItem.item_id, {
+      mask_png_base64: encoded,
+      expected_current_annotation_id: roiModalMasks.current?.annotation_id ?? null,
+      method: 'manual-erase', parameters: { tool: 'brush', operation: 'erase' }
+    });
+    const masks = await api.itemMasks(roiModalItem.item_id);
+    roiModalMasks = masks;
+    roiModalItem = { ...roiModalItem, updated_at: saved.updated_at };
+  }
+
+  function closeRoiModal() {
+    roiModalItem = null; roiModalMasks = { candidate: null, current: null };
+    requestAnimationFrame(() => roiModalTrigger?.focus());
+  }
+
   function descriptorSummary(item: Item) {
     return (item.descriptor_indicators || []).map((descriptor) =>
       `${descriptor.name} (${descriptor.scope === 'target_tags' ? 'target' : 'image'} descriptor)`).join(', ');
@@ -1077,20 +1137,21 @@
           <div class="gallery-spacer original-spacer" style={`height:${originalLayout.height}px;width:${originalLayout.width}px`}>
             {#each originalVisible as placement (items[placement.index].item_id)}
               {@const item = items[placement.index]}
-              <button class:selected={selected.has(item.item_id)} class:focused={focused===item.item_id} class:reference-roi={!!browseMode&&item.item_id===browseReference} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:rejected={item.review_decision==='rejected'} class:labeled={isAssigned(item)} class:compact={!placement.showLabel} class="tile original-tile" style={`left:${placement.x}px;top:${placement.y}px;width:${placement.width}px;height:${placement.height}px`} on:click={(event)=>select(item,event)} title={`${item.label_display_name||'Unlabeled'} · ${item.source_key||item.item_id} · ${item.shape?.[1]||'?'}×${item.shape?.[0]||'?'} px`}>
+              <div class="tile-shell original-tile" style={`left:${placement.x}px;top:${placement.y}px;width:${placement.width}px;height:${placement.height}px`}>
+              <button class:selected={selected.has(item.item_id)} class:focused={focused===item.item_id} class:reference-roi={!!browseMode&&item.item_id===browseReference} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:rejected={item.review_decision==='rejected'} class:labeled={isAssigned(item)} class:compact={!placement.showLabel} class="tile" on:click={(event)=>select(item,event)} title={`${item.label_display_name||'Unlabeled'} · ${item.source_key||item.item_id} · ${item.shape?.[1]||'?'}×${item.shape?.[0]||'?'} px`}>
                 <span class="image-wrap original-stage" style={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`}><AuthenticatedImage imageClass="original" imageStyle={`width:${placement.imageWidth}px;height:${placement.imageHeight}px`} src={imageSource(item)} alt={item.label_display_name ? `ROI labeled ${item.label_display_name}` : 'Unlabeled ROI'} invert={$imageInversionEnabled} cache={thumbnailCache} />{#if item.descriptor_indicators?.length}<span class="descriptor-leds" role="img" aria-label={descriptorSummary(item)}>{#each item.descriptor_indicators as descriptor}<i class:target-descriptor={descriptor.scope==='target_tags'} class:image-descriptor={descriptor.scope==='image_tags'} title={`${descriptor.name} · ${descriptor.scope==='target_tags'?'target':'image'} descriptor`}></i>{/each}</span>{/if}{#if item.similarity!==undefined}<small class:reference-score={item.item_id===browseReference} class="ml-score">{item.item_id===browseReference?'target':'sim'} {item.similarity.toFixed(3)}</small>{:else if item.prediction_confidence!==undefined&&item.prediction_confidence!==null}<small class="ml-score">ML {item.prediction_confidence.toFixed(2)}</small>{/if}</span>
                 {#if placement.showLabel}<span class="tile-meta"><span>{isAssigned(item) ? item.label_display_name : 'Unlabeled'}</span>{#if item.label_origin==='classification' && isAssigned(item)}<b title={`Classification source: ${item.annotation_source || 'dataset'}`}>data</b>{/if}{#if item.review_decision}<i title={item.review_decision}>{item.review_decision==='verified'?'✓':'!'}</i>{/if}</span>{/if}
-              </button>
+              </button><button class="roi-view" aria-label="Open ROI viewer" title="Open ROI viewer" on:click={(event)=>openRoiModal(item,event)}>⌕</button></div>
             {/each}
           </div>
         {:else}
           <div class="gallery-spacer" style={`height:${rowCount*rowHeight}px`}>
             <div class="tile-grid" style={`--tile:${tileSize}px;--columns:${columns};transform:translateY(${startRow*rowHeight}px)`}>
               {#each visible as item (item.item_id)}
-                <button class:selected={selected.has(item.item_id)} class:focused={focused===item.item_id} class:reference-roi={!!browseMode&&item.item_id===browseReference} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:rejected={item.review_decision==='rejected'} class:labeled={isAssigned(item)} class="tile" on:click={(event)=>select(item,event)} title={item.source_key||item.item_id}>
+                <div class="tile-shell"><button class:selected={selected.has(item.item_id)} class:focused={focused===item.item_id} class:reference-roi={!!browseMode&&item.item_id===browseReference} class:verified={item.review_decision==='verified'} class:needs-review={item.review_decision==='needs_review'} class:rejected={item.review_decision==='rejected'} class:labeled={isAssigned(item)} class="tile" on:click={(event)=>select(item,event)} title={item.source_key||item.item_id}>
                   <span class="image-wrap"><AuthenticatedImage imageClass={viewMode} imageStyle={imageStyle(item)} src={imageSource(item)} alt={item.label_display_name ? `ROI labeled ${item.label_display_name}` : 'Unlabeled ROI'} invert={$imageInversionEnabled} cache={thumbnailCache} />{#if viewMode === 'physical' && !itemCalibration(item)}<small class="no-calibration">no scale</small>{/if}{#if item.descriptor_indicators?.length}<span class="descriptor-leds" role="img" aria-label={descriptorSummary(item)}>{#each item.descriptor_indicators as descriptor}<i class:target-descriptor={descriptor.scope==='target_tags'} class:image-descriptor={descriptor.scope==='image_tags'} title={`${descriptor.name} · ${descriptor.scope==='target_tags'?'target':'image'} descriptor`}></i>{/each}</span>{/if}{#if item.similarity!==undefined}<small class:reference-score={item.item_id===browseReference} class="ml-score">{item.item_id===browseReference?'target':'sim'} {item.similarity.toFixed(3)}</small>{:else if item.prediction_confidence!==undefined&&item.prediction_confidence!==null}<small class="ml-score">ML {item.prediction_confidence.toFixed(2)}</small>{/if}</span>
                   <span class="tile-meta"><span>{isAssigned(item) ? item.label_display_name : 'Unlabeled'}</span>{#if item.label_origin==='classification' && isAssigned(item)}<b title={`Classification source: ${item.annotation_source || 'dataset'}`}>data</b>{/if}{#if item.review_decision}<i title={item.review_decision}>{item.review_decision==='verified'?'✓':'!'}</i>{/if}</span>
-                </button>
+                </button><button class="roi-view" aria-label="Open ROI viewer" title="Open ROI viewer" on:click={(event)=>openRoiModal(item,event)}>⌕</button></div>
               {/each}
             </div>
           </div>
@@ -1257,6 +1318,21 @@
   </main>
 {/if}
 
+{#if roiModalItem}
+  <RegistryRoiModal
+    open={true}
+    itemId={roiModalItem.item_id}
+    imageUrl={registryUrl(`/api/items/${roiModalItem.item_id}/image`)}
+    candidateMaskUrl={roiModalMasks.candidate?.url ? registryUrl(roiModalMasks.candidate.url.replace(/^\/registry/, '')) : null}
+    currentMaskUrl={roiModalMasks.current?.url ? registryUrl(roiModalMasks.current.url.replace(/^\/registry/, '')) : null}
+    bbox={cropLocalBox(roiModalItem)}
+    invert={$imageInversionEnabled}
+    onClose={closeRoiModal}
+    onSaveGeometry={saveModalGeometry}
+    onSaveMask={saveModalMask}
+  />
+{/if}
+
 <style>
   :global(*) { box-sizing: border-box; }
   :global(html, body) { margin: 0; height: 100%; overflow: hidden; font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; color: #17252b; background: #edf2f4; font-size: 13px; }
@@ -1412,13 +1488,16 @@
   .gallery-spacer { position: relative; }
   .original-spacer { min-width: 100%; }
   .tile-grid { position: absolute; left: 8px; top: 8px; display: grid; grid-template-columns: repeat(var(--columns), var(--tile)); grid-auto-rows: calc(var(--tile) + 30px); gap: 8px 10px; }
+  .tile-shell { position:relative; width:var(--tile); height:calc(var(--tile) + 30px); }
+  .tile-shell.original-tile { position:absolute; width:inherit; height:inherit; }
   .tile { --tile-status:var(--status-unlabeled); position: relative; width: var(--tile); height: calc(var(--tile) + 30px); padding: 3px; background: color-mix(in srgb,var(--tile-status) 8%,var(--raised)); color:var(--text); border: 1px solid color-mix(in srgb,var(--tile-status) 65%,var(--line)); display: flex; flex-direction: column; text-align: left; }
   .tile.labeled { --tile-status:var(--status-unverified); }
   .tile.verified { --tile-status:var(--status-verified); }
   .tile.needs-review { --tile-status:var(--status-needs); }
   .tile.rejected { --tile-status:var(--status-rejected); }
   .tile.compact { padding:3px; }
-  .tile.original-tile { position: absolute; }
+  .tile-shell .tile { width:100%; height:100%; }
+  .roi-view { position:absolute; z-index:5; right:5px; top:5px; width:25px; height:25px; border-radius:50%; padding:0; display:grid; place-items:center; background:#ffffffdd; color:#163943; font-size:18px; line-height:1; box-shadow:0 1px 3px #0005; }
   .tile:hover { background: #f6fbfc; }
   .tile.selected { border-color: #197997; box-shadow: 0 0 0 2px #197997; }
   .tile.focused::after { content: ''; position: absolute; inset: -4px; border: 1px solid #102c36; pointer-events: none; }

@@ -81,6 +81,9 @@ export const api = {
   similar: (id: string, sourceKey: string, limit: number, offset: number, minimum: number) => client().get<{ items: Item[]; total: number }>(route(`/api/similarity/${id}`) + `?source_key=${encodeURIComponent(sourceKey)}&limit=${limit}&offset=${offset}&minimum=${minimum}`),
   neighbors: (id: string, sourceKey: string) => client().get<{ items: Item[]; total: number }>(route(`/api/evidence/neighbors/${id}`) + `?source_key=${encodeURIComponent(sourceKey)}`),
   item: (id: string) => client().get<Record<string, any>>(route(`/api/items/${id}`)),
+  updateItemGeometry: (id: string, body: { bbox: { x: number; y: number; w: number; h: number }; expected_updated_at: string }) => client().patch<Record<string, any>>(route(`/api/items/${encodeURIComponent(id)}/geometry`), body),
+  itemMasks: (id: string) => client().get<{ candidate: RegistryMaskLayer | null; current: RegistryMaskLayer | null }>(route(`/api/items/${encodeURIComponent(id)}/masks`)),
+  saveItemMask: (id: string, body: { mask_png_base64: string; expected_current_annotation_id: string | null; method: string; parameters?: Record<string, unknown>; notes?: string | null }) => client().post<RegistryMaskSaveResult>(route(`/api/items/${encodeURIComponent(id)}/masks`), body),
   addLabel: (body: Record<string, unknown>) => client().post<Label>(route('/api/labels'), body),
   updateLabel: (id: string, body: Record<string, unknown>) => client().patch<Label>(route(`/api/labels/${id}`), body),
   reassignLabel: (source_label_id: string, target_label_id: string, deprecate_source = true) => client().post<{ reassigned_count: number; source_deprecated: boolean }>(route('/api/labels/reassign'), { source_label_id, target_label_id, deprecate_source }),
@@ -89,3 +92,6 @@ export const api = {
   review: (item_ids: string[], decision: string) => client().post(route('/api/reviews/bulk'), { item_ids, decision }),
   undo: () => client().post(route('/api/undo'), {})
 };
+
+export type RegistryMaskLayer = { asset_id: string; media_type: string; shape: number[]; url: string; annotation_id?: string; created_at?: string; annotator?: string; method?: string };
+export type RegistryMaskSaveResult = { annotation_id: string; asset_id: string; parent_annotation_id?: string | null; updated_at: string };

@@ -3,7 +3,6 @@
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
-  import InterchangeImportModal from '$lib/components/InterchangeImportModal.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
   import type {
@@ -11,7 +10,6 @@
     DirectoryListing,
     Job,
     QueueAssetsRequest,
-    QueueAssetsResponse,
     QueueIngestionAssetRequest,
     SystemConfigResponse
   } from '$lib/api/types';
@@ -59,7 +57,6 @@
   let submittedAssetIds: string[] = [];
   let ingestionJobsById: Record<string, Job> = {};
   let ingestionJobIdsByAssetKey: Record<string, string> = {};
-  let interchangeImportOpen = false;
 
   type IngestionPreferences = {
     nTile: number;
@@ -81,6 +78,7 @@
     collectionsText: string;
     metadataText: string;
     sourceTimestampText: string;
+    sourceForegroundPolarity: 'default' | 'dark' | 'bright';
     nTile: number;
   };
 
@@ -166,10 +164,10 @@
     nTile = numberPreference(preferences.nTile, nTile);
     ingestionScanMode = normalizeIngestionScanMode(stringPreference(preferences.ingestionScanMode, ingestionScanMode));
     ingestionLineScanAxis = normalizeLineScanAxis(numberPreference(preferences.ingestionLineScanAxis, ingestionLineScanAxis));
-    ingestionBackgroundWindowWidth = normalizeOddPositive(numberPreference(preferences.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
-    ingestionBackgroundWindowStride = normalizeOddPositive(numberPreference(preferences.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
-    ingestionFlatfieldWindowWidth = normalizeOddPositive(numberPreference(preferences.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
-    ingestionFlatfieldWindowStride = normalizeOddPositive(numberPreference(preferences.ingestionFlatfieldWindowStride, ingestionFlatfieldWindowStride));
+    ingestionBackgroundWindowWidth = normalizePositiveInteger(numberPreference(preferences.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
+    ingestionBackgroundWindowStride = normalizePositiveInteger(numberPreference(preferences.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
+    ingestionFlatfieldWindowWidth = normalizePositiveInteger(numberPreference(preferences.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
+    ingestionFlatfieldWindowStride = normalizePositiveInteger(numberPreference(preferences.ingestionFlatfieldWindowStride, ingestionFlatfieldWindowStride));
     collections = stringPreference(preferences.collections, collections);
   }
 
@@ -185,10 +183,10 @@
       ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1))),
       ingestionScanMode,
       ingestionLineScanAxis: normalizeLineScanAxis(ingestionLineScanAxis),
-      ingestionBackgroundWindowWidth: normalizeOddPositive(ingestionBackgroundWindowWidth),
-      ingestionBackgroundWindowStride: normalizeOddPositive(ingestionBackgroundWindowStride),
-      ingestionFlatfieldWindowWidth: normalizeOddPositive(ingestionFlatfieldWindowWidth),
-      ingestionFlatfieldWindowStride: normalizeOddPositive(ingestionFlatfieldWindowStride)
+      ingestionBackgroundWindowWidth: normalizePositiveInteger(ingestionBackgroundWindowWidth),
+      ingestionBackgroundWindowStride: normalizePositiveInteger(ingestionBackgroundWindowStride),
+      ingestionFlatfieldWindowWidth: normalizePositiveInteger(ingestionFlatfieldWindowWidth),
+      ingestionFlatfieldWindowStride: normalizePositiveInteger(ingestionFlatfieldWindowStride)
     };
   }
 
@@ -219,16 +217,16 @@
       ingestionLineScanAxis = normalizeLineScanAxis(numberPreference(settings.ingestionLineScanAxis, ingestionLineScanAxis));
     }
     if ('ingestionBackgroundWindowWidth' in settings) {
-      ingestionBackgroundWindowWidth = normalizeOddPositive(numberPreference(settings.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
+      ingestionBackgroundWindowWidth = normalizePositiveInteger(numberPreference(settings.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
     }
     if ('ingestionBackgroundWindowStride' in settings) {
-      ingestionBackgroundWindowStride = normalizeOddPositive(numberPreference(settings.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
+      ingestionBackgroundWindowStride = normalizePositiveInteger(numberPreference(settings.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
     }
     if ('ingestionFlatfieldWindowWidth' in settings) {
-      ingestionFlatfieldWindowWidth = normalizeOddPositive(numberPreference(settings.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
+      ingestionFlatfieldWindowWidth = normalizePositiveInteger(numberPreference(settings.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
     }
     if ('ingestionFlatfieldWindowStride' in settings) {
-      ingestionFlatfieldWindowStride = normalizeOddPositive(numberPreference(settings.ingestionFlatfieldWindowStride, ingestionFlatfieldWindowStride));
+      ingestionFlatfieldWindowStride = normalizePositiveInteger(numberPreference(settings.ingestionFlatfieldWindowStride, ingestionFlatfieldWindowStride));
     }
   }
 
@@ -274,22 +272,6 @@
     currentPath = path;
   }
 
-  function handleInterchangeImported(event: CustomEvent<{ response: QueueAssetsResponse; asset: AnalyzedIngestionAsset }>) {
-    const { response, asset } = event.detail;
-    const jobs = response.jobs ?? [];
-    submittedJobIds = uniqueStrings([...jobs.map((job) => job.id), ...submittedJobIds]).slice(0, 100);
-    submittedRunIds = uniqueStrings([response.run_id, ...submittedRunIds]).slice(0, 50);
-    submittedAssetIds = uniqueStrings([
-      ...(response.assets ?? []).map((registeredAsset) => registeredAsset.id),
-      asset.asset_id,
-      ...submittedAssetIds
-    ]).slice(0, 500);
-    mergeIngestionJobs(jobs);
-    message = `Queued interchange collection ${(asset.collections ?? [asset.filename ?? 'dataset'])[0]}.`;
-    error = null;
-    void refreshIngestionJobs();
-  }
-
   function selectedPaths(): string[] {
     return selectedPathList;
   }
@@ -315,6 +297,7 @@
       try {
         const response = await client.analyzeIngestionSource({
           source_path: path,
+          recursive: true,
           n_tile: nTile,
           collections: collections || undefined,
           ...ingestionScanRequestOptions()
@@ -414,13 +397,23 @@
       collectionsText: (asset.collections ?? []).join(','),
       metadataText: formatJson(asset.metadata ?? {}),
       sourceTimestampText: sourceTimestampValue(asset),
+      sourceForegroundPolarity: asset.metadata?.source_foreground_polarity === 'dark' || asset.metadata?.source_foreground_polarity === 'bright'
+        ? asset.metadata.source_foreground_polarity
+        : 'default',
       nTile: Number(suggested?.n_tile ?? nTile)
     };
   }
 
   function mergeAnalyzedAssets(existing: EditableAnalyzedAsset[], incoming: EditableAnalyzedAsset[]): EditableAnalyzedAsset[] {
-    const existingKeys = new Set(existing.map((asset) => assetKey(asset)));
-    return [...existing, ...incoming.filter((asset) => !existingKeys.has(assetKey(asset)))];
+    const seen = new Set(existing.map((asset) => assetKey(asset)));
+    const merged = [...existing];
+    for (const asset of incoming) {
+      const key = assetKey(asset);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(asset);
+    }
+    return merged;
   }
 
   function queueAssetRequest(asset: EditableAnalyzedAsset): QueueIngestionAssetRequest {
@@ -442,10 +435,8 @@
       collections: asset.collectionsText || undefined,
       media_count: asset.media_count,
       metadata,
-      n_tile: Math.max(1, Math.round(Number(nTile) || 1)),
-      ...(asset.kind === 'interchange'
-        ? { generate_backgrounds: false, generate_flatfield_profiles: false }
-        : {})
+      source_foreground_polarity: asset.sourceForegroundPolarity === 'default' ? undefined : asset.sourceForegroundPolarity,
+      n_tile: Math.max(1, Math.round(Number(nTile) || 1))
     };
   }
 
@@ -464,15 +455,15 @@
         generate_backgrounds: false,
         generate_flatfield_profiles: true,
         flatfield_axis: normalizeLineScanAxis(ingestionLineScanAxis),
-        flatfield_window_width: normalizeOddPositive(ingestionFlatfieldWindowWidth),
-        flatfield_window_stride: normalizeOddPositive(ingestionFlatfieldWindowStride)
+        flatfield_window_width: normalizePositiveInteger(ingestionFlatfieldWindowWidth),
+        flatfield_window_stride: normalizePositiveInteger(ingestionFlatfieldWindowStride)
       };
     }
     return {
       generate_backgrounds: true,
       generate_flatfield_profiles: false,
-      background_window_width: normalizeOddPositive(ingestionBackgroundWindowWidth),
-      background_window_stride: normalizeOddPositive(ingestionBackgroundWindowStride)
+      background_window_width: normalizePositiveInteger(ingestionBackgroundWindowWidth),
+      background_window_stride: normalizePositiveInteger(ingestionBackgroundWindowStride)
     };
   }
 
@@ -503,19 +494,18 @@
     return Number(value) === 1 ? 1 : 0;
   }
 
-  function normalizeOddPositive(value: unknown): number {
-    const rounded = Math.max(1, Math.round(Number(value) || 1));
-    return rounded % 2 === 1 ? rounded : rounded + 1;
+  function normalizePositiveInteger(value: unknown): number {
+    return Math.max(1, Math.round(Number(value) || 1));
   }
 
-  function isPositiveOdd(value: unknown): boolean {
+  function isPositiveInteger(value: unknown): boolean {
     const number = Number(value);
-    return Number.isInteger(number) && number >= 1 && number % 2 === 1;
+    return Number.isInteger(number) && number >= 1;
   }
 
   function validateWindowPair(width: unknown, stride: unknown, widthLabel: string, strideLabel: string): string | null {
-    if (!isPositiveOdd(width)) return `${widthLabel} must be a positive odd integer.`;
-    if (!isPositiveOdd(stride)) return `${strideLabel} must be a positive odd integer.`;
+    if (!isPositiveInteger(width)) return `${widthLabel} must be a positive integer.`;
+    if (!isPositiveInteger(stride)) return `${strideLabel} must be a positive integer.`;
     if (Number(stride) > Number(width)) return `${strideLabel} must be within the range [1, ${widthLabel}].`;
     return null;
   }
@@ -852,7 +842,6 @@
         <p class="eyebrow">Server storage</p>
         <h2>Raw asset browser</h2>
       </div>
-      <button type="button" on:click={() => interchangeImportOpen = true}>Import interchange</button>
     </div>
 
     {#if browserSource === 'registered-assets'}
@@ -943,10 +932,10 @@
                 Background window width (frames)
                 <InfoChip
                   label="Background Window Width help"
-                  text="Number of frames used for each area-scan mean background. Must be a positive, odd value."
+                  text="Number of stored frames or tiles used for each area-scan mean background. Must be a positive integer."
                 />
               </span>
-              <input type="number" min="1" step="2" bind:value={ingestionBackgroundWindowWidth} disabled={ingestionScanMode !== 'area_scan'} />
+              <input type="number" min="1" step="1" bind:value={ingestionBackgroundWindowWidth} disabled={ingestionScanMode !== 'area_scan'} />
             </label>
             <label class:field-disabled={ingestionScanMode !== 'area_scan'}>
               <span class="field-label-row">
@@ -956,17 +945,17 @@
                   text="Number of frames to advance before calculating the next background. Must be at least 1 and no larger than the background window width (typically equal to the window width)."
                 />
               </span>
-              <input type="number" min="1" step="2" bind:value={ingestionBackgroundWindowStride} disabled={ingestionScanMode !== 'area_scan'} />
+              <input type="number" min="1" step="1" bind:value={ingestionBackgroundWindowStride} disabled={ingestionScanMode !== 'area_scan'} />
             </label>
             <label class:field-disabled={ingestionScanMode !== 'line_scan'}>
               <span class="field-label-row">
                 Flatfield window width (frames)
                 <InfoChip
                   label="Flatfield Window Width help"
-                  text="Number of frames used for each line-scan flatfield profile. Must be a positive odd value."
+                  text="Number of stored frames or tiles used for each line-scan flatfield profile. Must be a positive integer."
                 />
               </span>
-              <input type="number" min="1" step="2" bind:value={ingestionFlatfieldWindowWidth} disabled={ingestionScanMode !== 'line_scan'} />
+              <input type="number" min="1" step="1" bind:value={ingestionFlatfieldWindowWidth} disabled={ingestionScanMode !== 'line_scan'} />
             </label>
             <label class:field-disabled={ingestionScanMode !== 'line_scan'}>
               <span class="field-label-row">
@@ -976,7 +965,7 @@
                   text="Number of frames to advance before calculating the next line-scan profile. Must be at least 1 and no larger than the flatfield window width."
                 />
               </span>
-              <input type="number" min="1" step="2" bind:value={ingestionFlatfieldWindowStride} disabled={ingestionScanMode !== 'line_scan'} />
+              <input type="number" min="1" step="1" bind:value={ingestionFlatfieldWindowStride} disabled={ingestionScanMode !== 'line_scan'} />
             </label>
           </div>
         </details>
@@ -985,7 +974,7 @@
           <button type="button" on:click={analyzeSelection} disabled={analyzing || selectedPathList.length === 0}>
             {analyzing ? 'Analyzing' : 'Analyze selected paths'}
           </button>
-          <p class="soft">{selectedPathList.length} selected from browser, {analyzedAssets.length} analyzed asset{analyzedAssets.length === 1 ? '' : 's'}.</p>
+          <p class="soft">Searches selected paths recursively for interchange datasets, videos, and image folders. {analyzedAssets.length} analyzed asset{analyzedAssets.length === 1 ? '' : 's'}.</p>
         </div>
         {#if message}<p class="success">{message}</p>{/if}
         {#if error}<p class="form-error">{error}</p>{/if}
@@ -1087,7 +1076,6 @@
                   </td>
                   <td class="analysis-facts-cell">
                     <span>{assetSummary(asset)}</span>
-                    {#if asset.kind === 'interchange'}<span>Encoded-frame fast path</span>{/if}
                     {#if assetMetadataValue(asset, 'width') && assetMetadataValue(asset, 'height')}
                       <span>{assetMetadataValue(asset, 'width')} x {assetMetadataValue(asset, 'height')}</span>
                     {/if}
@@ -1139,6 +1127,14 @@
                             </div>
                           </div>
                         {/if}
+                        <label>
+                          Source foreground polarity
+                          <select value={asset.sourceForegroundPolarity} on:change={(event) => updateAsset(index, { sourceForegroundPolarity: event.currentTarget.value as EditableAnalyzedAsset['sourceForegroundPolarity'] })}>
+                            <option value="default">Use processing default</option>
+                            <option value="dark">Dark foreground (invert)</option>
+                            <option value="bright">Bright foreground (keep)</option>
+                          </select>
+                        </label>
                         <label class="analysis-detail-wide">
                           Metadata JSON
                           <textarea rows="4" value={asset.metadataText} on:input={(event) => updateAsset(index, { metadataText: event.currentTarget.value })}></textarea>
@@ -1163,12 +1159,3 @@
     {/if}
   </section>
 </div>
-
-{#if interchangeImportOpen}
-  <InterchangeImportModal
-    initialPath={currentPath}
-    collectionSuggestions={collectionSuggestions}
-    on:close={() => interchangeImportOpen = false}
-    on:imported={handleInterchangeImported}
-  />
-{/if}

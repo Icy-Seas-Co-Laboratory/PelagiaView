@@ -54,7 +54,7 @@ export type DescriptorTag = {
 export type SpatialBox = { x: number; y: number; w: number; h: number };
 
 export type Item = {
-  item_id: string; source_key?: string; shape?: number[]; metadata: Record<string, unknown>;
+  item_id: string; source_key?: string; shape?: number[]; metadata: Record<string, unknown>; updated_at?: string;
   coordinate_space?: string; bbox?: SpatialBox; crop_bbox?: SpatialBox;
   spatial_metadata?: Record<string, unknown>;
   descriptor_indicators?: Array<{ tag_id: string; scope: 'target_tags' | 'image_tags'; name: string }>;

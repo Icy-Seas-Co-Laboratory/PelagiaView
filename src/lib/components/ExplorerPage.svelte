@@ -545,7 +545,16 @@
       restorePreferences();
       applyStoredLiveProcessingPreset();
       enforceCodecAvailability();
-      assets = await client.listAssets('video');
+      const assetRows: RawAsset[] = [];
+      const pageSize = 200;
+      while (true) {
+        const page = await client.listAssets(undefined, pageSize, assetRows.length);
+        assetRows.push(...page);
+        if (page.length < pageSize) break;
+      }
+      assets = assetRows.filter((asset) =>
+        asset.kind === 'video' || asset.kind === 'image' || asset.kind === 'image_sequence' || asset.kind === 'interchange'
+      );
       if (!assets.some((asset) => asset.id === selectedAssetId)) {
         selectedAssetId = assets[0]?.id ?? '';
       }

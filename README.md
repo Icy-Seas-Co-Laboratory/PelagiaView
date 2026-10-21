@@ -139,13 +139,13 @@ If the browser reports `Failed to fetch` while the backend is running:
 The app is organized around workflow and system pages:
 
 - `Status`: polls `/system/status`, `/jobs`, `/jobs/summary`, `/workers`, and `/kvstore`; supports job pause, resume, retry, and worker shutdown where backend endpoints exist.
-- `Ingestion`: browses server-side files through `GET /live/files` and queues video paths through `POST /ingestion/videos`.
+- `Ingestion`: browses server-side files through `GET /live/files`, recursively analyzes selected paths for interchange datasets, videos, and image-sequence folders, and queues the reviewed assets through one workflow. Each asset can set source foreground polarity; the shared options cover area/line scan field generation, correction windows, and multi-frame tiling.
 - `Telemetry`: analyzes server-side CSV sensor files through `POST /telemetry/analyze`, maps columns to the controlled unit vocabulary, previews values, and queues imports through `POST /runs/{run_id}/telemetry/import`.
 - `Exports`: creates asynchronous, project-scoped reproducible bundles through `/exports`. Curation can pre-scope ROI products to its selected ROIs or supported review filters, and Telemetry can pre-scope an archive to its selected run.
 - `Preprocessing`: filters frames through `/frames/processing-state` and queues preprocessing batches through `POST /frame/preprocess/jobs`.
 - `Segmentation`: filters frames and queues candidate ROI generation through `POST /segmentation/jobs`.
 - `ROI Refinement`: filters frames/ROIs and queues refinement work through `POST /roi-refinement/jobs`.
-- `Explorer`: previews original/preprocessed frames, runs live preprocessing/segmentation/refinement, and displays overlays.
+- `Explorer`: previews frames from video, image, image sequence, and interchange assets; runs live preprocessing/segmentation/refinement and displays overlays.
 - `ROI Browser`: browses candidate or refined ROIs with filters, sorting, image overlays, masks, and frame context.
 - `Event Log`: merges `/logs` and `/jobs/events`, with filters for source, level, event type, stage, status, run, job, and worker.
 
