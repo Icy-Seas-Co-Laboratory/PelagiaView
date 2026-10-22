@@ -842,6 +842,16 @@
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  function bboxAreaValue(detection: DetectionSummary): string {
+    const value = numberValue(detection.bbox_area);
+    return value === null ? 'unknown' : String(Math.round(value));
+  }
+
+  function contourPerimeterValue(detection: DetectionSummary): string {
+    const value = numberValue(detection.contour_perimeter);
+    return value === null ? 'unknown' : new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
+  }
+
   function dimensionsFromShape(shape: unknown): { width: number; height: number } | null {
     if (Array.isArray(shape) && shape.length >= 2) {
       const shapeHeight = numberValue(shape[0]);
@@ -1529,12 +1539,12 @@
               <dd><code>{bboxLabel(selectedRoiDetection)}</code></dd>
             </div>
             <div>
-              <dt>Area (px²)</dt>
-              <dd>{selectedRoiDetection.area === undefined ? 'unknown' : Math.round(selectedRoiDetection.area)}</dd>
+              <dt>Bounding-box area (px²)</dt>
+              <dd>{bboxAreaValue(selectedRoiDetection)}</dd>
             </div>
             <div>
-              <dt>Perimeter (px)</dt>
-              <dd>{selectedRoiDetection.perimeter === undefined ? 'unknown' : Math.round(selectedRoiDetection.perimeter)}</dd>
+              <dt>Contour perimeter (px)</dt>
+              <dd>{contourPerimeterValue(selectedRoiDetection)}</dd>
             </div>
             <div>
               <dt>Payload</dt>

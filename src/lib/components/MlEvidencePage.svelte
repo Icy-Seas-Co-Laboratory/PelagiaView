@@ -410,8 +410,8 @@
         <label>Taxonomy label<select bind:value={labelId}><option value="">All labels</option>{#each taxonomy as row}<option value={row.label.id}>{taxonomyOption(row.depth, row.label)}</option>{/each}</select></label>
         <label>Taxonomy match<select bind:value={labelSource} disabled={!labelId}><option value="any">Human or selected-model prediction</option><option value="prediction">Selected-model prediction</option><option value="human">Human annotation</option></select></label>
         <label>ROI or asset search<input bind:value={search} placeholder="ID or filename" /></label>
-        <label>Minimum area (px²)<input type="number" min="0" bind:value={minArea} /></label>
-        <label>Maximum area (px²)<input type="number" min="0" bind:value={maxArea} /></label>
+        <label>Minimum bbox area (px²)<input type="number" min="0" bind:value={minArea} /></label>
+        <label>Maximum bbox area (px²)<input type="number" min="0" bind:value={maxArea} /></label>
       </div>
     </section>
 

@@ -139,7 +139,7 @@
           <label>Annotation state<select bind:value={annotationState}><option value="all">All ROIs</option><option value="labeled">Labeled</option><option value="unlabeled">Unlabeled</option></select></label>
           <label>Evidence state<select bind:value={evidenceState}><option value="all">All states</option><option value="available">Evidence available</option><option value="missing">No evidence</option><option value="disagreement">Evidence disagreement</option></select></label>
           <label>Review state<select bind:value={reviewState}><option value="all">All states</option><option value="unreviewed">Unreviewed</option><option value="verified">Verified</option><option value="needs_review">Needs review</option><option value="rejected">Rejected</option></select></label>
-          <div class="area-range"><label>Minimum area (px²)<input type="number" min="0" bind:value={minArea} placeholder="No minimum" /></label><label>Maximum area (px²)<input type="number" min="0" bind:value={maxArea} placeholder="No maximum" /></label></div>
+          <div class="area-range"><label>Minimum bbox area (px²)<input type="number" min="0" bind:value={minArea} placeholder="No minimum" /></label><label>Maximum bbox area (px²)<input type="number" min="0" bind:value={maxArea} placeholder="No maximum" /></label></div>
         </div>
         <details>
           <summary>Assets {selectedAssets.size ? `(${selectedAssets.size} selected)` : '(all)'}</summary>

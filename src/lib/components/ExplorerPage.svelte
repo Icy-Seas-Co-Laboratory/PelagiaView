@@ -71,6 +71,7 @@
     type CodecAvailability
   } from '$lib/utils/codecs';
   import { explorerStageFromUrl, type ExplorerStage } from '$lib/utils/dashboardNavigation';
+  import { collectOffsetPages } from '$lib/utils/offsetPagination';
 
   type RefinementModel = {
     artifact_id: string;
@@ -201,6 +202,9 @@
   let refining = false;
   let refinementReviewStatus = 'No persisted refinement is loaded for this frame.';
   let selectedInspection: { kind: 'frame' | 'candidate' | 'refined'; detection?: DetectionSummary } = { kind: 'frame' };
+  // A frame change may complete before an older list request. Only the newest
+  // request is allowed to replace the review state.
+  let detectionLoadSerial = 0;
   let applyMask = false;
   let cropEnabled = false;
   let cropX: number | null = null;
@@ -1087,25 +1091,48 @@
   async function loadDetections() {
     const client = getClient();
     if (!client || !selectedAssetId) return;
+    const assetId = selectedAssetId;
+    const projectId = $session.project?.id ?? null;
+    const serial = ++detectionLoadSerial;
+    selectedInspection = { kind: 'frame' };
+    detections = [];
+    refinedDetections = [];
+    refinementReviewStatus = 'Loading persisted ROIs for this frame.';
     await cleanupLiveSandboxFrame();
     hasLivePreview = false;
     const frame = await ensureSelectedFrame();
+    if (!isCurrentDetectionLoad(serial, assetId, projectId, frame?.id)) return;
     if (!frame?.id) {
       detections = [];
       refinedDetections = [];
+      selectedInspection = { kind: 'frame' };
       refinementReviewStatus = 'No persisted refinement is available because this frame could not be loaded.';
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       return;
     }
-    detections = await client.listDetections(selectedAssetId, frame.id);
-    await loadPersistedRefinedDetections(client, detections);
-    if (detections.length) completeExplorerStage('detection');
-    if (refinedDetections.length) completeExplorerStage('refinement');
-    stageCounts = {};
-    bboxCoordinateBasis = 'original-frame';
-    selectedInspection = { kind: 'frame' };
-    if (activeExplorerTab === 'detection') void previewDetectionCandidatesNow({ silent: true });
+    try {
+      const [candidateRows, refinedRows] = await Promise.all([
+        listAllCandidateDetections(client, assetId, frame.id),
+        listAllRefinedDetections(client, frame.id)
+      ]);
+      if (!isCurrentDetectionLoad(serial, assetId, projectId, frame.id)) return;
+      detections = candidateRows;
+      setPersistedRefinedDetections(refinedRows);
+      if (detections.length) completeExplorerStage('detection');
+      if (refinedDetections.length) completeExplorerStage('refinement');
+      stageCounts = {};
+      bboxCoordinateBasis = 'original-frame';
+      selectedInspection = { kind: 'frame' };
+      if (activeExplorerTab === 'detection') void previewDetectionCandidatesNow({ silent: true });
+    } catch (err) {
+      if (!isCurrentDetectionLoad(serial, assetId, projectId, frame.id)) return;
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  function isCurrentDetectionLoad(serial: number, assetId: string, projectId: string | null, frameId: string | undefined): boolean {
+    return serial === detectionLoadSerial && selectedAssetId === assetId && $session.project?.id === projectId && findFrameByNumber(selectedFrameNum)?.id === frameId;
   }
 
   function completeExplorerStage(stage: ExplorerStage) {
@@ -1131,23 +1158,25 @@
     return stage === 'refinement';
   }
 
-  async function loadPersistedRefinedDetections(client: ReturnType<typeof getClient>, candidates: DetectionSummary[]) {
-    if (!client) return;
-    const ids = [...new Set(candidates.map((candidate) => candidate.refined_detection_id).filter((id): id is string => Boolean(id)))];
-    await hydratePersistedRefinedDetections(client, ids);
+  async function listAllCandidateDetections(client: NonNullable<ReturnType<typeof getClient>>, assetId: string, frameId: string): Promise<DetectionSummary[]> {
+    return collectOffsetPages(async (offset) => {
+      const response = await client.listDetectionsPage(assetId, frameId, 500, offset);
+      return { items: response.detections ?? [], nextOffset: response.page?.next_offset };
+    }, 'Candidate ROI');
   }
 
-  async function hydratePersistedRefinedDetections(client: NonNullable<ReturnType<typeof getClient>>, ids: string[]) {
-    if (!ids.length) {
-      refinedDetections = [];
-      refinementReviewStatus = 'No persisted refinement is available for this frame.';
-      return;
-    }
-    const loaded = await Promise.all(ids.map((id) => client.getRefinedDetection(id).catch(() => null)));
-    refinedDetections = loaded.filter((detection): detection is DetectionSummary => detection !== null);
-    refinementReviewStatus = refinedDetections.length
-      ? `Reviewing ${refinedDetections.length} persisted refined ROI${refinedDetections.length === 1 ? '' : 's'} for this frame.`
-      : 'Refinement references were present, but their persisted ROI records could not be loaded.';
+  async function listAllRefinedDetections(client: NonNullable<ReturnType<typeof getClient>>, frameId: string): Promise<DetectionSummary[]> {
+    return collectOffsetPages(async (offset) => {
+      const response = await client.listRefinedDetections(frameId, 500, offset);
+      return { items: response.detections ?? [], nextOffset: response.page?.next_offset };
+    }, 'Refined ROI');
+  }
+
+  function setPersistedRefinedDetections(rows: DetectionSummary[]) {
+    refinedDetections = rows;
+    refinementReviewStatus = rows.length
+      ? `Reviewing all ${rows.length} persisted refined ROI${rows.length === 1 ? '' : 's'} for this frame.`
+      : 'No persisted refinement is available for this frame.';
   }
 
   function options() {
@@ -1585,6 +1614,7 @@
       hasLivePreview = false;
       detections = [];
       refinedDetections = [];
+      selectedInspection = { kind: 'frame' };
       bboxCoordinateBasis = 'original-frame';
     }
     lastFrameImageKey = key;
@@ -1595,6 +1625,7 @@
     if (lastDetectionPreviewKey && key !== lastDetectionPreviewKey) {
       detections = [];
       refinedDetections = [];
+      selectedInspection = { kind: 'frame' };
       stageCounts = {};
       bboxCoordinateBasis = 'preprocessed-local';
     }
@@ -1768,6 +1799,7 @@
       thresholdForegroundPixels = result.mask?.foreground_pixels ?? null;
       thresholdForegroundFraction = result.mask?.foreground_fraction ?? null;
       refinedDetections = [];
+      selectedInspection = { kind: 'frame' };
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
@@ -1801,6 +1833,7 @@
       adoptLiveSandboxFrame(result, frame.id);
       detections = result.candidate_detections ?? result.detections ?? [];
       refinedDetections = [];
+      selectedInspection = { kind: 'frame' };
       stageCounts = result.stage_counts ?? {};
       bboxCoordinateBasis = liveBboxCoordinateBasis(result);
       hasLivePreview = true;
@@ -1824,6 +1857,7 @@
       hasLivePreview = false;
       detections = [];
       refinedDetections = [];
+      selectedInspection = { kind: 'frame' };
       stageCounts = {};
       bboxCoordinateBasis = 'original-frame';
       clearThresholdMaskUrl();
@@ -1857,6 +1891,7 @@
         });
         detections = result.detections;
         refinedDetections = [];
+        selectedInspection = { kind: 'frame' };
         storedDetections = result.detections.filter((detection) => detection.id);
         stageCounts = result.stage_counts ?? {};
         bboxCoordinateBasis = liveBboxCoordinateBasis(result);
@@ -1889,10 +1924,8 @@
           store: true,
           dry_run: false
         });
-        const resultIds = (result.refined_detections ?? [])
-          .map((detection) => detection.id)
-          .filter((id): id is string => Boolean(id));
-        await hydratePersistedRefinedDetections(client, resultIds);
+        const persistedRefinements = await listAllRefinedDetections(client, frame.id);
+        setPersistedRefinedDetections(persistedRefinements);
         completeExplorerStage('refinement');
         const refinedCount = result.refined_count ?? refinedDetections.length;
         message = `${refreshedRoiPayloads ? 'Saved ROI payload data, then r' : 'R'}efined ${refinedCount} ROI${refinedCount === 1 ? '' : 's'} for frame ${selectedFrameNum}. The comparison below uses persisted ROI records.`;
@@ -2028,8 +2061,8 @@
     y: number;
     w: number;
     h: number;
-    area?: number;
-    perimeter?: number;
+    area?: number | null;
+    perimeter?: number | null;
   };
 
   type RefinementRoiRelation = 'matched' | 'inferred' | 'split' | 'merge' | 'many-to-many' | 'missing' | 'orphan';
@@ -2059,13 +2092,12 @@
 
   function summarizeRefinedDetections(refined: DetectionSummary[]): RefinementSummary {
     const areas = refined
-      .map((detection) => numberValue(detection.area))
+      .map((detection) => measurementValue(detection.contour_area))
       .filter((value): value is number => value !== null && value >= 0)
       .sort((a, b) => a - b);
     const bboxAreas = refined
-      .map((detection, index) => toTargetBox(detection, index) ?? toCropBox(detection, index))
-      .filter((box): box is BBox => box !== null)
-      .map((box) => Math.max(0, box.w * box.h))
+      .map((detection) => measurementValue(detection.bbox_area))
+      .filter((value): value is number => value !== null && value >= 0)
       .sort((a, b) => a - b);
     const totalArea = areas.reduce((total, area) => total + area, 0);
     const totalBboxArea = bboxAreas.reduce((total, area) => total + area, 0);
@@ -2093,7 +2125,19 @@
   function formatStat(value: number | null | undefined): string {
     return value === null || value === undefined || !Number.isFinite(value)
       ? 'n/a'
-      : formatCount(Math.round(value));
+      : value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+
+  function measurementValue(value: number | null | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  function roiArea(detection: DetectionSummary, kind: 'candidate' | 'refined'): number | null {
+    return measurementValue(kind === 'candidate' ? detection.bbox_area : detection.contour_area);
+  }
+
+  function roiAreaLabel(kind: 'candidate' | 'refined'): string {
+    return kind === 'candidate' ? 'Bounding-box area' : 'Contour area';
   }
 
   function toTargetBox(detection: DetectionSummary, index: number): BBox | null {
@@ -2950,10 +2994,12 @@
     return `x=${Math.round(box.x)}, y=${Math.round(box.y)}, w=${Math.round(box.w)}, h=${Math.round(box.h)}`;
   }
 
-  function refinementRoiMetricSummary(detection: DetectionSummary): string {
+  function refinementRoiMetricSummary(detection: DetectionSummary, kind: 'candidate' | 'refined'): string {
     const parts: string[] = [];
-    if (detection.area !== undefined) parts.push(`area=${formatCount(Math.round(detection.area))}`);
-    if (detection.perimeter !== undefined) parts.push(`perimeter=${formatCount(Math.round(detection.perimeter))}`);
+    const area = roiArea(detection, kind);
+    const perimeter = measurementValue(detection.contour_perimeter);
+    if (area !== null) parts.push(`${kind === 'candidate' ? 'bbox area' : 'contour area'}=${formatStat(area)} px²`);
+    if (perimeter !== null) parts.push(`contour perimeter=${formatStat(perimeter)} px`);
     if (detection.roi_payload_bytes !== undefined) parts.push(formatBytes(detection.roi_payload_bytes));
     if (detection.mask_payload_bytes !== undefined) parts.push(`mask ${formatBytes(detection.mask_payload_bytes)}`);
     return parts.join(' · ') || 'metrics unavailable';
@@ -3750,16 +3796,16 @@
         </label>
         <label class:has-field-override={fieldChanged('minArea', minArea)}>
           <span class="field-label-row">
-            Min area (px²)
+            Min bounding-box area (px²)
             <InfoChip
               label="Minimum area help"
-              text="Drops candidate ROIs whose foreground area is smaller than this value."
+              text="Drops candidate ROIs whose bounding-box area is smaller than this value."
             />
           </span>
           <input type="number" min="0" bind:value={minArea} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('maxArea', maxArea)}>
-          Max area (px²)
+          Max bounding-box area (px²)
           <input type="number" min="0" bind:value={maxArea} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('minWidthPlusHeight', minWidthPlusHeight)}>
@@ -3796,11 +3842,17 @@
           </select>
         </label>
         <label class:has-field-override={fieldChanged('minPerimeter', minPerimeter)}>
-          Min perimeter (px)
+          <span class="field-label-row">
+            Min candidate bbox perimeter (px)
+            <InfoChip
+              label="Candidate perimeter help"
+              text="Candidate generation uses the bounding-box perimeter for speed. Once ROIs are materialized, perimeter filters use their contour perimeter."
+            />
+          </span>
           <input type="number" min="0" bind:value={minPerimeter} />
         </label>
         <label class:has-field-override={fieldChanged('maxPerimeter', maxPerimeter)}>
-          Max perimeter (px)
+          Max candidate bbox perimeter (px)
           <input type="number" min="0" bind:value={maxPerimeter} placeholder="none" />
         </label>
         <label class:has-field-override={fieldChanged('minWidth', minWidth)}>
@@ -4002,7 +4054,8 @@
       <dl class="explorer-inspector-metrics">
         <div><dt>ROI</dt><dd>{selectedInspection.detection.roi_index ?? 'Unknown'}</dd></div>
         <div><dt>Bounds</dt><dd>{refinementRoiBboxLabel(selectedInspection.detection, 0)}</dd></div>
-        <div><dt>Area</dt><dd>{formatStat(selectedInspection.detection.area)} px²</dd></div>
+        <div><dt>{roiAreaLabel(selectedInspection.kind === 'candidate' ? 'candidate' : 'refined')}</dt><dd>{formatStat(roiArea(selectedInspection.detection, selectedInspection.kind === 'candidate' ? 'candidate' : 'refined'))} px²</dd></div>
+        <div><dt>Contour perimeter</dt><dd>{formatStat(measurementValue(selectedInspection.detection.contour_perimeter))} px</dd></div>
         <div><dt>Method</dt><dd>{selectedInspection.detection.refinement_method ?? selectedInspection.detection.metadata?.refinement_method ?? 'Candidate'}</dd></div>
       </dl>
       <p class="muted">Histogram inspection will use exact stored pixel values once the read-only inspection endpoint is available.</p>
@@ -4064,7 +4117,7 @@
                 <div class="roi-tile-meta">
                   <strong>ROI {candidate.roi_index ?? candidateIndex + 1}</strong>
                   <code>{refinementRoiBboxLabel(candidate, candidateIndex)}</code>
-                  <small>{refinementRoiMetricSummary(candidate)}</small>
+                  <small>{refinementRoiMetricSummary(candidate, 'candidate')}</small>
                 </div>
               </div>
             {/each}
@@ -4095,7 +4148,7 @@
                 <div class="roi-tile-meta">
                   <strong>ROI {refinedDetection.roi_index ?? refinedIndex + 1}</strong>
                   <code>{refinementRoiBboxLabel(refinedDetection, refinedIndex)}</code>
-                  <small>{refinementRoiMetricSummary(refinedDetection)}</small>
+                  <small>{refinementRoiMetricSummary(refinedDetection, 'refined')}</small>
                 </div>
               </div>
             {/each}
@@ -4129,26 +4182,26 @@
         <strong>{formatCount(refinementSummary.count)}</strong>
       </div>
       <div>
-        <span>Total ROI area (px²)</span>
+        <span>Known contour area total (px²)</span>
         <strong>{formatStat(refinementSummary.areaCount ? refinementSummary.totalArea : null)}</strong>
-        <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} with area` : 'area unavailable'}</small>
+        <small>{refinementSummary.areaCount ? `${formatCount(refinementSummary.areaCount)} of ${formatCount(refinementSummary.count)} measured` : 'contour area unavailable'}</small>
       </div>
       <div>
-        <span>Mean area (px²)</span>
+        <span>Mean contour area (px²)</span>
         <strong>{formatStat(refinementSummary.meanArea)}</strong>
       </div>
       <div>
-        <span>Median area (px²)</span>
+        <span>Median contour area (px²)</span>
         <strong>{formatStat(refinementSummary.medianArea)}</strong>
       </div>
       <div>
-        <span>Area range (px²)</span>
+        <span>Contour-area range (px²)</span>
         <strong>{formatStat(refinementSummary.minArea)}-{formatStat(refinementSummary.maxArea)}</strong>
       </div>
       <div>
-        <span>Total bbox area (px²)</span>
-        <strong>{formatStat(refinementSummary.totalBboxArea)}</strong>
-        <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} boxes` : 'bbox unavailable'}</small>
+        <span>Known bounding-box area total (px²)</span>
+        <strong>{formatStat(refinementSummary.bboxAreaCount ? refinementSummary.totalBboxArea : null)}</strong>
+        <small>{refinementSummary.bboxAreaCount ? `${formatCount(refinementSummary.bboxAreaCount)} of ${formatCount(refinementSummary.count)} measured` : 'bbox area unavailable'}</small>
       </div>
     </div>
     <p class="soft">Bounding-box overlays are hidden while refined mask overlays are available.</p>

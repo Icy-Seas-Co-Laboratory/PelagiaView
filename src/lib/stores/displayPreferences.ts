@@ -6,14 +6,14 @@ const themePreferenceKey = 'pelagia-view:theme';
 export type ThemePreference = 'system' | 'light' | 'dark';
 
 function readImageInversionPreference(): boolean {
-  if (!browser) return false;
+  if (!browser) return true;
   const saved = localStorage.getItem(displayPreferenceKey);
-  if (!saved) return false;
+  if (!saved) return true;
   try {
     const parsed = JSON.parse(saved) as { invertImages?: unknown };
-    return parsed.invertImages === true;
+    return typeof parsed?.invertImages === 'boolean' ? parsed.invertImages : true;
   } catch {
-    return false;
+    return true;
   }
 }
 

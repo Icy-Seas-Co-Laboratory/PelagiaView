@@ -37,6 +37,12 @@
   let assets: RawAsset[] = [];
   let collectionOptions: string[] = [];
   let detections: DetectionSummary[] = [];
+  // The search endpoint is deliberately candidate-scoped for stable filtering
+  // and ordering. Refined records are fetched separately so every rendered
+  // refined image, bbox, and measurement comes from the same record.
+  let refinedDetectionsByCandidateId = new Map<string, DetectionSummary>();
+  let unavailableRefinedRecords = 0;
+  let pendingDetectionReload = false;
   let selectedAssetId = '';
   let selectedFrameId = '';
   let collection = '';
@@ -112,7 +118,14 @@
   const fullFrameBboxScale = 0.5;
   const scaleBarLengths = [1000, 500, 100, 50, 10];
 
-  $: visibleCount = detections.filter(hasRoiImageData).length;
+  $: browserDetections = detections
+    .map((detection) => displayDetection(detection, roiViewMode, refinedDetectionsByCandidateId))
+    .filter((detection): detection is DetectionSummary => detection !== null)
+    .filter(hasRoiImageData);
+  $: emptyBrowserMessage = roiViewMode === 'refined' && detections.length && unavailableRefinedRecords
+    ? 'Matching candidates were found, but their refined ROI records could not be loaded.'
+    : 'No ROI detections match the current filters.';
+  $: visibleCount = browserDetections.length;
   $: galleryTileSize = fitTileSize(galleryScale, fitGalleryTileBasePx);
   $: galleryColumns = Math.max(1, Math.floor((galleryWidth - 16) / (galleryTileSize + 10)));
   $: galleryRowHeight = galleryTileSize + 46;
@@ -165,10 +178,14 @@
     frameImageNaturalHeight,
     frameModalSourceDimensions
   );
-  $: frameDetectionsWithImageData = frameDetections.filter(hasRoiImageData);
+  $: frameDetectionsWithImageData = frameDetections
+    .map((detection) => displayDetection(detection, roiViewMode, refinedDetectionsByCandidateId))
+    .filter((detection): detection is DetectionSummary => detection !== null)
+    .filter((detection, index, rows) => !detection.id || rows.findIndex((row) => row.id === detection.id) === index)
+    .filter(hasRoiImageData);
   $: selectableFrameDetections = frameDetectionsWithImageData.filter((detection) => detection.id);
   $: selectedFrameRoiCount = selectableFrameDetections.filter((detection) => detection.id && selectedFrameRoiIds.has(detection.id)).length;
-  $: selectableBrowserDetections = detections.filter(hasRoiImageData);
+  $: selectableBrowserDetections = browserDetections;
   $: selectedBrowserRoiCount = selectableBrowserDetections.filter((detection) => detection.id && selectedBrowserRoiIds.has(detection.id)).length;
   $: resetFrameContextImage(detailFrameUrl);
   $: resetFrameModalImage(frameModalUrl);
@@ -235,25 +252,126 @@
 
   async function loadDetections(reset = false) {
     const client = getClient();
-    if (!client || loading) return;
+    if (!client) return;
+    if (loading) {
+      pendingDetectionReload = true;
+      return;
+    }
+    const projectId = $session.project?.id ?? null;
     if (reset) browserPage = 0;
     const offset = browserPage * pageSize;
     loading = true;
     error = null;
+    refinedDetectionsByCandidateId = new Map();
+    unavailableRefinedRecords = 0;
     const serial = ++requestSerial;
     fullResolutionTileKeys = new Set();
     selectedBrowserRoiIds = new Set();
     try {
       const response = await client.searchDetectionsPage(currentFilters(offset));
       const resultPage = response.detections ?? [];
-      if (serial !== requestSerial) return;
+      if (!isDetectionRequestCurrent(serial, projectId, client)) return;
+      const refined = await loadRefinedRecords(resultPage, serial, projectId, client);
+      if (!isDetectionRequestCurrent(serial, projectId, client)) return;
       detections = resultPage;
+      refinedDetectionsByCandidateId = refined.records;
+      unavailableRefinedRecords = refined.unavailable;
       browserHasNextPage = response.page?.next_offset !== null && response.page?.next_offset !== undefined;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
+      if (pendingDetectionReload) {
+        pendingDetectionReload = false;
+        void loadDetections(true);
+      }
     }
+  }
+
+  async function loadRefinedRecords(
+    candidates: DetectionSummary[],
+    serial: number,
+    projectId: string | null,
+    client: ReturnType<typeof getClient>
+  ): Promise<{ records: Map<string, DetectionSummary>; unavailable: number }> {
+    if (roiViewMode !== 'refined') return { records: new Map(), unavailable: 0 };
+    if (!client) return { records: new Map(), unavailable: candidates.length };
+    const records = new Map<string, DetectionSummary>();
+    let unavailable = 0;
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < candidates.length && isDetectionRequestCurrent(serial, projectId, client)) {
+        const candidate = candidates[nextIndex++];
+        const candidateId = candidate.id;
+        const refinedId = candidate.refined_detection_id;
+        if (!candidateId || !refinedId) {
+          unavailable += 1;
+          continue;
+        }
+        try {
+          const refined = await client.getRefinedDetection(refinedId);
+          if (isDetectionRequestCurrent(serial, projectId, client)) records.set(candidateId, refined);
+        } catch {
+          unavailable += 1;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, candidates.length) }, worker));
+    return { records, unavailable };
+  }
+
+  function isDetectionRequestCurrent(
+    serial: number,
+    projectId: string | null,
+    client: ReturnType<typeof getClient>
+  ): boolean {
+    return serial === requestSerial && $session.project?.id === projectId && getClient() === client;
+  }
+
+  async function hydrateFrameRefinedDetections(candidates: DetectionSummary[], serial: number): Promise<void> {
+    if (roiViewMode !== 'refined') return;
+    const client = getClient();
+    const projectId = $session.project?.id ?? null;
+    if (!client) return;
+    const pending = candidates.filter((candidate) =>
+      Boolean(candidate.id && candidate.refined_detection_id && !refinedDetectionsByCandidateId.has(candidate.id))
+    );
+    const records = new Map<string, DetectionSummary>();
+    let nextIndex = 0;
+    const isCurrent = () =>
+      serial === frameDetectionLoadSerial &&
+      roiViewMode === 'refined' &&
+      $session.project?.id === projectId &&
+      getClient() === client;
+    const worker = async () => {
+      while (nextIndex < pending.length && isCurrent()) {
+        const candidate = pending[nextIndex++];
+        if (!candidate.id || !candidate.refined_detection_id) continue;
+        try {
+          const refined = await client.getRefinedDetection(candidate.refined_detection_id);
+          if (isCurrent()) records.set(candidate.id, refined);
+        } catch {
+          // The gallery continues to omit a record whose exact refined version
+          // cannot be retrieved, rather than rendering candidate measurements.
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, pending.length) }, worker));
+    if (isCurrent() && records.size) {
+      refinedDetectionsByCandidateId = new Map([...refinedDetectionsByCandidateId, ...records]);
+    }
+  }
+
+  function displayDetection(
+    detection: DetectionSummary,
+    mode: RoiViewMode,
+    refinedRecords: Map<string, DetectionSummary>
+  ): DetectionSummary | null {
+    if (mode !== 'refined') return detection;
+    // Refined records may appear in the frame context alongside candidate rows.
+    if (detection.candidate_detection_id) return detection;
+    if (!detection.id) return null;
+    return refinedRecords.get(detection.id) ?? null;
   }
 
   function currentFilters(offset = 0): DetectionFilters {
@@ -443,6 +561,10 @@
     if (roiViewMode === mode) return;
     roiViewMode = mode;
     closeRoiDetail();
+    // Invalidate an in-flight query before requesting the other scope. The
+    // pending reload runs as soon as the current request releases the loader.
+    requestSerial += 1;
+    if (loading) pendingDetectionReload = true;
     void loadDetections(true);
   }
 
@@ -500,9 +622,15 @@
       detailFrameDisplayMode = displayModeForPayloadKind(context.frame_payload_kind);
       selectedParentAsset = context.asset ?? null;
       selectedParentFrame = context.frame ?? null;
-      const contextDetection = context.detections.find((candidate) => candidate.id && candidate.id === detection.id);
+      // Frame context contains candidate rows. A refined record must retain its
+      // own bbox and measurements rather than being overlaid with its candidate.
+      const contextDetection = isRefinedRecord(detection)
+        ? undefined
+        : context.detections.find((candidate) => candidate.id && candidate.id === detection.id);
       selectedDetection = contextDetection ? { ...detection, ...contextDetection } : detection;
       frameDetections = frameDetectionsWithSelected(selectedDetection, context.detections);
+      await hydrateFrameRefinedDetections(context.detections, serial);
+      if (serial !== frameDetectionLoadSerial) return;
       const next = context.page?.next_offset ?? null;
       frameDetectionsComplete = next === null;
       if (next !== null) {
@@ -542,6 +670,8 @@
         const page = context.detections ?? [];
         const additions = withoutDuplicateFrameDetections(page);
         if (additions.length) frameDetections = [...frameDetections, ...additions];
+        await hydrateFrameRefinedDetections(page, serial);
+        if (serial !== frameDetectionLoadSerial) return;
         offset = context.page?.next_offset ?? null;
         if (offset !== null && additions.length === 0) break;
         await tick();
@@ -623,6 +753,9 @@
     const resizeOptions = roiProxyResizeOptions(detection, proxyMaxDimension);
     const options = { applyMask: maskEnabled, ...resizeOptions };
     if (viewMode !== 'refined') return client.detectionRoiUrl(detection.id, format, options);
+    if (detection.candidate_detection_id) {
+      return client.refinedDetectionRecordImageUrl(detection.id, format, options);
+    }
     if (detection.refined_roi_url && !resizeOptions.width && !resizeOptions.height) return client.resolveApiUrl(detection.refined_roi_url);
     if (detection.refined_detection_id) {
       return client.refinedDetectionRecordImageUrl(detection.refined_detection_id, format, options);
@@ -639,6 +772,9 @@
     if (!client || !detection.id) return '';
     const resizeOptions = roiProxyResizeOptions(detection, proxyMaxDimension);
     if (viewMode !== 'refined') return client.detectionMaskUrl(detection.id, 'png', resizeOptions);
+    if (detection.candidate_detection_id) {
+      return client.refinedDetectionRecordMaskUrl(detection.id, 'png', resizeOptions);
+    }
     if (detection.refined_mask_url && !resizeOptions.width && !resizeOptions.height) return client.resolveApiUrl(detection.refined_mask_url);
     if (detection.refined_detection_id) {
       return client.refinedDetectionRecordMaskUrl(detection.refined_detection_id, 'png', resizeOptions);
@@ -902,11 +1038,11 @@
   }
 
   function roiSourceWidth(detection: DetectionSummary): number | null {
-    return bboxValue(detection, 'crop_bbox', 'w');
+    return bboxValue(detection, 'crop_bbox', 'w') ?? bboxValue(detection, 'bbox', 'w');
   }
 
   function roiSourceHeight(detection: DetectionSummary): number | null {
-    return bboxValue(detection, 'crop_bbox', 'h');
+    return bboxValue(detection, 'crop_bbox', 'h') ?? bboxValue(detection, 'bbox', 'h');
   }
 
   function roiTileProxyMaxDimension(detection: DetectionSummary): number | null {
@@ -1046,6 +1182,30 @@
     if (value === null || value === undefined || value === '') return null;
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function isRefinedRecord(detection: DetectionSummary): boolean {
+    return Boolean(detection.candidate_detection_id);
+  }
+
+  function areaMetricLabel(detection: DetectionSummary): string {
+    return isRefinedRecord(detection) ? 'Contour area (px²)' : 'Bounding-box area (px²)';
+  }
+
+  function areaMetricValue(detection: DetectionSummary): string {
+    const value = isRefinedRecord(detection) ? detection.contour_area : detection.bbox_area;
+    const parsed = numberValue(value);
+    if (parsed === null) return 'unknown';
+    return isRefinedRecord(detection) ? formatContourMeasurement(parsed) : String(Math.round(parsed));
+  }
+
+  function contourPerimeterValue(detection: DetectionSummary): string {
+    const parsed = numberValue(detection.contour_perimeter);
+    return parsed === null ? 'unknown' : formatContourMeasurement(parsed);
+  }
+
+  function formatContourMeasurement(value: number): string {
+    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
   }
 
   function bboxValue(
@@ -1625,12 +1785,12 @@
             Sort by
             <InfoChip
               label="ROI sort help"
-              text="Controls the order of ROI tiles requested from the server. Area and byte size can help find large or expensive ROIs."
+              text="Controls the order of ROI tiles requested from the server. Bounding-box area, perimeter filters, and sorting use the candidate record even when viewing refined imagery."
             />
           </span>
           <select bind:value={sortBy}>
             <option value="asset_frame">Asset + frame</option>
-            <option value="area">Area (px²)</option>
+            <option value="area">Bounding-box area (px²)</option>
             <option value="byte_size">Byte size</option>
             <option value="id">Random ID</option>
           </select>
@@ -1685,20 +1845,20 @@
       </label>
 
       <label>
-        Min area (px²)
+        Min bounding-box area (px²)
         <input type="number" min="0" bind:value={minArea} />
       </label>
       <label>
-        Max area (px²)
+        Max bounding-box area (px²)
         <input type="number" min="0" bind:value={maxArea} />
       </label>
 
       <label>
-        Min perimeter (px)
+        Min contour perimeter (px)
         <input type="number" min="0" bind:value={minPerimeter} />
       </label>
       <label>
-        Max perimeter (px)
+        Max contour perimeter (px)
         <input type="number" min="0" bind:value={maxPerimeter} />
       </label>
 
@@ -1782,9 +1942,12 @@
     </div>
 
     {#if error}<p class="form-error">{error}</p>{/if}
+    {#if roiViewMode === 'refined' && unavailableRefinedRecords}
+      <p class="soft">{unavailableRefinedRecords} refined ROI record{unavailableRefinedRecords === 1 ? '' : 's'} could not be loaded and {unavailableRefinedRecords === 1 ? 'is' : 'are'} omitted.</p>
+    {/if}
 
     <div class="roi-gallery-viewport browser-gallery-viewport" data-image-scroll-root bind:this={gallery} use:observeGallery>
-      {#if detections.length}
+      {#if browserDetections.length}
         {#if galleryScaleMode === 'original'}
           <div class="roi-gallery-spacer roi-gallery-original-spacer" style={`height:${originalBrowserLayout.height}px;width:${originalBrowserLayout.width}px`}>
             {#each renderedOriginalBrowserEntries as placement (selectableBrowserDetections[placement.index].id)}
@@ -1812,7 +1975,7 @@
       {:else if loading}
         <p class="empty">Loading ROI detections.</p>
       {:else}
-        <p class="empty">No ROI detections match the current filters.</p>
+        <p class="empty">{emptyBrowserMessage}</p>
       {/if}
     </div>
     <div class="gallery-page-controls">
@@ -1854,8 +2017,8 @@
         <div><dt>ROI</dt><dd>{selectedDetection.roi_index ?? 'unknown'}</dd></div>
         <div><dt>Bounding box (px)</dt><dd><code>{bboxLabel(selectedDetection)}</code></dd></div>
         <div><dt>Crop size (px)</dt><dd>{roiImageSourceWidth(selectedDetection) ?? 'unknown'} × {roiImageSourceHeight(selectedDetection) ?? 'unknown'}</dd></div>
-        <div><dt>Area (px²)</dt><dd>{selectedDetection.area === undefined ? 'unknown' : Math.round(selectedDetection.area)}</dd></div>
-        <div><dt>Perimeter (px)</dt><dd>{selectedDetection.perimeter === undefined ? 'unknown' : Math.round(selectedDetection.perimeter)}</dd></div>
+        <div><dt>{areaMetricLabel(selectedDetection)}</dt><dd>{areaMetricValue(selectedDetection)}</dd></div>
+        <div><dt>Contour perimeter (px)</dt><dd>{contourPerimeterValue(selectedDetection)}</dd></div>
         <div><dt>Payload</dt><dd>{selectedDetection.roi_payload_bytes === undefined ? 'unknown' : formatBytes(selectedDetection.roi_payload_bytes)}</dd></div>
         <div><dt>Mask payload</dt><dd>{selectedDetection.mask_payload_bytes === undefined ? 'unavailable' : formatBytes(selectedDetection.mask_payload_bytes)}</dd></div>
         <div><dt>Encoding</dt><dd>{selectedDetection.roi_format ?? selectedDetection.roi_encoding ?? 'unknown'}</dd></div>
@@ -1934,12 +2097,12 @@
               <dd><code>{bboxLabel(selectedDetection)}</code></dd>
             </div>
             <div>
-              <dt>Area (px²)</dt>
-              <dd>{selectedDetection.area === undefined ? 'unknown' : Math.round(selectedDetection.area)}</dd>
+              <dt>{areaMetricLabel(selectedDetection)}</dt>
+              <dd>{areaMetricValue(selectedDetection)}</dd>
             </div>
             <div>
-              <dt>Perimeter (px)</dt>
-              <dd>{selectedDetection.perimeter === undefined ? 'unknown' : Math.round(selectedDetection.perimeter)}</dd>
+              <dt>Contour perimeter (px)</dt>
+              <dd>{contourPerimeterValue(selectedDetection)}</dd>
             </div>
             <div>
               <dt>Payload</dt>

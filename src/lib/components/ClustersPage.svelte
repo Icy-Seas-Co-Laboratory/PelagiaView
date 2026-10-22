@@ -8,7 +8,7 @@
   import type { CurationRoi, FeatureSpaceCluster, FeatureSpaceRoi, FeatureSpaceSimilarityResult, FeatureSpaceSource, FeatureSpaceUmapResult, FeatureSpaceUmapRoi, Job } from '$lib/api/types';
 
   type BrowseMode = 'clusters' | 'similarity' | 'pca';
-  type PcaAxisKey = `umap:${number}` | 'bbox_area' | 'bbox_aspect_ratio' | 'roi_image_area' | 'roi_image_aspect_ratio' | 'segmented_area';
+  type PcaAxisKey = `umap:${number}` | 'bbox_area' | 'bbox_aspect_ratio' | 'roi_image_area' | 'roi_image_aspect_ratio' | 'contour_area';
   type PcaAxisOption = { key: PcaAxisKey; label: string; detail?: string };
   type ClusterBrowserPreferences = {
     sourceKey?: string;
@@ -378,7 +378,7 @@
     if (axis === 'bbox_aspect_ratio') return bboxHeight > 0 ? bboxWidth / bboxHeight : Number.NaN;
     if (axis === 'roi_image_area') return logArea(width * height);
     if (axis === 'roi_image_aspect_ratio') return height > 0 ? width / height : Number.NaN;
-    return logArea(Number(roi.area));
+    return logArea(Number(roi.contour_area));
   }
   function pcaRangeExtent(axis: PcaAxisKey): [number, number] | null {
     if (axis.startsWith('umap:')) {
@@ -394,7 +394,7 @@
     const metadata: PcaAxisOption[] = [
       { key: 'bbox_area', label: 'log10 BBox area' }, { key: 'bbox_aspect_ratio', label: 'BBox aspect ratio' },
       { key: 'roi_image_area', label: 'log10 ROI image area' }, { key: 'roi_image_aspect_ratio', label: 'ROI image aspect ratio' },
-      { key: 'segmented_area', label: 'log10 Segmented area' }
+      { key: 'contour_area', label: 'log10 Contour area (versioned measurements)' }
     ];
     return [...pcs, ...metadata.filter((axis) => pcaRangeExtent(axis.key) !== null)];
   }
@@ -904,7 +904,7 @@
         <dt>BBox</dt><dd>{bboxSummary(detail)}</dd>
         <dt>Frame size</dt><dd>{frameSize(detail)}</dd>
         <dt>ROI image</dt><dd>{imageSize(detail)}</dd>
-        <dt>Segmented area</dt><dd>{detail.area === null || detail.area === undefined ? '—' : `${whole(detail.area)} px²`}</dd>
+        <dt>Contour area</dt><dd>{detail.contour_area == null ? '—' : `${detail.contour_area.toLocaleString(undefined, { maximumFractionDigits: 2 })} px²`}</dd>
         <dt>Frame</dt><dd>{detail.frame_index === null || detail.frame_index === undefined ? '—' : `#${detail.frame_index}`}</dd>
         <dt>Captured</dt><dd title={detail.captured_at || undefined}>{capturedAt(detail.captured_at)}</dd>
         <dt>Label</dt><dd>{detail.label_display_name || 'Unlabeled'}</dd>

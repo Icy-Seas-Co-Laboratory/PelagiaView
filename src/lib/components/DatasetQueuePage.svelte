@@ -1993,23 +1993,23 @@
             </select>
           </label>
           <label class:has-field-override={fieldChanged('minArea', minArea)}>
-            Min area (px²)
+            Min bbox area (px²)
             <InfoChip
               label="Minimum area help"
-              text="Drops candidate ROIs whose foreground area is smaller than this value."
+              text="Drops candidate ROIs whose bounding-box area is smaller than this value."
             />
             <input type="number" min="0" bind:value={minArea} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('maxArea', maxArea)}>
-            Max area (px²)
+            Max bbox area (px²)
             <input type="number" min="0" bind:value={maxArea} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('minPerimeter', minPerimeter)}>
-            Min perimeter (px)
+            Min bbox perimeter (px)
             <input type="number" min="0" bind:value={minPerimeter} />
           </label>
           <label class:has-field-override={fieldChanged('maxPerimeter', maxPerimeter)}>
-            Max perimeter (px)
+            Max bbox perimeter (px)
             <input type="number" min="0" bind:value={maxPerimeter} placeholder="none" />
           </label>
           <label class:has-field-override={fieldChanged('maxWidth', maxWidth)}>

@@ -1155,8 +1155,11 @@ export type DetectionSummary = {
   crop_bbox_w?: number | string;
   crop_bbox_h?: number | string;
   crop_bbox?: BBoxObject;
-  area?: number;
-  perimeter?: number;
+  area?: number | null;
+  perimeter?: number | null;
+  bbox_area?: number | null;
+  contour_area?: number | null;
+  contour_perimeter?: number | null;
   roi_encoding?: string | null;
   roi_format?: string | null;
   roi_payload_bytes?: number;
@@ -1546,6 +1549,9 @@ export type CurationRoi = CurationEvidenceSummary & {
   frame_height?: number | null;
   roi_index?: number | null;
   area?: number | null;
+  bbox_area?: number | null;
+  contour_area?: number | null;
+  contour_perimeter?: number | null;
   roi_shape?: number[];
   bbox_x?: number | string | null;
   bbox_y?: number | string | null;
@@ -1669,6 +1675,7 @@ export type FeatureSpaceRoi = {
   asset_filename?: string | null;
   roi_index?: number | null;
   area?: number | null;
+  contour_area?: number | null;
   bbox_w?: number | null;
   bbox_h?: number | null;
   roi_shape?: number[] | null;

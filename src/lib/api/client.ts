@@ -772,6 +772,13 @@ export class PelagiaApiClient {
     return this.url(value);
   }
 
+  async listRefinedDetections(frameId: string, limit = 500, offset = 0): Promise<DetectionListResponse> {
+    const response = await this.get<DetectionListResponse>('/refined-detections', {
+      frame_id: frameId, limit, offset
+    });
+    return withDetectionPageFallback(response, limit, offset);
+  }
+
   async getRefinedDetection(refinedDetectionId: string): Promise<DetectionSummary> {
     const response = await this.get<{ detection: DetectionSummary }>(
       `/refined-detections/${encodeURIComponent(refinedDetectionId)}`
