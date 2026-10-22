@@ -97,3 +97,29 @@ test('terminal empty and failed submissions retain distinct server outcomes', ()
   assert.equal(empty?.result && 'job_count' in empty.result ? empty.result.job_count : null, 0);
   assert.equal(terminal.find((value) => value.status === 'failed')?.error, 'invalid stored criterion');
 });
+
+test('HTTP contexts without randomUUID can prepare and safely retry ROI submissions', (t) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const realCrypto = globalThis.crypto;
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {
+    getRandomValues: realCrypto.getRandomValues.bind(realCrypto)
+  } });
+  t.after(() => { if (original) Object.defineProperty(globalThis, 'crypto', original); else Reflect.deleteProperty(globalThis, 'crypto'); });
+  const request: ProcessingQueueRequest = { stage: 'roi_refinement', filters: { asset_ids: ['asset-a'] } };
+  const first = prepareSubmission('queue', request);
+  assert.match(first.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(first.request, request);
+  assert.notEqual(prepareSubmission('queue', request).request_id, first.request_id);
+  assert.equal(prepareSubmission('queue', request, first).request_id, first.request_id);
+  assert.match(prepareSubmission('series', { targets: {}, preset_snapshot: {}, steps: [] }).request_id, /^[0-9a-f-]{36}$/);
+});
+
+test('missing browser randomness produces a clear preparation error and preserves existing retries', (t) => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  const request: ProcessingQueueRequest = { stage: 'roi_refinement' };
+  const pending = prepareSubmission('queue', request);
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+  t.after(() => { if (original) Object.defineProperty(globalThis, 'crypto', original); else Reflect.deleteProperty(globalThis, 'crypto'); });
+  assert.throws(() => prepareSubmission('queue', request), /cryptographic randomness is unavailable/);
+  assert.equal(prepareSubmission('queue', request, pending).request_id, pending.request_id);
+});

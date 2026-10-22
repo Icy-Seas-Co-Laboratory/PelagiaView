@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:refinement-methods": "node --loader ./tests/loader.mjs --test ./tests/refinementMethods.test.ts",
+    "test:refinement-methods": "node --loader ./tests/loader.mjs --test ./tests/refinementMethods.test.ts ./tests/refinementComparison.test.ts",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",

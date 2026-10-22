@@ -16,3 +16,5 @@ If Oracle Builder is unavailable, Oracle refinement fails explicitly; Pelagia ne
 For line-scan assets, queue **line-scan continuity** after refinement completes. It creates an auditable logical assembly across adjacent frames, recording accepted and rejected links, while preserving every frame-local refined ROI and its original raster payload.
 
 Refinement can split one candidate into multiple refined ROIs or merge multiple candidates into one refined detection. The Explorer refinement view labels those relationships when the backend reports them.
+
+Explorer compares refinements on the frame that owns the candidate ROIs. For live previews this is the sandbox frame, not the original source frame. **Refresh persisted results** keeps that sandbox context, including after a queued refinement completes.

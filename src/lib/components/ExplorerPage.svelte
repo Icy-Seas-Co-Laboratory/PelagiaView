@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { loadRefinedComparison, refinementFrameId } from '$lib/processing/refinementComparison';
   import { normalizeRefinementMethod, refinementMethods } from '$lib/processing/refinementMethods';
   import type { RoiRefinementMethod } from '$lib/api/types';
   import { onDestroy, onMount } from 'svelte';
@@ -1871,10 +1872,49 @@
     }
   }
 
+  async function refreshRoiComparison() {
+    const client = getClient();
+    const frame = await ensureSelectedFrame();
+    if (!client || !frame?.id || refining) return;
+    const assetId = selectedAssetId;
+    const projectId = $session.project?.id ?? null;
+    const serial = detectionLoadSerial;
+    const previewSerial = detectionPreviewSerial;
+    const isCurrent = () => isCurrentDetectionLoad(serial, assetId, projectId, frame.id)
+      && detectionPreviewSerial === previewSerial;
+    error = null;
+    refining = true;
+    try {
+      const fallbackFrameId = liveSandboxSourceFrameId === frame.id && liveSandboxFrameId
+        ? liveSandboxFrameId : frame.id;
+      const candidateFrameId = refinementFrameId(detections, fallbackFrameId);
+      const [candidates, refined] = await Promise.all([
+        listAllCandidateDetections(client, assetId, candidateFrameId),
+        listAllRefinedDetections(client, candidateFrameId)
+      ]);
+      if (!isCurrent()) return;
+      detections = candidates;
+      selectedInspection = { kind: 'frame' };
+      setPersistedRefinedDetections(refined);
+    } catch (err) {
+      if (isCurrent()) error = err instanceof Error ? err.message : String(err);
+    } finally {
+      refining = false;
+    }
+  }
+
   async function refineCurrentDetections() {
     const client = getClient();
     const frame = await ensureSelectedFrame();
-    if (!client || !frame?.id) return;
+    if (!client || !frame?.id || refining) return;
+    const assetId = selectedAssetId;
+    const projectId = $session.project?.id ?? null;
+    const loadSerial = detectionLoadSerial;
+    const previewSerial = detectionPreviewSerial;
+    const isCurrent = () => isCurrentDetectionLoad(loadSerial, assetId, projectId, frame.id)
+      && detectionPreviewSerial === previewSerial;
+    let candidateFrameId = liveSandboxSourceFrameId === frame.id && liveSandboxFrameId
+      ? liveSandboxFrameId : frame.id;
     message = null;
     error = null;
     refining = true;
@@ -1883,12 +1923,15 @@
       let refreshedRoiPayloads = false;
       if (!storedDetections.length || storedDetections.some((detection) => !hasRoiPayload(detection))) {
         const sandboxFrameId = await ensureLivePreprocessedFrame(frame);
+        if (!isCurrent()) return;
+        candidateFrameId = sandboxFrameId;
         const result = await client.segmentFrame(sandboxFrameId, {
           ...forceRoiPayloadRecordingOptions(),
           frame_payload_kind: 'preprocessed',
           apply_preprocessing: false,
           apply_mask: false
         });
+        if (!isCurrent()) return;
         detections = result.detections;
         refinedDetections = [];
         selectedInspection = { kind: 'frame' };
@@ -1897,6 +1940,7 @@
         bboxCoordinateBasis = liveBboxCoordinateBasis(result);
         refreshedRoiPayloads = true;
       }
+      candidateFrameId = refinementFrameId(storedDetections, candidateFrameId);
       const detectionIds = storedDetections.map((detection) => detection.id).filter((id): id is string => Boolean(id));
       if (!detectionIds.length) {
         const candidateCount = detections.length;
@@ -1918,18 +1962,15 @@
         detection_ids: detectionIds,
         ...roiRefinementOptions()
       };
+      let result: Awaited<ReturnType<typeof client.refineRois>>;
       try {
-        const result = await client.refineRois({
+        result = await client.refineRois({
           ...refinementPayload,
           store: true,
           dry_run: false
         });
-        const persistedRefinements = await listAllRefinedDetections(client, frame.id);
-        setPersistedRefinedDetections(persistedRefinements);
-        completeExplorerStage('refinement');
-        const refinedCount = result.refined_count ?? refinedDetections.length;
-        message = `${refreshedRoiPayloads ? 'Saved ROI payload data, then r' : 'R'}efined ${refinedCount} ROI${refinedCount === 1 ? '' : 's'} for frame ${selectedFrameNum}. The comparison below uses persisted ROI records.`;
       } catch (err) {
+        if (!isCurrent()) return;
         if (!(err instanceof ApiError) || err.status !== 0) throw err;
         const response = await client.queueRoiRefinementJob({
           ...refinementPayload,
@@ -1938,11 +1979,26 @@
           store: true,
           dry_run: false
         });
+        if (!isCurrent()) return;
         message = `${refreshedRoiPayloads ? 'Saved ROI payload data. ' : ''}Direct refinement lost the API connection, so queued refinement job ${response.job.id} for ${detectionIds.length} ROI${detectionIds.length === 1 ? '' : 's'}.`;
         refinedDetections = [];
-        refinementReviewStatus = 'Refinement is queued. Reload this frame after the job succeeds before reviewing ROI results.';
+        selectedInspection = { kind: 'frame' };
+        refinementReviewStatus = 'Refinement is queued. Use Refresh persisted results after the job succeeds to review this candidate frame.';
+        return;
       }
+      if (!isCurrent()) return;
+      const persistedRefinements = await loadRefinedComparison(storedDetections, candidateFrameId, async (frameId, offset) => {
+        const page = await client.listRefinedDetections(frameId, 500, offset);
+        return { items: page.detections ?? [], nextOffset: page.page?.next_offset };
+      });
+      if (!isCurrent()) return;
+      selectedInspection = { kind: 'frame' };
+      setPersistedRefinedDetections(persistedRefinements);
+      completeExplorerStage('refinement');
+      const refinedCount = result.refined_count ?? refinedDetections.length;
+      message = `${refreshedRoiPayloads ? 'Saved ROI payload data, then r' : 'R'}efined ${refinedCount} ROI${refinedCount === 1 ? '' : 's'} for frame ${selectedFrameNum}. The comparison below uses persisted ROI records.`;
     } catch (err) {
+      if (!isCurrent()) return;
       error = err instanceof Error ? err.message : String(err);
     } finally {
       refining = false;
@@ -4033,7 +4089,7 @@
       <button type="button" on:click={refineCurrentDetections} disabled={frameCount < 1 || detections.length < 1 || refining}>
         {refining ? 'Applying refinement' : 'Apply selected refinement to current ROIs'}
       </button>
-      <button class="ghost" type="button" on:click={loadDetections} disabled={frameCount < 1 || refining}>Refresh persisted results</button>
+      <button class="ghost" type="button" on:click={refreshRoiComparison} disabled={frameCount < 1 || refining}>Refresh persisted results</button>
       {#if detections.length < 1}<p class="soft">Refresh candidate ROIs before applying refinement.</p>{/if}
      </div>
     {/if}

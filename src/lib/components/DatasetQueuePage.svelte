@@ -1203,7 +1203,7 @@
 
   async function queueJobs(retry = false) {
     const client = getClient();
-    if (!client) return;
+    if (!client || queueing) return;
     queueing = true;
     message = null;
     error = null;
@@ -1219,9 +1219,10 @@
     const sessionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
     const sequence = ++submissionSequence;
     const current = () => sequence === submissionSequence && sessionIdentity === `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
-    const submissionRequest = prepareSubmission('queue', processingQueueRequest(), retry ? retrySubmission : null);
-    persistRetrySubmission(submissionScope, 'queue', submissionRequest);
+    let submissionRequest: ReturnType<typeof prepareSubmission<ProcessingQueueRequest>> | null = null;
     try {
+      submissionRequest = prepareSubmission('queue', processingQueueRequest(), retry ? retrySubmission : null);
+      persistRetrySubmission(submissionScope, 'queue', submissionRequest);
       const submission = await client.submitProcessing(submissionRequest);
       if (!current()) return;
       retrySubmission = null;
@@ -1232,6 +1233,10 @@
       void processingSubmissions.refresh(true);
     } catch (err) {
       if (!current()) return;
+      if (!submissionRequest) {
+        error = `Unable to prepare the processing request: ${err instanceof Error ? err.message : String(err)}`;
+        return;
+      }
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         clearRetrySubmission(submissionScope, 'queue');
         retrySubmission = null;

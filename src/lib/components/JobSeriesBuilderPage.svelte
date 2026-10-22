@@ -234,8 +234,7 @@
   async function submit(retry = false) {
     const client = getClient();
     if (!client || submitting || (retry ? !retrySubmission : !canQueue())) return;
-    const request = retry ? retrySubmission?.request ?? buildRequest() : buildRequest();
-    const submissionRequest = prepareSubmission('series', request, retry ? retrySubmission : null);
+    let submissionRequest: ReturnType<typeof prepareSubmission<JobSeriesRequest>> | null = null;
     const sessionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
     const sequence = ++submissionSequence;
     const current = () => sequence === submissionSequence && sessionIdentity === `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
@@ -243,6 +242,7 @@
     error = null;
     message = null;
     try {
+      const request = retry ? retrySubmission?.request ?? buildRequest() : buildRequest();
       if (dryRun && !retry) {
         const response = await client.submitJobSeries(request);
         if (!current()) return;
@@ -250,6 +250,7 @@
         message = 'Dry run completed. No jobs were submitted.';
         return;
       }
+      submissionRequest = prepareSubmission('series', request, retry ? retrySubmission : null);
       persistRetrySubmission(submissionScope, 'series', submissionRequest);
       const submission = await client.submitProcessing(submissionRequest);
       if (!current()) return;
@@ -272,6 +273,10 @@
       }
     } catch (err) {
       if (!current()) return;
+      if (!submissionRequest) {
+        error = `Unable to submit the series request: ${errorMessage(err)}`;
+        return;
+      }
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         clearRetrySubmission(submissionScope, 'series');
         retrySubmission = null;

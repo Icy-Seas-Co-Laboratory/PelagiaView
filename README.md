@@ -164,6 +164,10 @@ work; submitted-batch views include completed jobs in their explicit job scope.
 Different stages and work units have separate progress displays. Stored frame
 coverage, logs, and export artifact metadata retain their dedicated APIs.
 
+Submission IDs use browser cryptographic randomness on both HTTP and HTTPS
+origins. Request-preparation failures display an error and release the submit
+button; retries preserve the original request ID and criteria.
+
 Criteria-based processing submissions use the same session/project safeguards as
 queue snapshots. System status polls the 50 most recent submissions every 2.5
 seconds while any request is accepted or planning, then every 15 seconds while
