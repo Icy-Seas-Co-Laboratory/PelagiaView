@@ -3,6 +3,7 @@
   import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import { projectPreferenceKey, readPreferences, writePreferences } from '$lib/utils/preferences';
   import type { CurationRoi, FeatureSpaceCluster, FeatureSpaceRoi, FeatureSpaceSimilarityResult, FeatureSpaceSource, FeatureSpaceUmapResult, FeatureSpaceUmapRoi, Job } from '$lib/api/types';
 
@@ -42,7 +43,9 @@
   let analysisJob: Job | null = null;
   let analysisDisposition: string | null = null;
   let analysisEphemeral = false;
-  let analysisPollTimer: number | null = null;
+  let stopAnalysisWatch: (() => void) | null = null;
+  let analysisStatusError: string | null = null;
+  let analysisStale = false;
   let analysisRequestKey = '';
   let loadedAnalysisKey = '';
   let analysisRequestSerial = 0;
@@ -90,7 +93,7 @@
   });
 
   onDestroy(() => {
-    stopAnalysisPolling();
+    invalidateAnalysisRequest();
   });
 
   async function loadSources() {
@@ -260,8 +263,8 @@
   }
 
   function applyAnalysisJob(job: Job, requestKey: string, requestSerial: number) {
-    stopAnalysisPolling();
     if (requestSerial !== analysisRequestSerial || requestKey !== analysisRequestKey) return;
+    stopAnalysisPolling();
     if (job.status !== 'succeeded') {
       pca = null;
       error = job.error_message || 'Feature-space analysis did not complete.';
@@ -278,28 +281,37 @@
 
   function startAnalysisPolling(jobId: string, requestKey: string, requestSerial: number) {
     stopAnalysisPolling();
-    analysisPollTimer = window.setInterval(() => void pollAnalysisJob(jobId, requestKey, requestSerial), 750);
-    void pollAnalysisJob(jobId, requestKey, requestSerial);
+    const client = getClient();
+    let loadingResult = false;
+    stopAnalysisWatch = queueStatus({ ids: [jobId], job_limit: 1 }).subscribe((state) => {
+      if (requestSerial !== analysisRequestSerial || requestKey !== analysisRequestKey) return;
+      analysisStatusError = state.error;
+      analysisStale = state.stale;
+      analysisJob = state.snapshot?.jobs.items.find((job) => job.id === jobId) ?? null;
+      if (!analysisJob || state.stale || loadingResult || !isTerminalAnalysisJob(analysisJob)) return;
+      if (analysisJob.status !== 'succeeded') {
+        applyAnalysisJob(analysisJob, requestKey, requestSerial);
+        return;
+      }
+      // Snapshot rows intentionally omit potentially large scientific results.
+      // Retrieve that payload once the authoritative lifecycle is successful.
+      if (!client) return;
+      loadingResult = true;
+      void client.getJob(jobId).then((detail) => {
+        if (getClient() !== client || requestSerial !== analysisRequestSerial) return;
+        analysisJob = detail;
+        applyAnalysisJob(detail, requestKey, requestSerial);
+      }).catch((cause) => {
+        if (getClient() !== client || requestSerial !== analysisRequestSerial) return;
+        error = message(cause);
+        stopAnalysisPolling();
+      });
+    });
   }
 
   function stopAnalysisPolling() {
-    if (analysisPollTimer !== null) window.clearInterval(analysisPollTimer);
-    analysisPollTimer = null;
-  }
-
-  async function pollAnalysisJob(jobId: string, requestKey: string, requestSerial: number) {
-    const client = getClient();
-    if (!client || requestSerial !== analysisRequestSerial) return;
-    try {
-      const job = await client.getJob(jobId);
-      if (requestSerial !== analysisRequestSerial) return;
-      analysisJob = job;
-      if (isTerminalAnalysisJob(job)) applyAnalysisJob(job, requestKey, requestSerial);
-    } catch (cause) {
-      if (requestSerial !== analysisRequestSerial) return;
-      stopAnalysisPolling();
-      error = message(cause);
-    }
+    stopAnalysisWatch?.();
+    stopAnalysisWatch = null;
   }
 
   function invalidateAnalysisRequest() {
@@ -308,6 +320,8 @@
     analysisJob = null;
     analysisDisposition = null;
     analysisEphemeral = false;
+    analysisStatusError = null;
+    analysisStale = false;
     stopAnalysisPolling();
   }
 
@@ -741,6 +755,7 @@
             {#if analysisEphemeral} · temporary cache{/if}
           </p>
         {/if}
+        {#if analysisStale || analysisStatusError}<p class="analysis-status" role="status">{analysisStatusError || 'Analysis status updates are delayed.'}{analysisStale ? ' Showing the last received status.' : ''}</p>{/if}
         <button class="refresh analysis-recompute" on:click={recomputeHdbscan} disabled={loading || Boolean(analysisJob && !isTerminalAnalysisJob(analysisJob))}>Recompute analysis</button>
       </section>
     {/if}

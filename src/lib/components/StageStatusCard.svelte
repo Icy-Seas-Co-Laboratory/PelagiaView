@@ -1,7 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getClient } from '$lib/stores/session';
-  import type { JobsSummaryResponse } from '$lib/api/types';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import { formatCount, formatPercent, numericValue, statusTone } from '$lib/utils/format';
 
   export let title: string;
@@ -9,19 +7,20 @@
   export let detail = '';
   export let stage: string;
   export let href = '';
-  export let poll = true;
   export let clearing = false;
   export let onClearQueue: ((stage: string) => Promise<number | void> | number | void) | null = null;
 
-  let summary: JobsSummaryResponse | null = null;
-  let loading = true;
-  let error: string | null = null;
+  const status = queueStatus();
+  $: snapshot = $status.snapshot;
+  $: summary = snapshot ? { total: snapshot.by_stage.find((row) => row.stage === stage), by_stage: snapshot.by_stage, recent_jobs: snapshot.jobs.items.filter((job) => job.stage === stage) } : null;
+  $: loading = $status.loading || $status.refreshing;
+  $: error = $status.error;
   let localClearing = false;
   let clearedCount: number | null = null;
-  let cancelled = false;
 
   $: total = summary?.total;
-  $: progress = total?.progress;
+  $: groups = snapshot?.work_groups.filter((group) => group.stage === stage) ?? [];
+  $: progress = groups.length === 1 ? groups[0].active_progress : null;
   $: percent = numericValue(progress?.percent);
   $: progressWidth = `${Math.max(0, Math.min(100, percent ?? 0))}%`;
   $: queued = numericValue(total?.queued) ?? 0;
@@ -33,25 +32,6 @@
   $: tone = failed > 0 ? 'bad' : running > 0 || queued > 0 || paused > 0 ? 'warn' : 'good';
   $: isClearing = clearing || localClearing;
 
-  async function load() {
-    const client = getClient();
-    if (!client) return;
-    loading = true;
-    error = null;
-    try {
-      const nextSummary = await client.jobsSummary({
-        stage,
-        include_recent: true,
-        recent_limit: 3
-      });
-      if (!cancelled) summary = nextSummary;
-    } catch (err) {
-      if (!cancelled) error = err instanceof Error ? err.message : String(err);
-    } finally {
-      if (!cancelled) loading = false;
-    }
-  }
-
   async function clearQueue() {
     if (!onClearQueue || isClearing || queueCount <= 0) return;
     localClearing = true;
@@ -59,7 +39,7 @@
     clearedCount = null;
     try {
       const result = await onClearQueue(stage);
-      await load();
+      await status.refresh(true);
       clearedCount = typeof result === 'number' ? result : null;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -68,16 +48,6 @@
     }
   }
 
-  onMount(() => {
-    cancelled = false;
-    void load();
-    if (!poll) return;
-    const timer = window.setInterval(load, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  });
 </script>
 
 <section class="panel stage-status-card">
@@ -114,7 +84,7 @@
     <div class="stage-progress-track" aria-label={`${title} progress`}>
       <span style={`width: ${progressWidth}`}></span>
     </div>
-    <strong>{formatPercent(progress?.percent)}</strong>
+    <strong>{percent === null ? '—' : formatPercent(percent)}</strong>
   </div>
 
   <div class="stage-card-foot">
@@ -122,8 +92,12 @@
       <span class="form-error">{error}</span>
     {:else if clearedCount !== null}
       <span class="soft" role="status">Cleared {clearedCount} job{clearedCount === 1 ? '' : 's'}</span>
+    {:else if $status.stale}
+      <span class="soft">Status is stale</span>
     {:else if loading}
       <span class="soft">Refreshing</span>
+    {:else if groups.length > 1}
+      <span class="soft">Multiple work units; progress shown per unit in status.</span>
     {:else if recent}
       <span><span class="status-dot {statusTone(recent.status)}"></span>{recent.status ?? 'unknown'} · {recent.summary ?? recent.id}</span>
     {:else}

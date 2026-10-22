@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import { getClient } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import type { AssetProcessingState, CollectionSummary, Job, RawAsset } from '$lib/api/types';
   import { formatBytes, formatCount, formatDate, numericValue } from '$lib/utils/format';
 
@@ -21,6 +22,10 @@
   type BulkCollectionMode = 'add' | 'replace' | 'remove';
 
   let rows: AssetRow[] = [];
+  const queue = queueStatus();
+  $: ingestionJobs = ($queue.snapshot?.jobs.items ?? []).filter((job) => ['extract_frames', 'ingest_run'].includes(job.stage ?? ''));
+  $: jobsByAsset = latestJobsByAsset(ingestionJobs);
+  $: statusRows = rows.map((row) => ({ ...row, job: jobsByAsset.get(row.asset.id) ?? null }));
   let collections: CollectionSummary[] = [];
   let searchText = '';
   let collectionFilter = '';
@@ -46,8 +51,10 @@
   $: totalAssets = rows.length;
   $: totalFrames = rows.reduce((total, row) => total + rowFrameCount(row), 0);
   $: totalRois = rows.reduce((total, row) => total + rowDetectionCount(row), 0);
-  $: activeIngestionCount = rows.filter((row) => row.job && activeJobStatuses.has(normalizedStatus(row.job.status))).length;
-  $: filteredRows = sortRows(filterRows(rows));
+  $: activeIngestionCount = ($queue.snapshot?.by_stage ?? [])
+    .filter((item) => ['extract_frames', 'ingest_run'].includes(item.stage ?? ''))
+    .reduce((count, item) => count + Number(item.queued ?? 0) + Number(item.leased ?? 0) + Number(item.working ?? 0) + Number(item.paused ?? 0), 0);
+  $: filteredRows = sortRows(filterRows(statusRows));
   $: visibleSelectedRows = filteredRows.filter((row) => selectedAssetIds.has(row.asset.id));
   $: visibleSelectedCount = visibleSelectedRows.length;
   $: allVisibleSelected = filteredRows.length > 0 && filteredRows.every((row) => selectedAssetIds.has(row.asset.id));
@@ -70,18 +77,10 @@
       message = null;
     }
     try {
-      const [assets, processingState, collectionRows, ingestionJobs] = await Promise.all([
+      const [assets, processingState, collectionRows] = await Promise.all([
         client.listAssets(undefined, assetLimit),
         client.assetProcessingState(undefined, assetLimit).catch(() => ({ assets: [] }) as AssetProcessingState),
-        client.listCollections(500).catch(() => []),
-        client.listJobs({
-          stage: ['extract_frames', 'ingest_run'],
-          status: ['queued', 'leased', 'working', 'running', 'paused'],
-          include_progress: true,
-          limit: 500,
-          sort: 'updated_at',
-          direction: 'desc'
-        }).catch(() => [])
+        client.listCollections(500).catch(() => [])
       ]);
       const processingByAsset = new Map((processingState.assets ?? []).map((row) => [row.asset_id, row]));
       const jobsByAsset = latestJobsByAsset(ingestionJobs);
@@ -91,7 +90,7 @@
         return {
           asset,
           processing,
-          job: jobsByAsset.get(asset.id) ?? existing?.job ?? null,
+          job: jobsByAsset.get(asset.id) ?? null,
           collectionsText: existing?.savingCollections ? existing.collectionsText : (asset.collections ?? []).join(','),
           savingCollections: existing?.savingCollections ?? false,
           deleting: existing?.deleting ?? false
@@ -429,10 +428,12 @@
         <strong>{formatCount(totalRois)}</strong>
       </div>
       <div class="metric metric-compact">
-        <span>Ingesting</span>
-        <strong>{formatCount(activeIngestionCount)}</strong>
+        <span>Active ingestion jobs</span>
+        <strong>{$queue.snapshot ? formatCount(activeIngestionCount) : '—'}</strong>
       </div>
     </div>
+    {#if $queue.stale || $queue.error}<p class="form-error" role="status">{$queue.error ?? 'Queue updates delayed.'}{$queue.stale ? ' Showing the last received status.' : ''}</p>{/if}
+    {#if $queue.snapshot?.jobs.truncated}<p class="soft">Queue totals include all jobs. Live job details are limited to {$queue.snapshot.jobs.limit} jobs; asset processing stages also describe stored-data coverage.</p>{/if}
     <div class="button-row assets-toolbar">
       <button class="ghost compact-action" type="button" on:click={() => loadAssets()} disabled={loading}>
         {loading ? 'Refreshing' : 'Refresh'}

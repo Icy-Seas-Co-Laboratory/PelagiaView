@@ -138,13 +138,11 @@ If the browser reports `Failed to fetch` while the backend is running:
 
 The app is organized around workflow and system pages:
 
-- `Status`: polls `/system/status`, `/jobs`, `/jobs/summary`, `/workers`, and `/kvstore`; supports job pause, resume, retry, and worker shutdown where backend endpoints exist.
+- `Status`: shares `/jobs/status` snapshots with the other queue widgets, shows durable processing-submission planning after navigation or reload, and separately polls `/system/status`, `/workers`, and `/kvstore`; supports job pause, resume, retry, and worker shutdown where backend endpoints exist.
 - `Ingestion`: browses server-side files through `GET /live/files`, recursively analyzes selected paths for interchange datasets, videos, and image-sequence folders, and queues the reviewed assets through one workflow. Each enabled asset requires an explicit light or dark background choice; the choice can be applied to all assets. Light backgrounds are inverted during preprocessing, while source pixels remain unchanged. Shared options cover area/line scan field generation, correction windows, and multi-frame tiling.
 - `Telemetry`: analyzes server-side CSV sensor files through `POST /telemetry/analyze`, maps columns to the controlled unit vocabulary, previews values, and queues imports through `POST /runs/{run_id}/telemetry/import`.
 - `Exports`: creates asynchronous, project-scoped reproducible bundles through `/exports`. Curation can pre-scope ROI products to its selected ROIs or supported review filters, and Telemetry can pre-scope an archive to its selected run.
-- `Preprocessing`: filters frames through `/frames/processing-state` and queues preprocessing batches through `POST /frame/preprocess/jobs`.
-- `Segmentation`: filters frames and queues candidate ROI generation through `POST /segmentation/jobs`.
-- `ROI Refinement`: filters frames/ROIs and queues refinement work through `POST /roi-refinement/jobs`.
+- `Preprocessing`, `Segmentation`, and `ROI Refinement`: save selected assets, collection tags, state gates, and ranges through `POST /processing/submissions`. The server accepts the criteria immediately, plans the matching work asynchronously, and retains the request for System status monitoring. Retrying an ambiguous submission reuses its request ID, so it cannot create a duplicate request.
 - `Explorer`: previews frames from video, image, image sequence, and interchange assets; runs live preprocessing/segmentation/refinement and displays overlays.
 - `ROI Browser`: browses candidate or refined ROIs with filters, sorting, image overlays, masks, and frame context.
 - `Event Log`: merges `/logs` and `/jobs/events`, with filters for source, level, event type, stage, status, run, job, and worker.
@@ -155,6 +153,23 @@ PelagiaView keeps all backend communication in `src/lib/api/client.ts`. Session 
 
 The client uses short-lived caching for frequently refreshed reads so tab navigation stays responsive without hiding backend changes for long. Mutating calls clear the API client cache.
 
+Queue displays subscribe to `src/lib/stores/queueStatus.ts`. Equivalent scopes
+share one snapshot and poller: every 2.5 seconds for active work, 12 seconds when
+idle, or 30 seconds in a hidden tab. Mutations request an immediate refresh.
+The server supplies counts, percentages, rates, and ETA; components only format
+them. Unknown estimates remain unavailable, and failed refreshes mark the last
+snapshot stale. Switching project or authentication clears the old snapshot and
+rejects outstanding responses from the previous session. Stage views show active
+work; submitted-batch views include completed jobs in their explicit job scope.
+Different stages and work units have separate progress displays. Stored frame
+coverage, logs, and export artifact metadata retain their dedicated APIs.
+
+Criteria-based processing submissions use the same session/project safeguards as
+queue snapshots. System status polls the 50 most recent submissions every 2.5
+seconds while any request is accepted or planning, then every 15 seconds while
+visible (30 seconds in a hidden tab). A successful planning pass refreshes the
+authoritative queue snapshot once jobs materialize.
+
 Current backend endpoints used by the UI:
 
 ```text
@@ -163,7 +178,7 @@ GET  /system/status
 GET  /system/use
 GET  /system/config
 GET  /jobs
-GET  /jobs/summary
+GET  /jobs/status
 GET  /jobs/events
 POST /jobs/{job_id}/pause
 POST /jobs/{job_id}/resume
@@ -221,6 +236,8 @@ src/
 
 ## Development Notes
 
+- Validate queue polling and session isolation with `npm run test:queue-status`;
+  run `npm run check` and `npm run build` for Svelte and production validation.
 - Keep new backend calls inside `src/lib/api/client.ts`.
 - Keep page components focused on workflow state and rendering.
 - Prefer adding typed response shapes in `src/lib/api/types.ts` as backend contracts stabilize.

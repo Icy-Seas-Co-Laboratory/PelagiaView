@@ -1,46 +1,26 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getClient } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import type { Job, WorkerSession } from '$lib/api/types';
   import { formatDate, formatRelativeTime, statusTone } from '$lib/utils/format';
 
   export let workers: WorkerSession[] = [];
-  export let poll = true;
   export let limit = 15;
   export let clearing = false;
   export let onClearReview: (() => Promise<void> | void) | null = null;
 
-  let jobs: Job[] = [];
-  let loading = true;
-  let error: string | null = null;
+  const status = queueStatus();
+  $: jobs = [...($status.snapshot?.recent_failures ?? []), ...($status.snapshot?.jobs.items ?? []).filter((job) => job.status === 'paused')]
+    .filter((job, index, rows) => rows.findIndex((row) => row.id === job.id) === index).slice(0, limit);
+  $: loading = $status.loading || $status.refreshing;
+  $: error = $status.error;
+  $: failureCount = $status.snapshot?.recent_failures.length ?? 0;
+  $: failuresTruncated = Boolean($status.snapshot?.jobs.truncated) || failureCount >= limit;
   let localClearing = false;
-  let cancelled = false;
   const staleWorkerThresholdMs = 5 * 60 * 1000;
 
   $: staleWorkers = workers.filter(isWorkerStale);
   $: hasAttention = jobs.length > 0 || staleWorkers.length > 0;
   $: isClearing = clearing || localClearing;
-
-  async function load() {
-    const client = getClient();
-    if (!client) return;
-    loading = true;
-    error = null;
-    try {
-      const nextJobs = await client.listJobs({
-        status: ['failed', 'dead_lettered', 'paused'],
-        include_progress: true,
-        limit,
-        sort: 'updated_at',
-        direction: 'desc'
-      });
-      if (!cancelled) jobs = nextJobs;
-    } catch (err) {
-      if (!cancelled) error = err instanceof Error ? err.message : String(err);
-    } finally {
-      if (!cancelled) loading = false;
-    }
-  }
 
   async function clearReview() {
     if (!onClearReview || isClearing || jobs.length <= 0) return;
@@ -48,7 +28,7 @@
     error = null;
     try {
       await onClearReview();
-      await load();
+      await status.refresh(true);
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -56,16 +36,6 @@
     }
   }
 
-  onMount(() => {
-    cancelled = false;
-    void load();
-    if (!poll) return;
-    const timer = window.setInterval(load, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  });
 
   function workerLabel(worker: WorkerSession): string {
     return worker.worker_id ?? worker.id ?? 'unknown';
@@ -98,6 +68,8 @@
 
   {#if error}
     <p class="form-error">{error}</p>
+  {:else if $status.stale}
+    <p class="soft">Showing the last snapshot; status is stale.</p>
   {:else if hasAttention}
     <div class="attention-list">
       {#each jobs as job}
@@ -121,6 +93,7 @@
         </article>
       {/each}
     </div>
+    {#if failuresTruncated}<p class="soft">The attention list is bounded; open Status for the full queue.</p>{/if}
   {:else}
     <p class="empty">Nothing needs attention right now.</p>
   {/if}

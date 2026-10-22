@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import type { Job, JobEvent, LogEntry } from '$lib/api/types';
   import { getClient } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import { formatDate, formatRelativeTime } from '$lib/utils/format';
 
   const DEAD_LETTER = 'dead_lettered';
@@ -9,15 +9,25 @@
   let selected: Job | null = null;
   let events: JobEvent[] = [];
   let logs: LogEntry[] = [];
-  let loading = true;
   let loadingDetail = false;
-  let refreshing = false;
   let error: string | null = null;
   let notice: string | null = null;
   let category = '';
   let query = '';
   let replayReason = '';
   let replaying = false;
+  const status = queueStatus({ status: DEAD_LETTER, job_limit: 250, recent_failure_limit: 0 });
+  $: loading = !$status.snapshot && !$status.error;
+  $: refreshing = $status.refreshing;
+  $: {
+    jobs = $status.snapshot?.jobs.items ?? [];
+    if (!$status.snapshot) { selected = null; events = []; logs = []; }
+    else if (selected) {
+      const refreshed = jobs.find((job) => job.id === selected?.id);
+      selected = refreshed ? { ...selected, ...refreshed } : null;
+      if (!selected) { events = []; logs = []; }
+    }
+  }
 
   $: categories = [...new Set(jobs.map((job) => job.failure_category).filter((value): value is string => Boolean(value)))].sort();
   $: visibleJobs = jobs.filter((job) => {
@@ -25,20 +35,9 @@
     return (!category || job.failure_category === category) && (!query.trim() || text.includes(query.trim().toLowerCase()));
   });
 
-  onMount(() => { void refresh(); });
-
   async function refresh() {
-    const client = getClient(); if (!client) return;
-    refreshing = true; error = null;
-    try {
-      jobs = await client.listJobs({ status: DEAD_LETTER, limit: 250, include_details: true, include_progress: true, sort: 'updated_at', direction: 'desc' });
-      if (selected) {
-        const refreshed = jobs.find((job) => job.id === selected?.id);
-        if (!refreshed) { selected = null; events = []; logs = []; }
-        else selected = refreshed;
-      }
-    } catch (cause) { error = message(cause); }
-    finally { loading = false; refreshing = false; }
+    error = null;
+    await status.refresh(true);
   }
 
   async function choose(job: Job) {
@@ -79,6 +78,9 @@
     <button class="ghost" type="button" on:click={refresh} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
   </header>
   {#if error}<p class="form-error" role="alert">{error}</p>{/if}
+  {#if $status.error}<p class="form-error" role="alert">{$status.error}</p>{/if}
+  {#if $status.stale}<p class="soft" role="status">Showing the last received queue snapshot; updates are delayed.</p>{/if}
+  {#if $status.snapshot?.jobs.truncated}<p class="soft">Showing {jobs.length} of {$status.snapshot.jobs.matching_count} dead-lettered jobs. Search and category filters apply to these displayed rows.</p>{/if}
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
   <div class="filters" aria-label="Dead letter filters">
     <label>Failure category<select bind:value={category}><option value="">All categories</option>{#each categories as item}<option value={item}>{item}</option>{/each}</select></label>

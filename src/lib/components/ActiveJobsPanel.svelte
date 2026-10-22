@@ -1,50 +1,22 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getClient } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import type { Job } from '$lib/api/types';
   import { formatCount, formatDate, formatPercent, numericValue, statusTone } from '$lib/utils/format';
   import { jobStatusCategory, jobStatusLabel, runningJobStatuses } from '$lib/utils/jobStatus';
 
   export let title = 'Now running';
-  export let poll = true;
   export let limit = 12;
 
-  let jobs: Job[] = [];
-  let loading = true;
-  let error: string | null = null;
+  // Select from the default project snapshot so adjacent widgets agree atomically.
+  const status = queueStatus();
+  $: jobs = ($status.snapshot?.jobs.items ?? []).filter((job) => ['leased', 'working'].includes(job.status ?? '')).slice(0, limit);
+  $: loading = $status.loading || $status.refreshing;
+  $: error = $status.error;
+  $: matchingCount = $status.snapshot?.jobs.matching_count ?? 0;
+  $: truncated = Boolean($status.snapshot?.jobs.truncated) || matchingCount > jobs.length;
 
   $: sortedJobs = [...jobs].sort((a, b) => statusRank(a) - statusRank(b) || dateValue(b.updated_at ?? b.created_at) - dateValue(a.updated_at ?? a.created_at));
 
-  onMount(() => {
-    let cancelled = false;
-    async function load() {
-      const client = getClient();
-      if (!client) return;
-      loading = true;
-      error = null;
-      try {
-        const nextJobs = await client.listJobs({
-          status: [...runningJobStatuses],
-          include_progress: true,
-          limit,
-          sort: 'updated_at',
-          direction: 'desc'
-        });
-        if (!cancelled) jobs = nextJobs;
-      } catch (err) {
-        if (!cancelled) error = err instanceof Error ? err.message : String(err);
-      } finally {
-        if (!cancelled) loading = false;
-      }
-    }
-    void load();
-    if (!poll) return;
-    const timer = window.setInterval(load, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  });
 
   function statusRank(job: Job): number {
     return jobStatusCategory(job) === 'running' ? 0 : 1;
@@ -82,6 +54,8 @@
 
   {#if error}
     <p class="form-error">{error}</p>
+  {:else if $status.stale}
+    <p class="soft">Showing the last snapshot; status is stale.</p>
   {:else if sortedJobs.length}
     <div class="active-job-list">
       {#each sortedJobs as job}
@@ -106,6 +80,7 @@
         </article>
       {/each}
     </div>
+    {#if truncated}<p class="soft">Showing {formatCount(sortedJobs.length)} of {formatCount(matchingCount)} active jobs.</p>{/if}
   {:else}
     <p class="empty">No jobs are running right now.</p>
   {/if}

@@ -2,7 +2,11 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { getClient } from '$lib/stores/session';
+  import { getClient, session } from '$lib/stores/session';
+  import { processingSubmissions } from '$lib/stores/processingSubmissions';
+  import { ApiError } from '$lib/api/client';
+  import { clearRetrySubmission, persistRetrySubmission, prepareSubmission, restoreRetrySubmission, type RetryableSubmission } from '$lib/processing/submissionRequest';
+  import ProcessingSubmissionStatus from '$lib/components/ProcessingSubmissionStatus.svelte';
   import { processingPresetSession } from '$lib/stores/processingPresetSession';
   import { listProcessingPresets } from '$lib/api/processingPresets';
   import type {
@@ -46,6 +50,11 @@
   let message: string | null = null;
   let eligibilityRequestKey: string | null = null;
   let submitConfirmed = false;
+  let retrySubmission: RetryableSubmission<JobSeriesRequest> | null = null;
+  let submittedSubmissionId: string | null = null;
+  let lastSubmissionScope = '';
+  let submissionSequence = 0;
+  let lastSubmissionIdentity = '';
 
   // A series stores its own immutable settings snapshot. The active browser
   // session is therefore a valid default even if saved presets cannot load.
@@ -79,7 +88,24 @@
     failurePolicy
   });
   $: hasCurrentEligibility = Boolean(eligibility && eligibilityRequestKey === requestKey);
-  $: queueReady = configurationReady && (dryRun || (hasCurrentEligibility && submitConfirmed));
+  $: submissionScope = `${$session.baseUrl}:${$session.project?.id ?? $session.project?.project_key ?? ''}:${$session.user?.id ?? ''}`;
+  $: submissionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+  $: if (submissionIdentity !== lastSubmissionIdentity) {
+    lastSubmissionIdentity = submissionIdentity;
+    submissionSequence += 1;
+    submitting = false;
+  }
+  $: activeSubmission = submittedSubmissionId ? $processingSubmissions.submissions.find((item) => item.id === submittedSubmissionId) ?? null : null;
+  $: activeSeriesId = activeSubmission?.kind === 'series' && activeSubmission.result && 'series' in activeSubmission.result ? activeSubmission.result.series?.id ?? null : null;
+  $: activeSeriesHref = activeSeriesId ? (() => { const url = new URL(dashboardViewHref('job_series_monitor', $page.url), $page.url.origin); url.searchParams.set('series', activeSeriesId); return `${url.pathname}${url.search}${url.hash}`; })() : null;
+  $: if (submissionScope !== lastSubmissionScope) {
+    submissionSequence += 1;
+    submitting = false;
+    lastSubmissionScope = submissionScope;
+    retrySubmission = null;
+    submittedSubmissionId = null;
+  }
+  $: queueReady = configurationReady && (dryRun || submitConfirmed);
   $: validationIssues = [
     !hasExplicitTarget ? 'Choose a source scope.' : null,
     !selectedPreset ? 'Choose the processing preset to freeze.' : null,
@@ -89,6 +115,7 @@
 
   onMount(() => {
     selectedPresetKey = preferredPresetKey();
+    retrySubmission = restoreRetrySubmission<JobSeriesRequest>(submissionScope, 'series');
     void loadBuilderData();
   });
 
@@ -204,29 +231,57 @@
     }
   }
 
-  async function submit() {
+  async function submit(retry = false) {
     const client = getClient();
-    if (!client || submitting || !canQueue()) return;
-    const request = buildRequest();
+    if (!client || submitting || (retry ? !retrySubmission : !canQueue())) return;
+    const request = retry ? retrySubmission?.request ?? buildRequest() : buildRequest();
+    const submissionRequest = prepareSubmission('series', request, retry ? retrySubmission : null);
+    const sessionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+    const sequence = ++submissionSequence;
+    const current = () => sequence === submissionSequence && sessionIdentity === `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
     submitting = true;
     error = null;
     message = null;
     try {
-      const response = await client.submitJobSeries(request);
-      eligibility = response.eligibility ?? eligibility;
-      if (response.dry_run || dryRun) {
+      if (dryRun && !retry) {
+        const response = await client.submitJobSeries(request);
+        if (!current()) return;
+        eligibility = response.eligibility ?? eligibility;
         message = 'Dry run completed. No jobs were submitted.';
-      } else if (response.series?.id) {
+        return;
+      }
+      persistRetrySubmission(submissionScope, 'series', submissionRequest);
+      const submission = await client.submitProcessing(submissionRequest);
+      if (!current()) return;
+      retrySubmission = null;
+      clearRetrySubmission(submissionScope, 'series');
+      submittedSubmissionId = submission.id;
+      processingSubmissions.observe(submission);
+      void processingSubmissions.refresh(true);
+      const series = submission.status === 'succeeded' && submission.result && 'series' in submission.result
+        ? submission.result.series
+        : null;
+      if (series?.id) {
         const monitorUrl = new URL(dashboardViewHref('job_series_monitor', $page.url), $page.url.origin);
-        monitorUrl.searchParams.set('series', response.series.id);
+        monitorUrl.searchParams.set('series', series.id);
         await goto(`${monitorUrl.pathname}${monitorUrl.search}${monitorUrl.hash}`);
+      } else if (submission.status === 'failed') {
+        error = submission.error ?? 'The server rejected this series request.';
       } else {
-        message = 'Series submitted. Open Series Monitor to follow its progress.';
+        message = 'Series request accepted and is being planned.';
       }
     } catch (err) {
-      error = errorMessage(err);
+      if (!current()) return;
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        clearRetrySubmission(submissionScope, 'series');
+        retrySubmission = null;
+        error = `The server rejected this series request: ${errorMessage(err)}`;
+      } else {
+        retrySubmission = submissionRequest;
+        error = `The submission outcome is unknown: ${errorMessage(err)}. Retry uses the same request safely.`;
+      }
     } finally {
-      submitting = false;
+      if (current()) submitting = false;
     }
   }
 
@@ -376,15 +431,15 @@
         </div>
         <p class="soft">Failed work is not retried automatically. You can retry failed work from the monitor after reviewing its error.</p>
         <label class="checkbox policy-toggle"><input type="checkbox" bind:checked={dryRun} /><span><strong>Dry run</strong><small>Validate and plan without submitting jobs.</small></span></label>
-        {#if !dryRun && hasCurrentEligibility}
+        {#if !dryRun}
           <label class="checkbox confirmation-toggle"><input type="checkbox" bind:checked={submitConfirmed} /><span><strong>I reviewed this eligibility check</strong><small>The selected preset and source scope will be recorded with the series.</small></span></label>
-        {:else if !dryRun}
-          <p class="callout">Check eligibility after your final edits before submitting. Changing the source, preset, stages, or policy makes a previous check stale.</p>
         {/if}
+        <p class="callout">Eligibility checks are optional. Durable server-side planning evaluates the final saved criteria; confirm this submission to continue.</p>
         {#if validationIssues.length}
           <p class="soft readiness-copy">Complete the required steps above to continue.</p>
         {/if}
-        <div class="submit-actions"><button class="ghost" type="button" on:click={preview} disabled={previewing || submitting || !configurationReady}>{previewing ? 'Checking…' : 'Check eligibility'}</button><button type="button" on:click={submit} disabled={submitting || previewing || !queueReady}>{submitting ? 'Submitting…' : dryRun ? 'Run dry check' : 'Submit & monitor'}</button></div>
+        <div class="submit-actions"><button class="ghost" type="button" on:click={preview} disabled={previewing || submitting || !configurationReady}>{previewing ? 'Checking…' : 'Check eligibility'}</button><button type="button" on:click={() => submit(false)} disabled={submitting || previewing || !queueReady}>{submitting ? 'Submitting…' : dryRun ? 'Run dry check' : 'Submit & monitor'}</button>{#if retrySubmission}<button class="ghost" type="button" on:click={() => submit(true)} disabled={submitting}>Retry submission</button>{/if}</div>
+        {#if activeSubmission}<ProcessingSubmissionStatus submission={activeSubmission} seriesHref={activeSeriesHref} />{/if}
         {#if eligibility}
           <div class="eligibility" aria-live="polite">
             <div class="eligibility-head"><h3>Eligibility</h3><span class="status-pill">Ready to review</span></div>

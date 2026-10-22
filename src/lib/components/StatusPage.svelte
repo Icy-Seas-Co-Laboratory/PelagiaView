@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
   import { getClient, session } from '$lib/stores/session';
+  import { invalidateQueueStatus, queueStatus } from '$lib/stores/queueStatus';
+  import { processingSubmissions } from '$lib/stores/processingSubmissions';
   import { startSystemUsagePolling, systemUsageState } from '$lib/stores/systemUsage';
   import type {
     Job,
@@ -11,6 +14,8 @@
     WorkerSession
   } from '$lib/api/types';
   import { formatBytes, formatCount, formatDate, numericValue } from '$lib/utils/format';
+  import ProcessingSubmissionStatus from '$lib/components/ProcessingSubmissionStatus.svelte';
+  import { dashboardViewHref } from '$lib/utils/dashboardNavigation';
 
   type StageDefinition = {
     stage: string;
@@ -33,6 +38,7 @@
   const staleWorkerThresholdMs = 5 * 60 * 1000;
 
   let status: SystemStatus | null = $session.systemStatus;
+  const queue = queueStatus();
   let summary: JobsSummaryResponse | null = null;
   let attentionSummary: JobsSummaryResponse | null = null;
   let activeJobs: Job[] = [];
@@ -46,6 +52,22 @@
   let lastRefreshedAt: Date | null = null;
   let refreshSequence = 0;
   let lastProjectKey = '';
+  $: recentSubmissions = $processingSubmissions.submissions;
+
+  // Every queue figure on this page is selected from one server snapshot.
+  $: if ($queue.snapshot) {
+    summary = { total: $queue.snapshot.total, by_stage: $queue.snapshot.by_stage, recent_jobs: $queue.snapshot.jobs.items };
+    attentionSummary = summary;
+    activeJobs = $queue.snapshot.jobs.items.filter((job) => activeStatuses.includes(job.status ?? ''));
+    attentionJobs = $queue.snapshot.recent_failures;
+    lastRefreshedAt = new Date($queue.snapshot.as_of);
+  } else {
+    summary = null;
+    attentionSummary = null;
+    activeJobs = [];
+    attentionJobs = [];
+    lastRefreshedAt = null;
+  }
 
   $: total = summary?.total;
   $: queuedCount = number(total?.queued);
@@ -61,20 +83,18 @@
   $: workerUtilization = onlineWorkers > 0 ? Math.min(100, (busyWorkers / onlineWorkers) * 100) : 0;
   $: queuePressure = pressureLevel(queuedCount, onlineWorkers, workerUtilization);
   $: stageSummaries = new Map((summary?.by_stage ?? []).map((item) => [item.stage ?? '', item]));
+  $: stageGroups = new Map(visibleStages.map((stage) => [stage.stage, $queue.snapshot?.work_groups.filter((group) => group.stage === stage.stage) ?? []]));
   $: stoppedStageSummaries = new Map((attentionSummary?.by_stage ?? []).map((item) => [item.stage ?? '', item]));
   $: visibleStages = [...stages, ...additionalStages(summary, attentionSummary)];
   $: stageRates = visibleStages
-    .map((stage) => ({ ...stage, jobs: activeJobs.filter((job) => job.stage === stage.stage) }))
-    .map((stage) => ({ ...stage, rate: stageRate(stage.jobs) }))
+    .map((stage) => { const groups = stageGroups.get(stage.stage) ?? []; return { ...stage, rate: groups.length === 1 && groups[0].rate?.available !== false ? numericValue(groups[0].rate?.units_per_second) : null }; })
     .filter((stage) => stage.rate !== null);
   $: visibleJobs = [...attentionJobs].sort(compareJobs);
   $: availableWorkers = Math.max(0, onlineWorkers - busyWorkers);
   $: backlogPerWorker = onlineWorkers > 0 ? queuedCount / onlineWorkers : null;
-  $: oldestQueuedSeconds = oldestQueuedAgeSeconds();
-  $: stalledJobCount = activeJobs.filter(isPossiblyStalled).length;
-  $: progressCoverage = activeJobs.length
-    ? activeJobs.filter((job) => numericValue(job.progress?.total) !== null).length / activeJobs.length * 100
-    : 100;
+  $: oldestQueuedSeconds = numericValue($queue.snapshot?.health.oldest_queued_age_seconds);
+  $: stalledJobCount = number($queue.snapshot?.health.stale_active_jobs);
+  $: progressCoverage = numericValue($queue.snapshot?.health.progress_coverage_percent);
   $: projectKey = $session.project?.id ?? $session.project?.project_key ?? '';
   $: if (projectKey !== lastProjectKey) {
     lastProjectKey = projectKey;
@@ -85,7 +105,7 @@
     let cancelled = false;
     const stopUsagePolling = startSystemUsagePolling();
     void refresh({ showLoading: true, cancelled: () => cancelled });
-    const timer = window.setInterval(() => refresh({ cancelled: () => cancelled }), 3000);
+    const timer = window.setInterval(() => refresh({ cancelled: () => cancelled }), 12_000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -100,34 +120,14 @@
     if (options.showLoading || !lastRefreshedAt) loading = true;
     refreshing = true;
     try {
-      const [nextStatus, nextSummary, nextAttentionSummary, nextActive, nextAttention, nextWorkers] = await Promise.all([
+      const [nextStatus, nextWorkers] = await Promise.all([
         client.systemStatus(projectKey || undefined),
-        client.jobsSummary({ status: activeStatuses }),
-        client.jobsSummary({ status: stoppedStatuses }),
-        client.listJobs({
-          status: activeStatuses,
-          limit: 1000,
-          include_progress: true,
-          sort: 'updated_at',
-          direction: 'desc'
-        }),
-        client.listJobs({
-          status: stoppedStatuses,
-          limit: 30,
-          include_progress: true,
-          sort: 'updated_at',
-          direction: 'desc'
-        }),
         client.listWorkers(200)
       ]);
       if (options.cancelled?.() || sequence !== refreshSequence) return;
       status = nextStatus;
-      summary = nextSummary;
-      attentionSummary = nextAttentionSummary;
-      activeJobs = nextActive;
-      attentionJobs = nextAttention;
       workers = nextWorkers;
-      lastRefreshedAt = new Date();
+      await queue.refresh(true);
       actionError = null;
     } catch (error) {
       if (!options.cancelled?.() && sequence === refreshSequence) {
@@ -162,7 +162,7 @@
       actionMessage = count
         ? `${action === 'pause' ? 'Pause applied to' : 'Resumed'} ${count} job${count === 1 ? '' : 's'}${stage ? ` in ${stageLabel(stage)}` : ''}.`
         : `No eligible jobs were available to ${action}.`;
-      await refresh();
+      invalidateQueueStatus(); await refresh();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -188,7 +188,7 @@
       });
       const count = number(result.cancelled_count);
       actionMessage = count ? `Cancelled ${count} job${count === 1 ? '' : 's'}.` : 'No active jobs matched that selection.';
-      await refresh();
+      invalidateQueueStatus(); await refresh();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -204,7 +204,7 @@
     try {
       await client.retryJob(job.id);
       actionMessage = `Queued ${shortId(job.id)} for retry.`;
-      await refresh();
+      invalidateQueueStatus(); await refresh();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -237,7 +237,7 @@
       actionMessage = count
         ? `Cleared ${count} stopped job${count === 1 ? '' : 's'}.`
         : 'No stopped jobs matched that selection.';
-      await refresh();
+      invalidateQueueStatus(); await refresh();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
@@ -325,24 +325,16 @@
 
   function progressPercent(job: Job): number | null {
     const explicit = numericValue(job.progress?.percent);
-    if (explicit !== null) return Math.max(0, Math.min(100, explicit));
-    const total = numericValue(job.progress?.total);
-    const completed = numericValue(job.progress?.completed);
-    return total && completed !== null ? Math.max(0, Math.min(100, completed / total * 100)) : null;
+    return explicit === null ? null : Math.max(0, Math.min(100, explicit));
   }
 
   function summaryPercent(item: JobAggregateSummary): number | null {
-    const value = numericValue(item.progress?.percent);
+    const value = numericValue((item.active_progress ?? item.progress)?.percent);
     return value === null ? null : Math.max(0, Math.min(100, value));
   }
 
   function jobRate(job: Job): number | null {
-    return numericValue(job.progress?.rates?.units_per_second);
-  }
-
-  function stageRate(jobs: Job[]): number | null {
-    const rates = jobs.filter((job) => ['leased', 'working'].includes(job.status ?? '')).map(jobRate).filter((value): value is number => value !== null && value > 0);
-    return rates.length ? rates.reduce((sum, value) => sum + value, 0) : null;
+    return job.progress?.rate?.available === false ? null : numericValue(job.progress?.rate?.units_per_second);
   }
 
   function rateLabel(rate: number | null, unit = 'units'): string {
@@ -357,14 +349,8 @@
   }
 
   function etaLabel(job: Job): string {
-    if (job.status === 'queued') return 'Awaiting worker';
-    if (job.status === 'paused') return 'Paused';
-    if (job.status === 'failed' || job.status === 'dead_lettered' || job.status === 'cancelled') return 'Stopped';
-    const total = numericValue(job.progress?.total);
-    const completed = numericValue(job.progress?.completed);
-    const rate = jobRate(job);
-    if (total === null || completed === null || rate === null || rate <= 0) return 'Calculating';
-    return formatDuration(Math.max(0, (total - completed) / rate));
+    const seconds = job.progress?.eta?.available === false ? null : numericValue(job.progress?.eta?.seconds);
+    return seconds === null ? job.progress?.eta?.reason ?? 'Unavailable' : formatDuration(seconds);
   }
 
   function formatDuration(seconds: number): string {
@@ -437,6 +423,13 @@
   function refreshedLabel(): string {
     return lastRefreshedAt ? lastRefreshedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Not yet';
   }
+
+  function submissionSeriesHref(submission: import('$lib/api/types').ProcessingSubmission): string | null {
+    if (submission.kind !== 'series' || !submission.result || !('series' in submission.result) || !submission.result.series?.id) return null;
+    const url = new URL(dashboardViewHref('job_series_monitor', $page.url), $page.url.origin);
+    url.searchParams.set('series', submission.result.series.id);
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
 </script>
 
 <div class="operations-page" aria-busy={loading}>
@@ -453,6 +446,21 @@
 
   {#if actionError}<div class="notice error" role="alert">{actionError}</div>{/if}
   {#if actionMessage}<div class="notice success" role="status">{actionMessage}</div>{/if}
+
+  <section class="submission-monitor section-shell" aria-busy={$processingSubmissions.loading}>
+    <div class="section-heading">
+      <div><h2>Processing submissions</h2><p>Recent criteria-based requests continue planning after you leave the originating page.</p></div>
+      <button class="quiet" type="button" on:click={() => processingSubmissions.refresh()} disabled={$processingSubmissions.refreshing}>Refresh</button>
+    </div>
+    {#if $processingSubmissions.error}<p class="notice error">{$processingSubmissions.error}</p>{/if}
+    {#if recentSubmissions.length}
+      <div class="submission-list">
+        {#each recentSubmissions as submission (submission.id)}
+          <ProcessingSubmissionStatus {submission} seriesHref={submissionSeriesHref(submission)} />
+        {/each}
+      </div>
+    {:else if !$processingSubmissions.loading}<p class="empty-state">No recent processing submissions for this project.</p>{/if}
+  </section>
 
   <section class="pressure-strip" aria-label="System pressure summary">
     <article class="pressure-primary {queuePressure}">
@@ -480,7 +488,9 @@
       <div class="stage-menus" aria-label="Pipeline queue status">
         {#each visibleStages as definition}
           {@const item = stageSummaries.get(definition.stage) ?? { stage: definition.stage, job_count: 0 }}
-          {@const percent = summaryPercent(item)}
+          {@const groups = stageGroups.get(definition.stage) ?? []}
+          {@const group = groups.length === 1 ? groups[0] : null}
+          {@const percent = summaryPercent(group ?? item)}
           {@const stageJobs = activeJobs.filter((job) => job.stage === definition.stage).sort(compareJobs)}
           {@const stoppedItem = stoppedStageSummaries.get(definition.stage)}
           {@const stoppedCount = number(stoppedItem?.failed) + number(stoppedItem?.dead_lettered) + number(stoppedItem?.cancelled)}
@@ -490,9 +500,9 @@
               <div class="stage-counts"><strong>{stageActive(item)} active</strong><small><b>{stageRunning(item)}</b> running · {number(item.queued)} queued · {number(item.paused)} paused</small></div>
               <div class="aggregate-progress">
                 <div class="progress-track" class:indeterminate={percent === null && stageActive(item) > 0}><i style={`width:${percent ?? 32}%`}></i></div>
-                <small>{percent === null ? (stageActive(item) ? 'Waiting for unit totals' : 'No active work') : `${Math.round(percent)}% · ${formatCount(item.progress?.completed_units)} / ${formatCount(item.progress?.known_total_units)}`}</small>
+                <small>{groups.length > 1 ? 'Multiple work units' : percent === null ? (stageActive(item) ? 'Waiting for unit totals' : 'No active work') : `${Math.round(percent)}% · ${formatCount(group?.active_progress?.completed_units)} / ${formatCount(group?.active_progress?.known_total_units)}`}</small>
               </div>
-              <div class="throughput"><strong>{rateLabel(stageRate(stageJobs), stageJobs[0]?.progress?.unit)}</strong><small>observed now</small></div>
+              <div class="throughput"><strong>{rateLabel(group?.rate?.available === false ? null : numericValue(group?.rate?.units_per_second), group?.unit ?? 'units')}</strong><small>{groups.length > 1 ? 'multiple units' : group?.rate?.reason ?? 'observed now'}</small></div>
               <span class="stage-chevron" aria-hidden="true">⌄</span>
             </summary>
             <div class="stage-menu-body">
@@ -545,13 +555,13 @@
         <article><span>Capacity headroom</span><strong>{availableWorkers}</strong><small>online workers not currently busy</small></article>
         <article><span>Backlog per worker</span><strong>{backlogPerWorker === null ? '—' : backlogPerWorker.toFixed(backlogPerWorker >= 10 ? 0 : 1)}</strong><small>queued jobs / online workers</small></article>
         <article><span>Oldest queued</span><strong>{ageLabel(oldestQueuedSeconds)}</strong><small>time since the oldest queued submission</small></article>
-        <article class:warning={stalledJobCount > 0}><span>Possible stalls</span><strong>{stalledJobCount}</strong><small>running jobs without an update for 2 minutes</small></article>
-        <article><span>Progress coverage</span><strong>{Math.round(progressCoverage)}%</strong><small>active jobs reporting a unit total</small></article>
+        <article class:warning={stalledJobCount > 0}><span>Stale progress</span><strong>{$queue.snapshot ? stalledJobCount : '—'}</strong><small>no progress observation for 2 minutes; worker leases are tracked separately</small></article>
+        <article><span>Progress coverage</span><strong>{progressCoverage === null ? '—' : `${Math.round(progressCoverage)}%`}</strong><small>active jobs reporting a unit total</small></article>
       </div>
       <div class="rate-list">
         <h3>Observed throughput</h3>
         {#each stageRates as stage}
-          <div><span>{stage.label}</span><strong>{rateLabel(stage.rate, stage.jobs[0]?.progress?.unit)}</strong></div>
+          <div><span>{stage.label}</span><strong>{rateLabel(stage.rate)}</strong></div>
         {:else}<p>No running job has reported throughput yet.</p>{/each}
       </div>
       <p class="indicator-note">These are live operational signals, not historical performance guarantees.</p>
@@ -598,7 +608,7 @@
           {#if job.error_message}<p class="job-error">{job.error_message}</p>{/if}
         </article>
       {:else}
-        <div class="empty-state"><strong>No active or stopped jobs</strong><p>The pipeline is idle and no failed, dead-lettered, or cancelled jobs remain.</p></div>
+        <div class="empty-state"><strong>No recent failures in this snapshot</strong><p>Active queue counts and cancelled jobs are summarized above.</p></div>
       {/each}
     </div>
   </section>
@@ -624,6 +634,7 @@
 
 <style>
   .operations-page{display:grid;gap:12px;max-width:1800px;margin:0 auto;padding:2px 0 18px;color:var(--wb-text);font-size:16px}
+  .submission-monitor{display:grid;gap:10px}.submission-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px}
   .operations-header,.section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.operations-header{padding:2px 2px 7px;border-bottom:1px solid var(--wb-divider)}
   h1,h2,p{margin:0}.operations-header h1{font-size:1.6rem;letter-spacing:-.025em}.operations-header p,.section-heading p{margin-top:4px;color:var(--wb-text-secondary);font-size:.9rem;line-height:1.5}
   button{min-height:34px;border:1px solid var(--wb-divider-strong);border-radius:4px;padding:6px 11px;color:var(--wb-text);background:var(--wb-surface);font:inherit;font-size:.82rem;font-weight:750;cursor:pointer}button:hover:not(:disabled){border-color:var(--wb-accent);color:var(--wb-accent-strong)}button:disabled{opacity:.42;cursor:not-allowed}.quiet{background:transparent}.danger{border-color:color-mix(in srgb,var(--wb-bad) 45%,var(--wb-divider));color:var(--wb-bad)}.danger-text{border-color:transparent;color:var(--wb-bad);background:transparent}

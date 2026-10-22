@@ -55,6 +55,8 @@ import type {
   LogListOptions,
   JobsSummaryOptions,
   JobsSummaryResponse,
+  QueueStatusOptions,
+  QueueStatusResponse,
   KvStoreOverview,
   KvStoreOverviewOptions,
   LiveDetectionCandidateResponse,
@@ -69,6 +71,8 @@ import type {
   ProjectStorageSettingsResponse,
   ProcessingQueueRequest,
   ProcessingQueueResponse,
+  ProcessingSubmission,
+  ProcessingSubmissionRequest,
   ProcessingStatusFacetsResponse,
   ProcessingStatusFilters,
   ProcessingStatusFrameIdsResponse,
@@ -229,6 +233,13 @@ export function authenticatedFetch(input: RequestInfo | URL, init: RequestInit =
   return fetch(input, authenticatedRequestInit(init));
 }
 
+/** Notify mounted queue stores after a mutation without creating an import cycle. */
+function notifyQueueMutation(): void {
+  if (typeof globalThis.dispatchEvent === 'function' && typeof Event !== 'undefined') {
+    globalThis.dispatchEvent(new Event('pelagia:queue-mutation'));
+  }
+}
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
@@ -274,6 +285,7 @@ export class PelagiaApiClient {
       body: body === undefined ? undefined : JSON.stringify(body)
     }, options);
     this.cache.clear();
+    notifyQueueMutation();
     return value;
   }
 
@@ -284,6 +296,7 @@ export class PelagiaApiClient {
       body: body === undefined ? undefined : JSON.stringify(body)
     }, options);
     this.cache.clear();
+    notifyQueueMutation();
     return value;
   }
 
@@ -456,6 +469,10 @@ export class PelagiaApiClient {
     return this.get<JobsSummaryResponse>('/jobs/summary', options, 0, { cache: 'no-store' });
   }
 
+  async queueStatus(options: QueueStatusOptions = {}): Promise<QueueStatusResponse> {
+    return this.get<QueueStatusResponse>('/jobs/status', options, 0, { cache: 'no-store' });
+  }
+
   async clearJobs(options: JobsClearOptions = {}): Promise<JobsClearResponse> {
     return this.post<JobsClearResponse>('/jobs/clear', compact(options));
   }
@@ -607,6 +624,26 @@ export class PelagiaApiClient {
 
   async queueProcessing(body: ProcessingQueueRequest): Promise<ProcessingQueueResponse> {
     return this.post<ProcessingQueueResponse>('/processing/queue', body);
+  }
+
+  /**
+   * Store the selection immediately and let the server plan it after this
+   * request returns. Reusing request_id is safe after an ambiguous network
+   * failure: the backend returns the same durable submission.
+   */
+  async submitProcessing(body: ProcessingSubmissionRequest): Promise<ProcessingSubmission> {
+    const response = await this.post<{ submission: ProcessingSubmission }>('/processing/submissions', body);
+    return response.submission;
+  }
+
+  async listProcessingSubmissions(limit = 50): Promise<ProcessingSubmission[]> {
+    const response = await this.get<{ submissions?: ProcessingSubmission[] }>('/processing/submissions', { limit }, 0, { cache: 'no-store' });
+    return response.submissions ?? [];
+  }
+
+  async getProcessingSubmission(submissionId: string): Promise<ProcessingSubmission> {
+    const response = await this.get<{ submission: ProcessingSubmission }>(`/processing/submissions/${encodeURIComponent(submissionId)}`, undefined, 0, { cache: 'no-store' });
+    return response.submission;
   }
 
   async getAsset(assetId: string): Promise<RawAsset> {

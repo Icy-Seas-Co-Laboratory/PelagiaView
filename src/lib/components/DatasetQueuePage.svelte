@@ -4,11 +4,15 @@
   import InfoChip from '$lib/components/InfoChip.svelte';
   import LiveFilterSelect from '$lib/components/LiveFilterSelect.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
+  import ProcessingSubmissionStatus from '$lib/components/ProcessingSubmissionStatus.svelte';
   import { getClient, session } from '$lib/stores/session';
+  import { processingSubmissions } from '$lib/stores/processingSubmissions';
+  import { ApiError } from '$lib/api/client';
+  import { clearRetrySubmission, persistRetrySubmission, prepareSubmission, restoreRetrySubmission, type RetryableSubmission } from '$lib/processing/submissionRequest';
   import type {
     ProcessingQueueFilters,
     ProcessingQueueRequest,
-    ProcessingQueueResponse,
+    ProcessingSubmission,
     ProcessingQueueStage,
     ProcessingStatusFacets,
     ProcessingStatusFilters,
@@ -115,6 +119,11 @@
   let lastCatalogKey = '';
   let preferencesReady = false;
   let submittedJobIds: string[] = [];
+  let retrySubmission: RetryableSubmission<ProcessingQueueRequest> | null = null;
+  let submittedSubmissionId: string | null = null;
+  let observedTerminalSubmissionId: string | null = null;
+  let submissionSequence = 0;
+  let lastSubmissionIdentity = '';
   let globalDefaultProcessingSettings: ProcessingSettings = {};
 
   let minFieldValue = 1;
@@ -336,6 +345,19 @@
   );
   $: selectedCollectionArray = [...selectedCollections];
   $: selectedAssetArray = [...selectedAssetIds];
+  $: submissionScope = `${$session.baseUrl}:${$session.project?.id ?? $session.project?.project_key ?? ''}:${$session.user?.id ?? ''}`;
+  $: submissionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+  $: if (submissionIdentity !== lastSubmissionIdentity) {
+    lastSubmissionIdentity = submissionIdentity;
+    submissionSequence += 1;
+    queueing = false;
+  }
+  $: activeSubmission = submittedSubmissionId ? $processingSubmissions.submissions.find((item) => item.id === submittedSubmissionId) ?? null : null;
+  $: if (activeSubmission?.status === 'succeeded' && activeSubmission.id !== observedTerminalSubmissionId) {
+    observedTerminalSubmissionId = activeSubmission.id;
+    const result = activeSubmission.result;
+    if (result && 'job_ids' in result) submittedJobIds = [...(result.job_ids ?? []), ...submittedJobIds].slice(0, 100);
+  }
   $: filteredDatasets = datasets.filter((dataset) =>
     datasetMatchesFilters(dataset, selectedAssetIds, selectedCollections)
   );
@@ -399,7 +421,6 @@
           ? prospectiveRefinedDetectionCount
           : prospectiveUnrefinedDetectionCount;
   $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
-  $: missingPreprocessedFrameCount = 0;
   $: payloadStorageThresholdsActive = Boolean(
     fieldChanged('storeRoiPayloadMinArea', storeRoiPayloadMinArea) ||
       fieldChanged('storeRoiPayloadMinWidth', storeRoiPayloadMinWidth) ||
@@ -450,16 +471,17 @@
       : mode === 'segmentation'
         ? 'Candidate ROI queue'
         : 'ROI refinement queue';
-  $: preprocessedSourceWarning =
-    mode === 'segmentation' &&
-    framePayloadKind === 'preprocessed' &&
-    missingPreprocessedFrameCount > 0;
-  $: queueBlocked = preprocessedSourceWarning;
+  $: queueBlocked = false;
 
   $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${$session.project?.id ?? $session.project?.project_key ?? 'no-project'}:${mode}`;
-  $: if ($session.connected && catalogKey !== lastCatalogKey) {
+  $: if (catalogKey !== lastCatalogKey) {
+    submissionSequence += 1;
+    queueing = false;
     lastCatalogKey = catalogKey;
-    void loadCatalog();
+    retrySubmission = $session.connected ? restoreRetrySubmission<ProcessingQueueRequest>(submissionScope, 'queue') : null;
+    submittedSubmissionId = null;
+    observedTerminalSubmissionId = null;
+    if ($session.connected) void loadCatalog();
   }
   $: statusFilterKey = JSON.stringify({
     mode,
@@ -1040,8 +1062,10 @@
     const filters: ProcessingStatusFilters = {};
     if (selectedAssetIds.size) filters.asset_id = [...selectedAssetIds];
     if (selectedCollections.size) filters.collection = [...selectedCollections];
-    if (mode === 'preprocessing' && selectedPreprocessStates.size) {
-      filters.preprocessing_status = [...selectedPreprocessStates];
+    if (mode === 'preprocessing') {
+      filters.preprocessing_status = selectedPreprocessStates.size
+        ? [...selectedPreprocessStates]
+        : ['unknown', 'failed'];
     }
     if (mode === 'segmentation') {
       filters.preprocessing_status = 'succeeded';
@@ -1077,8 +1101,9 @@
       if (selectedDetectionStates.size) filters.candidate_detection_status = [...selectedDetectionStates];
     }
     if (mode === 'roi_refinement') {
+      filters.candidate_detection_status = ['succeeded'];
       const refinementStates = selectedQueueRefinementStates();
-      if (refinementStates.length) filters.refinement_state = refinementStates;
+      filters.refinement_state = refinementStates.length ? refinementStates : ['unrefined'];
     }
     return filters;
   }
@@ -1176,14 +1201,14 @@
     return counts.get(value) ?? 0;
   }
 
-  async function queueJobs() {
+  async function queueJobs(retry = false) {
     const client = getClient();
     if (!client) return;
     queueing = true;
     message = null;
     error = null;
 
-    if (mode === 'roi_refinement' && refinementMethod === 'oracle' &&
+    if (!retry && mode === 'roi_refinement' && refinementMethod === 'oracle' &&
         ((!refinementModelRef && !refinementDefaultModelRef) ||
          (refinementModels.length > 0 && refinementModelRef && !refinementModels.some((model) => model.artifact_id === refinementModelRef)))) {
       error = 'Select a sealed Oracle mask-model artifact before queuing refinement.';
@@ -1191,33 +1216,46 @@
       return;
     }
 
-    if (queueBlocked) {
-      error =
-        `Cannot queue segmentation from preprocessed frames because ${formatCount(missingPreprocessedFrameCount)} selected frame${missingPreprocessedFrameCount === 1 ? '' : 's'} lack preprocessed payloads.`;
-      queueing = false;
-      return;
-    }
-
-    let response: ProcessingQueueResponse;
+    const sessionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+    const sequence = ++submissionSequence;
+    const current = () => sequence === submissionSequence && sessionIdentity === `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+    const submissionRequest = prepareSubmission('queue', processingQueueRequest(), retry ? retrySubmission : null);
+    persistRetrySubmission(submissionScope, 'queue', submissionRequest);
     try {
-      response = await client.queueProcessing(processingQueueRequest());
+      const submission = await client.submitProcessing(submissionRequest);
+      if (!current()) return;
+      retrySubmission = null;
+      clearRetrySubmission(submissionScope, 'queue');
+      submittedSubmissionId = submission.id;
+      processingSubmissions.observe(submission);
+      message = submission.status === 'failed' ? 'The server rejected this processing request.' : submission.status === 'succeeded' ? submissionMessage(submission) : 'Processing request accepted and is being planned.';
+      void processingSubmissions.refresh(true);
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      queueing = false;
+      if (!current()) return;
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        clearRetrySubmission(submissionScope, 'queue');
+        retrySubmission = null;
+        error = `The server rejected this processing request: ${err.message}`;
+      } else {
+        retrySubmission = submissionRequest;
+        error = `The submission outcome is unknown: ${err instanceof Error ? err.message : String(err)}. Retry uses the same request safely.`;
+      }
       return;
+    } finally {
+      if (current()) queueing = false;
     }
-
-    const queued = numericStatusValue(response.job_count);
-    const matchedCount = numericStatusValue(response.matched_count);
-    if (queued === 0) {
-      error = `No eligible ${queueItemLabelPlural} matched the current filters.`;
-      queueing = false;
-      return;
-    }
-    submittedJobIds = [...(response.job_ids ?? []), ...submittedJobIds].slice(0, 100);
-    message = `Queued ${formatCount(queued)} ${mode === 'preprocessing' ? 'preprocessing' : mode === 'segmentation' ? 'segmentation' : 'ROI refinement'} batch job${queued === 1 ? '' : 's'} covering ${formatCount(matchedCount)} ${matchedCount === 1 ? queueItemLabel : queueItemLabelPlural}.`;
     scheduleStatusRefresh();
-    queueing = false;
+  }
+
+  function submissionMessage(submission: ProcessingSubmission): string {
+    const result = submission.result;
+    if (!result || !('job_count' in result)) return 'Processing request completed. Follow created work from System status.';
+    const queued = numericStatusValue(result.job_count);
+    const matched = numericStatusValue(result.matched_count);
+    if (!queued) return `Planning completed: no eligible ${queueItemLabelPlural} matched the current filters.`;
+    submittedJobIds = [...(result.job_ids ?? []), ...submittedJobIds].slice(0, 100);
+    const bounded = result.job_ids_truncated ? ' The visible monitor shows the first returned jobs; System status covers the complete request.' : '';
+    return `Queued ${formatCount(queued)} batch job${queued === 1 ? '' : 's'} covering ${formatCount(matched)} ${matched === 1 ? queueItemLabel : queueItemLabelPlural}.${bounded}`;
   }
 
   async function queueLineScanContinuity() {
@@ -2146,7 +2184,7 @@
       {/if}
     </div>
 
-    <button type="button" on:click={queueJobs} disabled={queueing || prospectiveQueueItemCount === 0 || queueBlocked}>
+    <button type="button" on:click={() => queueJobs(false)} disabled={queueing || prospectiveQueueItemCount === 0}>
       {queueing ? 'Queueing' : actionLabel}
     </button>
     {#if mode === 'roi_refinement'}
@@ -2156,10 +2194,12 @@
       <p class="soft">For one selected asset with declared line-scan geometry. Run after its ROI refinement jobs finish.</p>
     {/if}
     <p class="soft">
-      The backend will plan optimized jobs for {formatCount(prospectiveQueueItemCount)} selected {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}.
+      The server will evaluate this saved selection and plan eligible work. The displayed count is scope coverage; final work counts appear when planning completes.
     </p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
+    {#if retrySubmission}<button type="button" class="secondary" on:click={() => queueJobs(true)} disabled={queueing}>Retry submission</button>{/if}
+    {#if activeSubmission}<ProcessingSubmissionStatus submission={activeSubmission} />{/if}
 
     <QueueStatusSummary
       title={queueStatusTitle}

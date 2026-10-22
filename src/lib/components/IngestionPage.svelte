@@ -5,6 +5,7 @@
   import InfoChip from '$lib/components/InfoChip.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import type {
     AnalyzedIngestionAsset,
     DirectoryListing,
@@ -57,6 +58,8 @@
   let submittedAssetIds: string[] = [];
   let ingestionJobsById: Record<string, Job> = {};
   let ingestionJobIdsByAssetKey: Record<string, string> = {};
+  let submittedStatus = queueStatus();
+  let submittedStatusKey = '';
 
   type IngestionPreferences = {
     nTile: number;
@@ -112,12 +115,30 @@
     ingestionPreferenceSnapshot;
     setLiveProcessingPresetFromSettings(captureProcessingSettings());
   }
-  $: overallIngestionProgress = ingestionProgressSummary(Object.values(ingestionJobsById));
+  $: overallIngestionProgress = submittedJobIds.length ? ingestionProgressSummary($submittedStatus.snapshot?.total ?? null) : null;
+  $: {
+    const ids = submittedJobIds.slice(0, 100);
+    const key = JSON.stringify(ids);
+    if (key !== submittedStatusKey) {
+      submittedStatusKey = key;
+      submittedStatus = ids.length ? queueStatus({ ids, job_limit: 100 }) : queueStatus();
+    }
+  }
+  $: if ($submittedStatus.snapshot && submittedJobIds.length) {
+    mergeIngestionJobs($submittedStatus.snapshot.jobs.items);
+    rememberAssetJobLinks(analyzedAssets, $submittedStatus.snapshot.jobs.items);
+  } else if (!$submittedStatus.snapshot) {
+    ingestionJobsById = {};
+  }
 
   onMount(() => {
     window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
     void initializeIngestion();
-    const jobTimer = window.setInterval(refreshIngestionJobs, 5000);
+    const jobTimer = window.setInterval(() => {
+      // Submitted IDs use the shared queue snapshot; these fallback scopes
+      // discover jobs created by a run or asset before an ID is available.
+      if (!submittedJobIds.length) void refreshIngestionJobs();
+    }, 5000);
     return () => {
       window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
       window.clearInterval(jobTimer);
@@ -565,41 +586,28 @@
         for (const job of jobs) jobsById[job.id] = job;
       };
       if (submittedJobIds.length) {
-        addJobs(
-          await client.listJobs({
-            ids: submittedJobIds,
-            include_progress: true,
-            include_payload: true,
-            limit: Math.max(100, submittedJobIds.length),
-            sort: 'updated_at',
-            direction: 'desc'
-          })
-        );
+        // The status endpoint deliberately bounds ID scopes; retained job IDs are
+        // also bounded to 100 at submission time.
+        // Reconciled reactively from submittedStatus above.
       }
       for (const runId of submittedRunIds) {
         addJobs(
-          await client.listJobs({
+          (await client.queueStatus({
             run_id: runId,
             stage: ['extract_frames', 'ingest_run'],
-            include_progress: true,
-            include_payload: true,
-            limit: 500,
-            sort: 'updated_at',
-            direction: 'desc'
-          })
+            job_limit: 250,
+            recent_failure_limit: 0
+          })).jobs.items
         );
       }
       if (submittedJobIds.length === 0 && submittedRunIds.length === 0) {
         for (const assetId of submittedAssetIds.slice(0, 50)) {
           addJobs(
-            await client.listJobs({
-              asset_id: assetId,
-              include_progress: true,
-              include_payload: true,
-              limit: 50,
-              sort: 'updated_at',
-              direction: 'desc'
-            })
+          (await client.queueStatus({
+            asset_id: assetId,
+            job_limit: 50,
+            recent_failure_limit: 0
+          })).jobs.items
           );
         }
       }
@@ -688,53 +696,16 @@
     return job.progress?.message ?? job.status ?? 'Progress unavailable';
   }
 
-  function ingestionProgressSummary(jobs: Job[]): IngestionProgressSummary | null {
-    if (!jobs.length) return null;
-    let completedUnits = 0;
-    let totalUnits = 0;
-    let completedJobs = 0;
-    let activeJobs = 0;
-    let failedJobs = 0;
-
-    for (const job of jobs) {
-      const status = String(job.status ?? '').toLowerCase();
-      const terminal = ['succeeded', 'failed', 'cancelled', 'dead_lettered'].includes(status);
-      const failed = ['failed', 'cancelled', 'dead_lettered'].includes(status);
-      if (status === 'succeeded') completedJobs += 1;
-      else if (failed) failedJobs += 1;
-      else activeJobs += 1;
-
-      const completed = numericValue(job.progress?.completed);
-      const total = numericValue(job.progress?.total);
-      if (completed !== null && total !== null && total > 0) {
-        completedUnits += Math.min(completed, total);
-        totalUnits += total;
-      } else {
-        completedUnits += terminal ? 1 : 0;
-        totalUnits += 1;
-      }
-    }
-
-    const percent = totalUnits > 0 ? Math.max(0, Math.min(100, (completedUnits / totalUnits) * 100)) : 0;
-    const unitDetail =
-      totalUnits > jobs.length
-        ? `${formatCount(completedUnits)} / ${formatCount(totalUnits)} work units`
-        : `${formatCount(completedJobs + failedJobs)} / ${formatCount(jobs.length)} jobs finished`;
-    const statusDetail = [
-      activeJobs ? `${formatCount(activeJobs)} active` : null,
-      completedJobs ? `${formatCount(completedJobs)} succeeded` : null,
-      failedJobs ? `${formatCount(failedJobs)} need attention` : null
-    ].filter(Boolean).join(' · ');
-
-    return {
-      totalJobs: jobs.length,
-      completedJobs,
-      activeJobs,
-      failedJobs,
-      percent,
-      label: `${formatPercent(percent)} complete`,
-      detail: statusDetail ? `${unitDetail} · ${statusDetail}` : unitDetail
-    };
+  function ingestionProgressSummary(total: import('$lib/api/types').JobAggregateSummary | null): IngestionProgressSummary | null {
+    if (!total) return null;
+    const progress = total.active_progress ?? total.progress;
+    const percent = numericValue(progress?.percent);
+    if (percent === null) return null;
+    const completedJobs = numericValue(total.succeeded) ?? 0;
+    const failedJobs = (numericValue(total.failed) ?? 0) + (numericValue(total.cancelled) ?? 0) + (numericValue(total.dead_lettered) ?? 0);
+    const activeJobs = (numericValue(total.queued) ?? 0) + (numericValue(total.leased) ?? 0) + (numericValue(total.working) ?? 0) + (numericValue(total.paused) ?? 0);
+    const totalJobs = numericValue(total.job_count) ?? 0;
+    return { totalJobs, completedJobs, activeJobs, failedJobs, percent, label: `${formatPercent(percent)} complete`, detail: `${formatCount(numericValue(progress?.completed_units) ?? 0)} / ${formatCount(numericValue(progress?.known_total_units) ?? 0)} work units` };
   }
 
   function statusPillClass(status?: string | null): string {
@@ -1026,7 +997,7 @@
           <div class="ingestion-overall-progress" class:warn={overallIngestionProgress.failedJobs > 0}>
             <div class="ingestion-overall-progress-head">
               <div>
-                <span>Overall ingestion</span>
+                <span>Submitted ingestion work</span>
                 <strong>{overallIngestionProgress.label}</strong>
               </div>
               <small>{jobPolling ? 'Refreshing' : `${formatCount(overallIngestionProgress.totalJobs)} job${overallIngestionProgress.totalJobs === 1 ? '' : 's'}`}</small>

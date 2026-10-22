@@ -3,6 +3,7 @@
   import FileSelector from '$lib/components/FileSelector.svelte';
   import ExportBundleModal from '$lib/components/ExportBundleModal.svelte';
   import { getClient } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import type {
     DirectoryListing,
     Job,
@@ -68,7 +69,8 @@
   let error: string | null = null;
   let message: string | null = null;
   let queuedJob: Job | null = null;
-  let jobTimer: number | null = null;
+  let stopJobWatch: (() => void) | null = null;
+  let jobStale = false;
   let jobError: string | null = null;
   let exportOpen = false;
 
@@ -109,7 +111,7 @@
   $: importProgressMessage = queuedJob?.progress?.message ?? queuedJob?.summary ?? importStatusLabel;
   $: importCompleted = numericProgressValue(queuedJob?.progress?.completed);
   $: importTotal = numericProgressValue(queuedJob?.progress?.total);
-  $: importRate = numericProgressValue(queuedJob?.progress?.rates?.units_per_second);
+  $: importRate = numericProgressValue(queuedJob?.progress?.rate?.units_per_second);
   $: telemetryExportScope = telemetryScope();
 
   onMount(() => {
@@ -117,7 +119,7 @@
   });
 
   onDestroy(() => {
-    if (jobTimer !== null) window.clearInterval(jobTimer);
+    stopJobWatch?.();
   });
 
   async function initialize() {
@@ -335,30 +337,24 @@
   }
 
   function watchJob(jobId: string) {
-    if (jobTimer !== null) window.clearInterval(jobTimer);
-    void refreshJob(jobId);
-    jobTimer = window.setInterval(() => void refreshJob(jobId), 2500);
-  }
-
-  async function refreshJob(jobId: string) {
-    const client = getClient();
-    if (!client) return;
-    try {
-      queuedJob = await client.getJob(jobId);
+    stopJobWatch?.();
+    stopJobWatch = queueStatus({ ids: [jobId], job_limit: 1 }).subscribe((state) => {
+      queuedJob = state.snapshot?.jobs.items.find((job) => job.id === jobId) ?? null;
+      jobStale = state.stale;
+      if (state.error) {
+        jobError = `Status update failed: ${state.error}`;
+        return;
+      }
+      jobError = null;
+      if (!queuedJob) return;
       const status = queuedJob.status ?? 'unknown';
       if (status === 'succeeded') {
         message = 'Telemetry import completed successfully.';
-        if (jobTimer !== null) window.clearInterval(jobTimer);
-        jobTimer = null;
       } else if (['failed', 'dead_lettered', 'cancelled'].includes(status)) {
         jobError = queuedJob.error_message ?? 'Telemetry import did not complete successfully.';
         message = null;
-        if (jobTimer !== null) window.clearInterval(jobTimer);
-        jobTimer = null;
       }
-    } catch (cause) {
-      jobError = cause instanceof Error ? cause.message : String(cause);
-    }
+    });
   }
 
   async function retryImport() {
@@ -389,7 +385,6 @@
 
   function jobProgressPercent(job: Job | null): number | null {
     if (!job) return null;
-    if (job.status === 'succeeded') return 100;
     const percent = numericProgressValue(job.progress?.percent);
     return percent === null ? null : Math.max(0, Math.min(100, percent));
   }
@@ -431,7 +426,8 @@
   {#if loading}<p class="notice">Loading telemetry vocabulary and available runs…</p>{/if}
   {#if error}<p class="notice error" role="alert">{error}</p>{/if}
   {#if message}<p class="notice success" role="status">{message}{#if queuedJob} <span>Job: {queuedJob.id}</span>{/if}</p>{/if}
-  {#if jobError}<p class="notice error" role="alert">{jobError} {#if queuedJob}<button class="inline-button" type="button" on:click={retryImport} disabled={importing}>{importing ? 'Retrying…' : 'Retry import'}</button>{/if}</p>{/if}
+  {#if jobStale}<p class="notice" role="status">Showing the last received import status; updates are delayed.</p>{/if}
+  {#if jobError}<p class="notice error" role="alert">{jobError} {#if queuedJob && ['failed', 'dead_lettered', 'cancelled'].includes(queuedJob.status ?? '')}<button class="inline-button" type="button" on:click={retryImport} disabled={importing}>{importing ? 'Retrying…' : 'Retry import'}</button>{/if}</p>{/if}
 
   {#if queuedJob}
     <section class="card ingestion-status" class:status-failed={['failed', 'dead_lettered', 'cancelled'].includes(importStatus)} class:status-success={importStatus === 'succeeded'} aria-live="polite" aria-label="Telemetry ingestion status">

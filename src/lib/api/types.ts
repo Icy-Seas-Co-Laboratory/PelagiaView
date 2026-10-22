@@ -362,6 +362,8 @@ export type JobSeriesFailurePolicy = 'continue' | 'fail_fast';
 
 export type JobSeriesRequest = {
   targets: JobSeriesTarget;
+  /** Normalized durable submissions retain this alias after backend planning. */
+  selection?: JobSeriesTarget;
   preset_snapshot: JobSeriesPresetSnapshot;
   steps: JobSeriesStep[];
   priority?: number | null;
@@ -441,6 +443,30 @@ export type JobProgress = {
   secondary?: Record<string, unknown>;
   rates?: Record<string, number | string | null>;
   message?: string | null;
+  total_known?: boolean;
+  phase?: string | null;
+  rate?: JobRate | null;
+  eta?: JobEta | null;
+  attempt_current?: number | string | null;
+  stale?: boolean;
+  expired_lease?: boolean;
+  observed_at?: string | null;
+  rate_sample?: Record<string, unknown> | null;
+};
+
+/** Server-computed throughput.  A missing value is deliberately distinct from zero. */
+export type JobRate = {
+  units_per_second?: number | string | null;
+  available?: boolean;
+  method?: string | null;
+  observed_at?: string | null;
+  reason?: string | null;
+};
+
+export type JobEta = {
+  seconds?: number | string | null;
+  available?: boolean;
+  reason?: string | null;
 };
 
 export type JobAggregateProgress = {
@@ -449,6 +475,8 @@ export type JobAggregateProgress = {
   failed_units?: number | string | null;
   skipped_units?: number | string | null;
   percent?: number | string | null;
+  unknown_total_jobs?: number | string | null;
+  reason?: string | null;
 };
 
 export type JobAggregateSummary = {
@@ -464,6 +492,11 @@ export type JobAggregateSummary = {
   cancelled?: number | string | null;
   dead_lettered?: number | string | null;
   progress?: JobAggregateProgress | null;
+  active_progress?: JobAggregateProgress | null;
+  historical_progress?: JobAggregateProgress | null;
+  paused_jobs?: number | string | null;
+  finalizing_jobs?: number | string | null;
+  blocked_jobs?: number | string | null;
 };
 
 export type JobsSummaryResponse = {
@@ -547,6 +580,43 @@ export type JobsSummaryOptions = {
   worker_id?: string | null;
   include_recent?: boolean;
   recent_limit?: number;
+};
+
+/** Options for the authoritative, internally consistent queue status snapshot. */
+export type QueueStatusOptions = Omit<JobsSummaryOptions, 'include_recent' | 'recent_limit'> & {
+  job_limit?: number;
+  recent_failure_limit?: number;
+};
+
+export type QueueWorkGroup = JobAggregateSummary & {
+  unit?: string | null;
+  active?: number | string | null;
+  historical?: number | string | null;
+  known_total_jobs?: number | string | null;
+  unknown_total_jobs?: number | string | null;
+  rate?: JobRate | null;
+  eta?: JobEta | null;
+};
+
+export type QueueStatusResponse = {
+  schema_version: number;
+  snapshot_id: string;
+  as_of: string;
+  scope: {
+    project_id?: string | null;
+    run_id?: string | null;
+    asset_id?: string | null;
+    status?: string[];
+    stage?: string[];
+    ids?: string[];
+    worker_id?: string | null;
+  };
+  total: JobAggregateSummary & { active?: number | string | null; historical?: number | string | null };
+  by_stage: JobAggregateSummary[];
+  work_groups: QueueWorkGroup[];
+  health: { expired_leases?: number | string | null; stale_active_jobs?: number | string | null; pending_controls?: number | string | null; progress_coverage_percent?: number | string | null; oldest_queued_age_seconds?: number | string | null };
+  jobs: { items: Job[]; limit: number; matching_count: number; truncated: boolean };
+  recent_failures: Job[];
 };
 
 export type WorkerSession = {
@@ -1025,6 +1095,31 @@ export type ProcessingQueueResponse = {
   job_ids?: string[];
   dry_run?: boolean;
   sample_frame_ids?: string[];
+  /** The response only carries the first bounded set of created job IDs. */
+  job_ids_truncated?: boolean;
+};
+
+export type ProcessingSubmissionKind = 'queue' | 'series';
+export type ProcessingSubmissionStatus = 'accepted' | 'planning' | 'succeeded' | 'failed';
+
+/** A durable, idempotent request for server-side processing planning. */
+export type ProcessingSubmission = {
+  id: string;
+  project_id: string;
+  request_id: string;
+  kind: ProcessingSubmissionKind;
+  status: ProcessingSubmissionStatus;
+  request?: ProcessingQueueRequest | JobSeriesRequest;
+  result?: ProcessingQueueResponse | { series?: JobSeries; dry_run?: boolean } | null;
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ProcessingSubmissionRequest = {
+  request_id: string;
+  kind: ProcessingSubmissionKind;
+  request: ProcessingQueueRequest | JobSeriesRequest;
 };
 
 export type PageMetadata = {

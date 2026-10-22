@@ -17,7 +17,7 @@
   $: completed = numericValue(selected?.progress?.completed) ?? 0;
   $: failed = numericValue(selected?.progress?.failed) ?? 0;
   $: skipped = numericValue(selected?.progress?.skipped) ?? 0;
-  $: percent = numericValue(selected?.progress?.percent) ?? (total && total > 0 ? (completed / total) * 100 : null);
+  $: percent = numericValue(selected?.progress?.percent);
   $: lineage = selected?.progress?.unit_lineage ?? lineageFromProgress(selected?.progress?.current);
   $: jobsById = new Map($jobSeriesLive.jobs.map((job) => [job.id, job]));
 

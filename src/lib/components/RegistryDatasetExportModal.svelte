@@ -2,6 +2,7 @@
   import { createEventDispatcher, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { getClient } from '$lib/stores/session';
+  import { queueStatus } from '$lib/stores/queueStatus';
   import { formatBytes } from '$lib/utils/format';
   import type {
     CurationOptions, Job, RegistryDatasetPreview, RegistryDatasetSelection
@@ -25,7 +26,9 @@
   let error: string | null = null;
   let job: Job | null = null;
   let previewTimer: number | null = null;
-  let pollTimer: number | null = null;
+  let stopJobWatch: (() => void) | null = null;
+  let jobStale = false;
+  let statusError: string | null = null;
   let initialized = false;
 
   $: selection = buildSelection();
@@ -39,7 +42,7 @@
 
   onDestroy(() => {
     if (previewTimer !== null) window.clearTimeout(previewTimer);
-    if (pollTimer !== null) window.clearInterval(pollTimer);
+    stopJobWatch?.();
   });
 
   function buildSelection(): RegistryDatasetSelection {
@@ -94,33 +97,31 @@
         name: name.trim(), path: path.trim(), selection, subsample_ratio: subsampleRatio
       });
       job = response.job;
-      pollTimer = window.setInterval(() => void pollJob(), 1200);
-      await pollJob();
+      watchJob(response.job.id);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
       exporting = false;
     }
   }
 
-  async function pollJob() {
-    const client = getClient();
-    if (!client || !job) return;
-    try {
-      job = await client.getJob(job.id);
+  function watchJob(jobId: string) {
+    stopJobWatch?.();
+    stopJobWatch = queueStatus({ ids: [jobId], job_limit: 1 }).subscribe((state) => {
+      job = state.snapshot?.jobs.items.find((item) => item.id === jobId) ?? null;
+      jobStale = state.stale;
+      statusError = state.error;
+      if (!job) return;
       if (!['queued', 'leased', 'working', 'paused'].includes(job.status ?? '')) {
         exporting = false;
-        if (pollTimer !== null) window.clearInterval(pollTimer);
-        pollTimer = null;
         if (job.status !== 'succeeded') error = job.error_message || 'Dataset generation failed.';
       }
-    } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    }
+    });
   }
 
-  function progressPercent(): number {
-    const value = Number(job?.progress?.percent);
-    return Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  function progressPercent(): number | null {
+    const value = job?.progress?.percent;
+    const parsed = value === null || value === undefined ? null : Number(value);
+    return parsed !== null && Number.isFinite(parsed) ? parsed : null;
   }
 </script>
 
@@ -160,7 +161,8 @@
         <label>SQLite path<input bind:value={path} /><small>Must be within a configured Registry root.</small></label>
       </section>
 
-      {#if job}<section class="job" class:failed={job.status === 'failed' || job.status === 'dead_lettered'}><div><strong>{job.status === 'succeeded' ? 'Dataset ready in Registry' : job.progress?.message || 'Preparing dataset…'}</strong><span>{progressPercent().toFixed(0)}%</span></div><i><b style={`width:${progressPercent()}%`}></b></i>{#if job.status === 'succeeded'}<button on:click={() => goto('/registry/')}>Open Registry</button>{/if}</section>{/if}
+      {#if job}<section class="job" class:failed={job.status === 'failed' || job.status === 'dead_lettered'}><div><strong>{job.status === 'succeeded' ? 'Dataset ready in Registry' : job.progress?.message || 'Preparing dataset…'}</strong><span>{progressPercent() === null ? 'Estimating' : `${progressPercent()?.toFixed(0)}%`}</span></div><i><b style={`width:${progressPercent() ?? 0}%`}></b></i>{#if job.status === 'succeeded'}<button on:click={() => goto('/registry/')}>Open Registry</button>{/if}</section>{/if}
+      {#if jobStale || statusError}<p class="error" role="status">{statusError || 'Status updates are delayed.'}{jobStale ? ' Showing the last received status.' : ''}</p>{/if}
       {#if error}<p class="error">{error}</p>{/if}
     </div>
 
