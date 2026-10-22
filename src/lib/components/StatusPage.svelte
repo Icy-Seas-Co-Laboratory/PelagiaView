@@ -62,6 +62,11 @@
   $: queuePressure = pressureLevel(queuedCount, onlineWorkers, workerUtilization);
   $: stageSummaries = new Map((summary?.by_stage ?? []).map((item) => [item.stage ?? '', item]));
   $: stoppedStageSummaries = new Map((attentionSummary?.by_stage ?? []).map((item) => [item.stage ?? '', item]));
+  $: visibleStages = [...stages, ...additionalStages(summary, attentionSummary)];
+  $: stageRates = visibleStages
+    .map((stage) => ({ ...stage, jobs: activeJobs.filter((job) => job.stage === stage.stage) }))
+    .map((stage) => ({ ...stage, rate: stageRate(stage.jobs) }))
+    .filter((stage) => stage.rate !== null);
   $: visibleJobs = [...attentionJobs].sort(compareJobs);
   $: availableWorkers = Math.max(0, onlineWorkers - busyWorkers);
   $: backlogPerWorker = onlineWorkers > 0 ? queuedCount / onlineWorkers : null;
@@ -277,17 +282,15 @@
     return stages.find((item) => item.stage === stage)?.label ?? (stage ? stage.replaceAll('_', ' ') : 'Unknown job');
   }
 
-  function stageSummary(stage: string): JobAggregateSummary {
-    return stageSummaries.get(stage) ?? { stage, job_count: 0 };
-  }
-
-  function stageStoppedCount(stage: string): number {
-    const item = stoppedStageSummaries.get(stage);
-    return number(item?.failed) + number(item?.dead_lettered) + number(item?.cancelled);
-  }
-
-  function jobsForStage(stage: string): Job[] {
-    return activeJobs.filter((job) => job.stage === stage).sort(compareJobs);
+  function additionalStages(active: JobsSummaryResponse | null, stopped: JobsSummaryResponse | null): StageDefinition[] {
+    const seen = new Set(stages.map((stage) => stage.stage));
+    const result: StageDefinition[] = [];
+    for (const item of [...(active?.by_stage ?? []), ...(stopped?.by_stage ?? [])]) {
+      if (!item.stage || seen.has(item.stage)) continue;
+      seen.add(item.stage);
+      result.push({ stage: item.stage, label: stageLabel(item.stage), short: 'Pipeline work' });
+    }
+    return result;
   }
 
   function oldestQueuedAgeSeconds(): number | null {
@@ -337,8 +340,8 @@
     return numericValue(job.progress?.rates?.units_per_second);
   }
 
-  function stageRate(stage: string): number | null {
-    const rates = activeJobs.filter((job) => job.stage === stage && ['leased', 'working'].includes(job.status ?? '')).map(jobRate).filter((value): value is number => value !== null && value > 0);
+  function stageRate(jobs: Job[]): number | null {
+    const rates = jobs.filter((job) => ['leased', 'working'].includes(job.status ?? '')).map(jobRate).filter((value): value is number => value !== null && value > 0);
     return rates.length ? rates.reduce((sum, value) => sum + value, 0) : null;
   }
 
@@ -475,29 +478,32 @@
         </div>
       </div>
       <div class="stage-menus" aria-label="Pipeline queue status">
-        {#each stages as definition}
-          {@const item = stageSummary(definition.stage)}
+        {#each visibleStages as definition}
+          {@const item = stageSummaries.get(definition.stage) ?? { stage: definition.stage, job_count: 0 }}
           {@const percent = summaryPercent(item)}
-          {@const stageJobs = jobsForStage(definition.stage)}
+          {@const stageJobs = activeJobs.filter((job) => job.stage === definition.stage).sort(compareJobs)}
+          {@const stoppedItem = stoppedStageSummaries.get(definition.stage)}
+          {@const stoppedCount = number(stoppedItem?.failed) + number(stoppedItem?.dead_lettered) + number(stoppedItem?.cancelled)}
           <details class="stage-menu">
             <summary>
               <div class="stage-name"><strong>{definition.label}</strong><small>{definition.short}</small></div>
-              <div class="stage-counts"><strong>{stageJobs.length} active</strong><small><b>{stageRunning(item)}</b> running · {number(item.queued)} queued · {number(item.paused)} paused</small></div>
+              <div class="stage-counts"><strong>{stageActive(item)} active</strong><small><b>{stageRunning(item)}</b> running · {number(item.queued)} queued · {number(item.paused)} paused</small></div>
               <div class="aggregate-progress">
                 <div class="progress-track" class:indeterminate={percent === null && stageActive(item) > 0}><i style={`width:${percent ?? 32}%`}></i></div>
                 <small>{percent === null ? (stageActive(item) ? 'Waiting for unit totals' : 'No active work') : `${Math.round(percent)}% · ${formatCount(item.progress?.completed_units)} / ${formatCount(item.progress?.known_total_units)}`}</small>
               </div>
-              <div class="throughput"><strong>{rateLabel(stageRate(definition.stage), stageJobs[0]?.progress?.unit)}</strong><small>observed now</small></div>
+              <div class="throughput"><strong>{rateLabel(stageRate(stageJobs), stageJobs[0]?.progress?.unit)}</strong><small>observed now</small></div>
               <span class="stage-chevron" aria-hidden="true">⌄</span>
             </summary>
             <div class="stage-menu-body">
               <div class="stage-toolbar">
-                <span>{stageStoppedCount(definition.stage)} stopped job{stageStoppedCount(definition.stage) === 1 ? '' : 's'}</span>
+                <span>{stoppedCount} stopped job{stoppedCount === 1 ? '' : 's'}</span>
+                {#if stageJobs.length < stageActive(item)}<span>Showing {stageJobs.length} of {stageActive(item)} active jobs</span>{/if}
                 <div class="row-actions">
                   {#if stageActive(item) > 0}<button class="quiet" type="button" on:click={() => controlQueue('pause', definition.stage)} disabled={actionKeys[`pause:${definition.stage}`]}>Pause stage</button>{/if}
                   {#if number(item.paused) > 0}<button class="quiet" type="button" on:click={() => controlQueue('resume', definition.stage)} disabled={actionKeys[`resume:${definition.stage}`]}>Resume stage</button>{/if}
-                  <button class="danger-text" type="button" on:click={() => cancelQueue(definition.stage)} disabled={stageJobs.length === 0 || actionKeys[`cancel:${definition.stage}`]}>Cancel stage</button>
-                  {#if stageStoppedCount(definition.stage) > 0}<button class="danger-text" type="button" on:click={() => clearStoppedJobs(definition.stage)} disabled={actionKeys[`clear-stopped:${definition.stage}`]}>Clear stopped</button>{/if}
+                  <button class="danger-text" type="button" on:click={() => cancelQueue(definition.stage)} disabled={stageActive(item) === 0 || actionKeys[`cancel:${definition.stage}`]}>Cancel stage</button>
+                  {#if stoppedCount > 0}<button class="danger-text" type="button" on:click={() => clearStoppedJobs(definition.stage)} disabled={actionKeys[`clear-stopped:${definition.stage}`]}>Clear stopped</button>{/if}
                 </div>
               </div>
               <div class="stage-job-list">
@@ -524,7 +530,7 @@
                     </div>
                   </article>
                 {:else}
-                  <div class="stage-empty">No active jobs in this stage.</div>
+                  <div class="stage-empty">{stageActive(item) ? 'No job details in the current list.' : 'No active jobs in this stage.'}</div>
                 {/each}
               </div>
             </div>
@@ -544,8 +550,8 @@
       </div>
       <div class="rate-list">
         <h3>Observed throughput</h3>
-        {#each stages.filter((definition) => stageRate(definition.stage) !== null) as definition}
-          <div><span>{definition.label}</span><strong>{rateLabel(stageRate(definition.stage), jobsForStage(definition.stage)[0]?.progress?.unit)}</strong></div>
+        {#each stageRates as stage}
+          <div><span>{stage.label}</span><strong>{rateLabel(stage.rate, stage.jobs[0]?.progress?.unit)}</strong></div>
         {:else}<p>No running job has reported throughput yet.</p>{/each}
       </div>
       <p class="indicator-note">These are live operational signals, not historical performance guarantees.</p>
