@@ -78,7 +78,7 @@
     collectionsText: string;
     metadataText: string;
     sourceTimestampText: string;
-    sourceForegroundPolarity: 'default' | 'dark' | 'bright';
+    backgroundPolarity: '' | 'light' | 'dark';
     nTile: number;
   };
 
@@ -328,6 +328,12 @@
     }
     queueing = true;
     const enabledAssets = analyzedAssets.filter((asset) => asset.enabled);
+    const missingBackgroundCount = enabledAssets.filter((asset) => !asset.backgroundPolarity).length;
+    if (missingBackgroundCount) {
+      error = `Choose a light or dark background for every enabled asset before queueing (${missingBackgroundCount} remaining).`;
+      queueing = false;
+      return;
+    }
     const timestampError = validateAnalyzedAssetTimestamps(enabledAssets);
     if (timestampError) {
       error = timestampError;
@@ -397,9 +403,7 @@
       collectionsText: (asset.collections ?? []).join(','),
       metadataText: formatJson(asset.metadata ?? {}),
       sourceTimestampText: sourceTimestampValue(asset),
-      sourceForegroundPolarity: asset.metadata?.source_foreground_polarity === 'dark' || asset.metadata?.source_foreground_polarity === 'bright'
-        ? asset.metadata.source_foreground_polarity
-        : 'default',
+      backgroundPolarity: '',
       nTile: Number(suggested?.n_tile ?? nTile)
     };
   }
@@ -417,7 +421,12 @@
   }
 
   function queueAssetRequest(asset: EditableAnalyzedAsset): QueueIngestionAssetRequest {
+    if (!asset.backgroundPolarity) {
+      throw new Error(`Choose a light or dark background for ${asset.filename ?? asset.path}.`);
+    }
+    const sourceForegroundPolarity = asset.backgroundPolarity === 'light' ? 'dark' : 'bright';
     const metadata = parseMetadataText(asset.metadataText, `Metadata for ${asset.filename ?? asset.path}`);
+    metadata.source_foreground_polarity = sourceForegroundPolarity;
     const sourceTimestamp = normalizeSourceTimestamp(asset.sourceTimestampText);
     if (sourceTimestamp) {
       metadata.source_timestamp_utc = sourceTimestamp;
@@ -435,7 +444,7 @@
       collections: asset.collectionsText || undefined,
       media_count: asset.media_count,
       metadata,
-      source_foreground_polarity: asset.sourceForegroundPolarity === 'default' ? undefined : asset.sourceForegroundPolarity,
+      source_foreground_polarity: sourceForegroundPolarity,
       n_tile: Math.max(1, Math.round(Number(nTile) || 1))
     };
   }
@@ -519,6 +528,10 @@
 
   function updateAsset(index: number, patch: Partial<EditableAnalyzedAsset>) {
     analyzedAssets = analyzedAssets.map((asset, assetIndex) => assetIndex === index ? { ...asset, ...patch } : asset);
+  }
+
+  function applyBackgroundToAll(backgroundPolarity: 'light' | 'dark') {
+    analyzedAssets = analyzedAssets.map((asset) => asset.queued ? asset : { ...asset, backgroundPolarity });
   }
 
   function removeAnalyzedAsset(index: number) {
@@ -1025,12 +1038,14 @@
           </div>
         {/if}
         <div class="analysis-table-wrap">
+          <p class="soft">Choose light or dark background for each enabled asset before queueing. Light backgrounds are inverted during preprocessing; dark backgrounds keep their intensity orientation. Source pixels remain unchanged.</p>
           <table class="analysis-table">
             <thead>
               <tr>
                 <th>Use</th>
                 <th>Asset</th>
                 <th>Type</th>
+                <th>Background</th>
                 <th>Collections</th>
                 <th>Source datetime</th>
                 <th>Facts</th>
@@ -1056,6 +1071,23 @@
                   </td>
                   <td>
                     <span>{asset.kind.replace(/_/g, ' ')}</span>
+                  </td>
+                  <td class="analysis-polarity-cell">
+                    <select
+                      aria-label={`Background polarity for ${asset.filename || asset.path}`}
+                      value={asset.backgroundPolarity}
+                      required={asset.enabled}
+                      disabled={asset.queued}
+                      aria-invalid={asset.enabled && !asset.backgroundPolarity ? 'true' : undefined}
+                      on:change={(event) => updateAsset(index, { backgroundPolarity: event.currentTarget.value as EditableAnalyzedAsset['backgroundPolarity'] })}
+                    >
+                      <option value="" disabled>Choose background…</option>
+                      <option value="light">Light background · invert</option>
+                      <option value="dark">Dark background · keep</option>
+                    </select>
+                    {#if asset.backgroundPolarity && !asset.queued}
+                      <button class="ghost compact-action" type="button" on:click={() => applyBackgroundToAll(asset.backgroundPolarity as 'light' | 'dark')}>Apply to all assets</button>
+                    {/if}
                   </td>
                   <td>
                     <CollectionTokenInput
@@ -1127,14 +1159,6 @@
                             </div>
                           </div>
                         {/if}
-                        <label>
-                          Source foreground polarity
-                          <select value={asset.sourceForegroundPolarity} on:change={(event) => updateAsset(index, { sourceForegroundPolarity: event.currentTarget.value as EditableAnalyzedAsset['sourceForegroundPolarity'] })}>
-                            <option value="default">Use processing default</option>
-                            <option value="dark">Dark foreground (invert)</option>
-                            <option value="bright">Bright foreground (keep)</option>
-                          </select>
-                        </label>
                         <label class="analysis-detail-wide">
                           Metadata JSON
                           <textarea rows="4" value={asset.metadataText} on:input={(event) => updateAsset(index, { metadataText: event.currentTarget.value })}></textarea>
