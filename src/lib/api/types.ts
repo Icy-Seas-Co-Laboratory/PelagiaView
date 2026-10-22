@@ -1432,9 +1432,11 @@ export type SegmentationCapabilities = {
   config_defaults?: Record<string, Record<string, unknown>>;
 };
 
+export type RoiRefinementMethod = 'heuristic_edge_v1' | 'heuristic_v2' | 'heuristic_v3' | 'oracle' | 'identity';
+
 export type RoiRefinementOptions = {
   detection_ids?: string[];
-  method?: 'heuristic_edge_v1' | 'oracle' | 'identity';
+  method?: RoiRefinementMethod;
   model_ref?: string | null;
   max_iterations?: number | null;
   expansion_pixels?: number | null;
@@ -1452,7 +1454,7 @@ export type RoiRefinementCapabilities = {
   pipeline_stage_order?: string[];
   supported?: {
     model_refs?: string[];
-    methods?: Array<'heuristic_edge_v1' | 'oracle' | 'identity'>;
+    methods?: RoiRefinementMethod[];
     models?: Array<Record<string, unknown>>;
     inference_backend?: string;
     inference_backends?: string[];

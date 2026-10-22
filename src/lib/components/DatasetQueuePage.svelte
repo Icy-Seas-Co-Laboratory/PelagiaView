@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { normalizeRefinementMethod, refinementMethods } from '$lib/processing/refinementMethods';
+  import type { RoiRefinementMethod } from '$lib/api/types';
   import { onMount } from 'svelte';
   import HelpChip from '$lib/components/HelpChip.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
@@ -217,7 +219,7 @@
   let storeRoiPayloadMinHeight: number | null = null;
   let storeRoiPayloadMinWidthPlusHeight: number | null = null;
 
-  let refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity' = 'heuristic_edge_v1';
+  let refinementMethod: RoiRefinementMethod = 'heuristic_edge_v1';
   let refinementModelRef = '';
   let refinementModels: RefinementModel[] = [];
   let refinementDefaultModelRef = '';
@@ -305,7 +307,7 @@
     storeRoiPayloadMinHeight: number | null;
     storeRoiPayloadMinWidthPlusHeight: number | null;
     refinementModelRef: string;
-    refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity';
+    refinementMethod: RoiRefinementMethod;
     refinementAllowFrameExpansion: boolean;
     refinementMaxIterations: number;
     refinementExpansionPixels: number | null;
@@ -670,9 +672,7 @@
     storeRoiPayloadMinHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinHeight, storeRoiPayloadMinHeight);
     storeRoiPayloadMinWidthPlusHeight = nullablePreferenceNumber(preferences.storeRoiPayloadMinWidthPlusHeight, storeRoiPayloadMinWidthPlusHeight);
     refinementModelRef = stringPreference(preferences.refinementModelRef, refinementModelRef);
-    refinementMethod = preferences.refinementMethod === 'oracle' || preferences.refinementMethod === 'identity'
-      ? preferences.refinementMethod
-      : 'heuristic_edge_v1';
+    refinementMethod = normalizeRefinementMethod(preferences.refinementMethod);
     refinementAllowFrameExpansion = booleanPreference(preferences.refinementAllowFrameExpansion, refinementAllowFrameExpansion);
     refinementMaxIterations = numberPreference(preferences.refinementMaxIterations, refinementMaxIterations);
     refinementExpansionPixels = nullablePreferenceNumber(preferences.refinementExpansionPixels, refinementExpansionPixels);
@@ -982,7 +982,7 @@
       ? configuredRefinementModel : '';
     refinementModelRef = refinementDefaultModelRef;
     const configuredMethod = stringDefault(roiRefinement, 'method', refinementMethod);
-    refinementMethod = configuredMethod === 'oracle' || configuredMethod === 'identity' ? configuredMethod : 'heuristic_edge_v1';
+    refinementMethod = normalizeRefinementMethod(configuredMethod);
     refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
     refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
@@ -2079,15 +2079,17 @@
         <label>
           Refinement method
           <select bind:value={refinementMethod}>
-            <option value="heuristic_edge_v1">Heuristic edge refinement — default</option>
-            <option value="oracle">Oracle mask refinement</option>
-            <option value="identity">Identity — promote candidates unchanged</option>
+            {#each refinementMethods as method}
+            <option value={method.value}>{method.label}</option>
+          {/each}
           </select>
         </label>
         {#if refinementMethod === 'identity'}
           <p class="muted">Selected candidate ROIs will become refined ROIs without model inference, expansion, residual discovery, or overlap reconciliation.</p>
         {:else if refinementMethod === 'heuristic_edge_v1'}
           <p class="muted">Uses deterministic, CPU-only seed growth. Strong oblique edges constrain growth; horizontal and vertical sensor edges are ignored.</p>
+        {:else if refinementMethod === 'heuristic_v2' || refinementMethod === 'heuristic_v3'}
+          <p class="muted">Runs built-in CPU refinement using the configured {refinementMethod === 'heuristic_v2' ? 'v2' : 'v3'} settings. No Oracle model is required.</p>
         {:else}
         <p class="muted">Oracle Builder status: {oracleStatus}</p>
         {#if refinementModels.length}

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { normalizeRefinementMethod, refinementMethods } from '$lib/processing/refinementMethods';
+  import type { RoiRefinementMethod } from '$lib/api/types';
   import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/stores';
   import FrameDisplayToggle from '$lib/components/FrameDisplayToggle.svelte';
@@ -184,7 +186,7 @@
   let maskDifferenceUrls = new Map<string, string>();
   let maskDifferenceKey = '';
   let maskDifferenceSerial = 0;
-  let refinementMethod: 'heuristic_edge_v1' | 'oracle' | 'identity' = 'heuristic_edge_v1';
+  let refinementMethod: RoiRefinementMethod = 'heuristic_edge_v1';
   let refinementModelRef = '';
   let refinementModels: RefinementModel[] = [];
   let refinementDefaultModelRef = '';
@@ -1039,9 +1041,7 @@
       ? configuredRefinementModel : '';
     refinementModelRef = refinementDefaultModelRef;
     const configuredRefinementMethod = stringDefault(roiRefinement, 'method', refinementMethod);
-    refinementMethod = configuredRefinementMethod === 'oracle' || configuredRefinementMethod === 'identity'
-      ? configuredRefinementMethod
-      : 'heuristic_edge_v1';
+    refinementMethod = normalizeRefinementMethod(configuredRefinementMethod);
     refinementMaxIterations = numberDefault(roiRefinement, 'max_iterations', refinementMaxIterations);
     refinementExpansionPixels = nullableNumberDefault(roiRefinement, 'expansion_pixels', refinementExpansionPixels);
     refinementEdgeTouchMargin = numberDefault(roiRefinement, 'edge_touch_margin', refinementEdgeTouchMargin);
@@ -3961,15 +3961,17 @@
       <label>
         Refinement method
         <select bind:value={refinementMethod}>
-          <option value="heuristic_edge_v1">Heuristic edge refinement — default</option>
-          <option value="oracle">Oracle mask refinement</option>
-          <option value="identity">Identity — promote candidates unchanged</option>
+          {#each refinementMethods as method}
+            <option value={method.value}>{method.label}</option>
+          {/each}
         </select>
       </label>
       {#if refinementMethod === 'identity'}
         <p class="muted">Promotes candidate ROIs without model inference or boundary changes.</p>
       {:else if refinementMethod === 'heuristic_edge_v1'}
         <p class="muted">Uses deterministic seed growth and strong oblique edges; horizontal and vertical line-scan sensor edges are ignored.</p>
+      {:else if refinementMethod === 'heuristic_v2' || refinementMethod === 'heuristic_v3'}
+        <p class="muted">Runs built-in CPU refinement using the configured {refinementMethod === 'heuristic_v2' ? 'v2' : 'v3'} settings. No Oracle model is required.</p>
       {:else}
       <p class="muted">Oracle Builder status: {oracleStatus}</p>
       {#if refinementModels.length}
