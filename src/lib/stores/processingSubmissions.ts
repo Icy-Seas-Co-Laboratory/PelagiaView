@@ -18,7 +18,8 @@ export type ProcessingSubmissionsStore = Readable<ProcessingSubmissionsState> & 
 };
 
 const initial = (): ProcessingSubmissionsState => ({ submissions: [], loading: false, refreshing: false, stale: false, error: null });
-const active = (submission: ProcessingSubmission) => submission.status === 'accepted' || submission.status === 'planning';
+const active = (submission: ProcessingSubmission) =>
+  submission.status === 'accepted' || submission.status === 'planning' || submission.status === 'processing';
 
 class SubmissionStore implements ProcessingSubmissionsStore {
   private readonly data = writable<ProcessingSubmissionsState>(initial());
@@ -27,7 +28,7 @@ class SubmissionStore implements ProcessingSubmissionsStore {
   private version = 0;
   private inFlight: Promise<void> | null = null;
   private dirty = false;
-  private materializedSubmissionIds = new Set<string>();
+  private queueVersions = new Map<string, string>();
 
   subscribe = (run: Parameters<Readable<ProcessingSubmissionsState>['subscribe']>[0], invalidate?: Parameters<Readable<ProcessingSubmissionsState>['subscribe']>[1]) => {
     this.subscribers += 1;
@@ -81,13 +82,11 @@ class SubmissionStore implements ProcessingSubmissionsStore {
         throw new Error('Processing submissions belong to a different project. Refresh the connection.');
       }
       this.data.set({ submissions, loading: false, refreshing: false, stale: false, error: null });
-      let newlyMaterialized = false;
+      let queueChanged = false;
       for (const item of submissions) {
-        if (item.status !== 'succeeded' || this.materializedSubmissionIds.has(item.id)) continue;
-        this.materializedSubmissionIds.add(item.id);
-        newlyMaterialized = true;
+        queueChanged = this.observeQueueVersion(item) || queueChanged;
       }
-      if (newlyMaterialized) invalidateQueueStatus();
+      if (queueChanged) invalidateQueueStatus();
     }).catch((error) => {
       if (version === this.version) this.data.update((state) => ({ ...state, loading: false, refreshing: false, stale: Boolean(state.submissions.length), error: error instanceof Error ? error.message : String(error) }));
     }).finally(() => {
@@ -108,15 +107,23 @@ class SubmissionStore implements ProcessingSubmissionsStore {
       this.dirty = true;
     }
     this.data.update((state) => ({ ...state, submissions: [submission, ...state.submissions.filter((item) => item.id !== submission.id)].slice(0, 50) }));
-    if (submission.status === 'succeeded' && !this.materializedSubmissionIds.has(submission.id)) {
-      this.materializedSubmissionIds.add(submission.id);
-      invalidateQueueStatus();
-    }
+    if (this.observeQueueVersion(submission)) invalidateQueueStatus();
   };
+
+  private observeQueueVersion(submission: ProcessingSubmission): boolean {
+    const resultJobs = submission.result && 'job_count' in submission.result ? submission.result.job_count : undefined;
+    const version = `${submission.status}:${submission.progress?.job_count ?? resultJobs ?? ''}`;
+    const previous = this.queueVersions.get(submission.id);
+    this.queueVersions.set(submission.id, version);
+    // Planning can release a new batch without a terminal transition. Only
+    // invalidate the separate queue snapshot when that released-job total or
+    // submission state actually changes.
+    return previous !== version;
+  }
 
   reset(): void {
     this.version += 1;
-    this.materializedSubmissionIds.clear();
+    this.queueVersions.clear();
     this.data.set(initial());
   }
 }

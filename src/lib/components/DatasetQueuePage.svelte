@@ -7,6 +7,7 @@
   import LiveFilterSelect from '$lib/components/LiveFilterSelect.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import ProcessingSubmissionStatus from '$lib/components/ProcessingSubmissionStatus.svelte';
+  import LoadingOverlay from '$lib/components/LoadingOverlay.svelte';
   import { getClient, session } from '$lib/stores/session';
   import { processingSubmissions } from '$lib/stores/processingSubmissions';
   import { ApiError } from '$lib/api/client';
@@ -103,6 +104,7 @@
   let statusSnapshotVersion: string | null = null;
   let statusRefreshTimer: number | null = null;
   let statusRefreshSequence = 0;
+  let catalogLoadSequence = 0;
   let selectedAssetIds = new Set<string>();
   let selectedCollections = new Set<string>();
   let selectedPreprocessStates = new Set<string>();
@@ -475,7 +477,7 @@
         : 'ROI refinement queue';
   $: queueBlocked = false;
 
-  $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${$session.project?.id ?? $session.project?.project_key ?? 'no-project'}:${mode}`;
+  $: catalogKey = `${$session.connected ? $session.baseUrl : 'disconnected'}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? 'no-project'}:${mode}`;
   $: if (catalogKey !== lastCatalogKey) {
     submissionSequence += 1;
     queueing = false;
@@ -484,6 +486,11 @@
     submittedSubmissionId = null;
     observedTerminalSubmissionId = null;
     if ($session.connected) void loadCatalog();
+    else {
+      catalogLoadSequence += 1;
+      loading = false;
+      catalogStatus = 'No active API session.';
+    }
   }
   $: statusFilterKey = JSON.stringify({
     mode,
@@ -817,9 +824,17 @@
 
   async function loadCatalog() {
     const client = getClient();
+    const sessionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+    const sequence = ++catalogLoadSequence;
+    const current = () =>
+      sequence === catalogLoadSequence &&
+      sessionIdentity === `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}` &&
+      getClient() === client;
     if (!client) {
-      loading = false;
-      catalogStatus = 'No active API session.';
+      if (current()) {
+        loading = false;
+        catalogStatus = 'No active API session.';
+      }
       return;
     }
     loading = true;
@@ -836,6 +851,7 @@
         client.segmentationOptions().catch(() => null),
         client.roiRefinementOptions().catch(() => null)
       ]);
+      if (!current()) return;
       preferencesReady = false;
       applyConfigDefaults(config, segmentationCapabilities, roiRefinementCapabilities, systemCapabilities);
       restorePreferences();
@@ -847,13 +863,16 @@
         ...datasets.flatMap((dataset) => dataset.collections)
       ]);
       await refreshStatusSummary();
+      if (!current()) return;
       catalogStatus = `Loaded queue status for ${formatCount(datasets.length)} asset${datasets.length === 1 ? '' : 's'}.`;
       preferencesReady = true;
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-      catalogStatus = 'Dataset catalog failed to load.';
+      if (current()) {
+        error = err instanceof Error ? err.message : String(err);
+        catalogStatus = 'Dataset catalog failed to load.';
+      }
     } finally {
-      loading = false;
+      if (current()) loading = false;
     }
   }
 
@@ -1065,11 +1084,13 @@
     if (mode === 'preprocessing') {
       filters.preprocessing_status = selectedPreprocessStates.size
         ? [...selectedPreprocessStates]
-        : ['unknown', 'failed'];
+        : ['unknown', 'failed', 'cancelled'];
     }
     if (mode === 'segmentation') {
       filters.preprocessing_status = 'succeeded';
-      if (selectedDetectionStates.size) filters.candidate_detection_status = [...selectedDetectionStates];
+      filters.candidate_detection_status = selectedDetectionStates.size
+        ? [...selectedDetectionStates]
+        : ['unknown', 'failed', 'cancelled'];
     }
     if (mode === 'roi_refinement') {
       filters.candidate_detection_status = 'succeeded';
@@ -1093,12 +1114,16 @@
     const filters: ProcessingQueueFilters = {};
     filters.asset_ids = selectedAssetArray;
     if (selectedCollectionArray.length) filters.collection = selectedCollectionArray;
-    if (mode === 'preprocessing' && selectedPreprocessStates.size) {
-      filters.preprocessing_status = [...selectedPreprocessStates];
+    if (mode === 'preprocessing') {
+      filters.preprocessing_status = selectedPreprocessStates.size
+        ? [...selectedPreprocessStates]
+        : ['unknown', 'failed', 'cancelled'];
     }
     if (mode === 'segmentation') {
       filters.preprocessing_status = ['succeeded'];
-      if (selectedDetectionStates.size) filters.candidate_detection_status = [...selectedDetectionStates];
+      filters.candidate_detection_status = selectedDetectionStates.size
+        ? [...selectedDetectionStates]
+        : ['unknown', 'failed', 'cancelled'];
     }
     if (mode === 'roi_refinement') {
       filters.candidate_detection_status = ['succeeded'];
@@ -1203,7 +1228,11 @@
 
   async function queueJobs(retry = false) {
     const client = getClient();
-    if (!client || queueing) return;
+    if (queueing) return;
+    if (!client) {
+      error = 'Connect to a Pelagia project before submitting processing work.';
+      return;
+    }
     queueing = true;
     message = null;
     error = null;
@@ -1223,13 +1252,20 @@
     try {
       submissionRequest = prepareSubmission('queue', processingQueueRequest(), retry ? retrySubmission : null);
       persistRetrySubmission(submissionScope, 'queue', submissionRequest);
-      const submission = await client.submitProcessing(submissionRequest);
+      const submissionResponse = await client.submitProcessing(submissionRequest);
       if (!current()) return;
+      const submission = submissionResponse.submission;
       retrySubmission = null;
       clearRetrySubmission(submissionScope, 'queue');
       submittedSubmissionId = submission.id;
       processingSubmissions.observe(submission);
-      message = submission.status === 'failed' ? 'The server rejected this processing request.' : submission.status === 'succeeded' ? submissionMessage(submission) : 'Processing request accepted and is being planned.';
+      message = submission.status === 'failed'
+        ? 'The server rejected this processing request.'
+        : submissionResponse.reused_active_submission
+          ? 'An identical processing request is already active. Showing its progress below.'
+          : submission.status === 'succeeded'
+            ? submissionMessage(submission)
+            : 'Processing request accepted. Finding eligible detections.';
       void processingSubmissions.refresh(true);
     } catch (err) {
       if (!current()) return;
@@ -1261,28 +1297,6 @@
     submittedJobIds = [...(result.job_ids ?? []), ...submittedJobIds].slice(0, 100);
     const bounded = result.job_ids_truncated ? ' The visible monitor shows the first returned jobs; System status covers the complete request.' : '';
     return `Queued ${formatCount(queued)} batch job${queued === 1 ? '' : 's'} covering ${formatCount(matched)} ${matched === 1 ? queueItemLabel : queueItemLabelPlural}.${bounded}`;
-  }
-
-  async function queueLineScanContinuity() {
-    const client = getClient();
-    const assetIds = [...selectedAssetIds];
-    if (!client || assetIds.length !== 1) {
-      error = 'Select exactly one line-scan asset before queuing continuity assembly.';
-      return;
-    }
-    queueing = true;
-    message = null;
-    error = null;
-    try {
-      const response = await client.queueRoiContinuityJob({ asset_id: assetIds[0] });
-      const jobId = response.job?.id;
-      if (jobId) submittedJobIds = [jobId, ...submittedJobIds].slice(0, 100);
-      message = 'Queued audited line-scan continuity assembly. It will retain frame-local ROI segments and record accepted and rejected links.';
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    } finally {
-      queueing = false;
-    }
   }
 
   function thresholdOptions(): Record<string, unknown> {
@@ -1551,7 +1565,7 @@
   }
 </script>
 
-<div class="queue-layout">
+<div class="queue-layout" aria-busy={loading || queueing}>
   <section class="panel queue-filter-panel">
     <div class="panel-heading">
       <div>
@@ -2191,17 +2205,11 @@
       {/if}
     </div>
 
-    <button type="button" on:click={() => queueJobs(false)} disabled={queueing || prospectiveQueueItemCount === 0}>
+    <button type="button" on:click={() => queueJobs(false)} disabled={queueing}>
       {queueing ? 'Queueing' : actionLabel}
     </button>
-    {#if mode === 'roi_refinement'}
-      <button type="button" class="secondary" on:click={queueLineScanContinuity} disabled={queueing || selectedAssetIds.size !== 1}>
-        Queue line-scan continuity
-      </button>
-      <p class="soft">For one selected asset with declared line-scan geometry. Run after its ROI refinement jobs finish.</p>
-    {/if}
     <p class="soft">
-      The server will evaluate this saved selection and plan eligible work. The displayed count is scope coverage; final work counts appear when planning completes.
+      The server evaluates the saved selection when it plans work. The displayed count can be stale; final work counts appear when planning completes.
     </p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}
@@ -2217,3 +2225,6 @@
     />
   </section>
 </div>
+
+{#if loading}<LoadingOverlay label="Loading queue options…" />{/if}
+{#if queueing}<LoadingOverlay label="Submitting processing request…" />{/if}

@@ -69,10 +69,13 @@ import type {
   ProjectMembershipSummary,
   ProjectStorageSettingsRequest,
   ProjectStorageSettingsResponse,
+  ProjectStorageReencodeResponse,
+  ProjectStorageUsageResponse,
   ProcessingQueueRequest,
   ProcessingQueueResponse,
   ProcessingSubmission,
   ProcessingSubmissionRequest,
+  ProcessingSubmissionSubmitResponse,
   ProcessingStatusFacetsResponse,
   ProcessingStatusFilters,
   ProcessingStatusFrameIdsResponse,
@@ -98,6 +101,7 @@ import type {
   TelemetryCatalogResponse,
   TelemetryImportRequest,
   TelemetryRangeFilter,
+  UserProjectMembershipsResponse,
   WorkerSession
 } from './types';
 import { recordApiRequest } from '$lib/utils/analytics';
@@ -369,6 +373,10 @@ export class PelagiaApiClient {
     return this.get<ProjectStorageSettingsResponse>(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-settings`);
   }
 
+  async getProjectStorageUsage(projectIdOrKey: string): Promise<ProjectStorageUsageResponse> {
+    return this.get<ProjectStorageUsageResponse>(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-usage`, {}, 0, { cache: 'no-store' });
+  }
+
   async updateProjectStorageSettings(
     projectIdOrKey: string,
     body: ProjectStorageSettingsRequest
@@ -380,6 +388,18 @@ export class PelagiaApiClient {
     });
   }
 
+  async getProjectStorageReencode(projectIdOrKey: string): Promise<ProjectStorageReencodeResponse> {
+    return this.get<ProjectStorageReencodeResponse>(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-reencode`, {}, 0, { cache: 'no-store' });
+  }
+
+  async startProjectStorageReencode(projectIdOrKey: string): Promise<ProjectStorageReencodeResponse> {
+    return this.post<ProjectStorageReencodeResponse>(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-reencode`, {});
+  }
+
+  async cancelProjectStorageReencode(projectIdOrKey: string): Promise<ProjectStorageReencodeResponse> {
+    return this.post<ProjectStorageReencodeResponse>(`/projects/${encodeURIComponent(projectIdOrKey)}/storage-reencode/cancel`, {});
+  }
+
   async deleteProject(projectIdOrKey: string): Promise<{ deleted: boolean; project: ProjectSummary }> {
     return this.delete(`/projects/${encodeURIComponent(projectIdOrKey)}`);
   }
@@ -388,15 +408,27 @@ export class PelagiaApiClient {
     return this.post('/users', compact(body));
   }
 
-  async updateProjectUserRole(
-    projectIdOrKey: string,
+  async getUserProjectMemberships(userIdOrUsername: string): Promise<UserProjectMembershipsResponse> {
+    return this.get(`/users/${encodeURIComponent(userIdOrUsername)}/project-memberships`);
+  }
+
+  async setUserProjectMembership(
     userIdOrUsername: string,
+    projectIdOrKey: string,
     role: string
-  ): Promise<{ user?: AuthUserSummary | null; membership?: ProjectMembershipSummary | null }> {
-    return this.post(
-      `/projects/${encodeURIComponent(projectIdOrKey)}/users/${encodeURIComponent(userIdOrUsername)}/role`,
-      { role }
-    );
+  ): Promise<{ membership: ProjectMembershipSummary }> {
+    return this.request(this.url(`/users/${encodeURIComponent(userIdOrUsername)}/project-memberships/${encodeURIComponent(projectIdOrKey)}`), {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ role })
+    });
+  }
+
+  async removeUserProjectMembership(
+    userIdOrUsername: string,
+    projectIdOrKey: string
+  ): Promise<{ removed: boolean; membership?: ProjectMembershipSummary | null }> {
+    return this.delete(`/users/${encodeURIComponent(userIdOrUsername)}/project-memberships/${encodeURIComponent(projectIdOrKey)}`);
   }
 
   async listUsers(options: { active_only?: boolean; include_all_projects?: boolean } = {}): Promise<AuthUserSummary[]> {
@@ -631,9 +663,8 @@ export class PelagiaApiClient {
    * request returns. Reusing request_id is safe after an ambiguous network
    * failure: the backend returns the same durable submission.
    */
-  async submitProcessing(body: ProcessingSubmissionRequest): Promise<ProcessingSubmission> {
-    const response = await this.post<{ submission: ProcessingSubmission }>('/processing/submissions', body);
-    return response.submission;
+  async submitProcessing(body: ProcessingSubmissionRequest): Promise<ProcessingSubmissionSubmitResponse> {
+    return this.post<ProcessingSubmissionSubmitResponse>('/processing/submissions', body);
   }
 
   async listProcessingSubmissions(limit = 50): Promise<ProcessingSubmission[]> {
@@ -643,6 +674,15 @@ export class PelagiaApiClient {
 
   async getProcessingSubmission(submissionId: string): Promise<ProcessingSubmission> {
     const response = await this.get<{ submission: ProcessingSubmission }>(`/processing/submissions/${encodeURIComponent(submissionId)}`, undefined, 0, { cache: 'no-store' });
+    return response.submission;
+  }
+
+  /** Stop a durable submission and cooperatively cancel work it has already released. */
+  async cancelProcessingSubmission(submissionId: string, reason?: string): Promise<ProcessingSubmission> {
+    const response = await this.post<{ submission: ProcessingSubmission }>(
+      `/processing/submissions/${encodeURIComponent(submissionId)}/cancel`,
+      reason ? { reason } : undefined
+    );
     return response.submission;
   }
 
@@ -715,12 +755,15 @@ export class PelagiaApiClient {
     return response.detections ?? [];
   }
 
-  async searchDetectionsPage(filters: DetectionFilters = {}): Promise<DetectionListResponse> {
+  async searchDetectionsPage(
+    filters: DetectionFilters = {},
+    options: { fresh?: boolean } = {}
+  ): Promise<DetectionListResponse> {
     const { telemetry_filters, ...detectionFilters } = filters;
     const response = await this.get<DetectionListResponse>('/detections', compact({
       ...detectionFilters,
       telemetry_filter: telemetry_filters?.map((filter) => JSON.stringify(filter))
-    }), 1500);
+    }), options.fresh ? 0 : 1500, options.fresh ? { cache: 'no-store' } : {});
     return withDetectionPageFallback(response, filters.limit ?? 100, filters.offset ?? 0);
   }
 

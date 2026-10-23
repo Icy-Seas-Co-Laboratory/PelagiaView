@@ -30,6 +30,7 @@
     { stage: 'preprocess_frames', label: 'Preprocessing', short: 'Frame correction and normalization' },
     { stage: 'segment', label: 'Candidate ROIs', short: 'Thresholding and candidate detection' },
     { stage: 'roi_refinement', label: 'ROI refinement', short: 'Candidate-to-refined ROI promotion' },
+    { stage: 'storage_reencode', label: 'Datastore updates', short: 'Apply saved image storage policy to existing resources' },
     { stage: 'classify', label: 'ML evidence', short: 'Oracle classification and similarity evidence' },
     { stage: 'export_bundle', label: 'Exports', short: 'Reproducible bundle preparation and delivery' }
   ];

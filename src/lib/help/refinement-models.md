@@ -13,7 +13,7 @@ ROI refinement takes candidate ROIs and produces refined ROI detections. Choose 
 
 If Oracle Builder is unavailable, Oracle refinement fails explicitly; Pelagia never silently substitutes another method. Choose heuristic refinement or identity explicitly when appropriate.
 
-For line-scan assets, queue **line-scan continuity** after refinement completes. It creates an auditable logical assembly across adjacent frames, recording accepted and rejected links, while preserving every frame-local refined ROI and its original raster payload.
+For line-scan assets with declared geometry, Pelagia runs continuity assembly as part of ROI refinement. It creates an auditable logical assembly across adjacent frames, recording accepted and rejected links while preserving every frame-local refined ROI and its original raster payload.
 
 Refinement can split one candidate into multiple refined ROIs or merge multiple candidates into one refined detection. The Explorer refinement view labels those relationships when the backend reports them.
 

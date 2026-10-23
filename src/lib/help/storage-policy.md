@@ -1,15 +1,19 @@
 Storage encoding is a scientific data decision as well as a performance setting. Pelagia applies an explicit two-tier policy to newly stored candidate and refined ROI images.
 
+New projects default to JPEG frames at quality 75.
+
 ## Default ROI policy
 
 - **Small ROIs:** Zstandard (lossless)
-- **Large ROIs:** JPEG at quality 90
-- **Large ROI cutoff:** 50,000 px²
+- **Large ROIs:** JPEG at quality 75
+- **Large ROI cutoff:** 1,000 px²
 - **Masks:** Zstandard (lossless), independently of the ROI image codec
 
-The size is the padded stored crop’s width × height. Channels, dtype, and compressed byte count do not affect the tier. A 250 × 200 crop is therefore large; a 249 × 200 crop is small.
+The size is the padded stored crop’s width × height. Channels, dtype, and compressed byte count do not affect the tier. A 25 × 40 crop is therefore large; a 25 × 39 crop is small.
 
 Changing a project policy affects future writes only. Existing payloads retain their original codec metadata, so a project may legitimately contain multiple formats.
+
+To apply saved settings to existing images, review the project-specific saved policy, check the verification box, then use **Update datastores** in project administration. Pelagia queues a background job for existing frame payloads, candidate and refined ROI images, and masks. Progress remains visible if you leave the page. If no storage update worker is online, the page explains why the job is waiting. Project KVStore size is shown when available; it includes retained frame blobs and excludes PostgreSQL ROI payloads. The job does not rewrite published Registry assets or source files. Keep enough free disk space for new blobs and database WAL while it runs; older frame blobs remain available, and database files may not shrink immediately.
 
 ## Choosing the cutoff
 

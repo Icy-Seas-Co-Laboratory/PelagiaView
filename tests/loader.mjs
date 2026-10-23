@@ -8,6 +8,7 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === '$app/environment') return { url: pathToFileURL(pathResolve('tests/support/environmentMock.mjs')).href, shortCircuit: true };
   if (specifier === '$lib/stores/session') return { url: pathToFileURL(pathResolve('tests/support/queueStatusMock.ts')).href, shortCircuit: true };
   if (specifier === '$lib/stores/queueStatus') return { url: pathToFileURL(pathResolve('src/lib/stores/queueStatus.ts')).href, shortCircuit: true };
+  if (specifier === '$lib/utils/analytics') return { url: pathToFileURL(pathResolve('tests/support/analyticsMock.mjs')).href, shortCircuit: true };
   if (specifier === '$lib/api/types') return { url: pathToFileURL(pathResolve('tests/support/typesMock.mjs')).href, shortCircuit: true };
   if (specifier.startsWith('.') && !specifier.endsWith('.js')) {
     const candidate = pathResolve(new URL(specifier, context.parentURL).pathname + '.ts');

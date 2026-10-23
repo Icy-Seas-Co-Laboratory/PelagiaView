@@ -252,8 +252,9 @@
       }
       submissionRequest = prepareSubmission('series', request, retry ? retrySubmission : null);
       persistRetrySubmission(submissionScope, 'series', submissionRequest);
-      const submission = await client.submitProcessing(submissionRequest);
+      const submissionResponse = await client.submitProcessing(submissionRequest);
       if (!current()) return;
+      const submission = submissionResponse.submission;
       retrySubmission = null;
       clearRetrySubmission(submissionScope, 'series');
       submittedSubmissionId = submission.id;
@@ -268,6 +269,8 @@
         await goto(`${monitorUrl.pathname}${monitorUrl.search}${monitorUrl.hash}`);
       } else if (submission.status === 'failed') {
         error = submission.error ?? 'The server rejected this series request.';
+      } else if (submissionResponse.reused_active_submission) {
+        message = 'An identical processing series is already active. Showing its progress below.';
       } else {
         message = 'Series request accepted and is being planned.';
       }

@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test:ingestion": "node --loader ./tests/loader.mjs --test ./tests/lineScanGeometry.test.ts",
     "test:refinement-methods": "node --loader ./tests/loader.mjs --test ./tests/refinementMethods.test.ts ./tests/refinementComparison.test.ts",
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "test:queue-status": "node --loader ./tests/loader.mjs --test ./tests/queueStatus.test.ts ./tests/jobLive.test.ts ./tests/processingSubmissions.test.ts ./tests/offsetPagination.test.ts"
+    "test:queue-status": "node --loader ./tests/loader.mjs --test ./tests/queueStatus.test.ts ./tests/jobLive.test.ts ./tests/processingSubmissions.test.ts ./tests/offsetPagination.test.ts ./tests/detectionRefresh.test.ts"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "^5.5.7",

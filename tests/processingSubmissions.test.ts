@@ -29,7 +29,7 @@ globalThis.sessionStorage = {
 const { processingSubmissions } = await import('../src/lib/stores/processingSubmissions');
 const { prepareSubmission, persistRetrySubmission, restoreRetrySubmission } = await import('../src/lib/processing/submissionRequest');
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
-const item = (status: 'accepted' | 'planning' | 'succeeded' | 'failed', project_id = 'p1'): ProcessingSubmission => ({
+const item = (status: 'accepted' | 'planning' | 'processing' | 'succeeded' | 'failed' | 'cancelled', project_id = 'p1'): ProcessingSubmission => ({
   id: `submission-${status}`, project_id, request_id: 'request-1', kind: 'queue' as const, status,
   request: { stage: 'segment', filters: { collection: ['plankton'] } } as ProcessingQueueRequest, created_at: '2026-01-01T00:00:00Z'
 });
@@ -46,6 +46,37 @@ test('durable submission monitor accepts criteria records and uses active pollin
   const request = get(processingSubmissions).submissions[0].request;
   assert.equal(request && 'filters' in request ? request.filters?.collection?.[0] : undefined, 'plankton');
   assert.deepEqual([...timers.values()].map((timer) => timer.delay), [2500]);
+});
+
+test('incremental planner progress remains active while released jobs process', async (t) => {
+  const calls: Array<{ resolve: (value: unknown) => void }> = [];
+  setSession({ connected: true, baseUrl: 'http://api', token: 'token', project: { id: 'p1' } });
+  setClient({ listProcessingSubmissions: () => new Promise((resolve) => calls.push({ resolve })) });
+  const stop = processingSubmissions.subscribe(() => {});
+  t.after(stop);
+  calls[0].resolve([{ ...item('processing'), progress: {
+    phase: 'planning_and_processing', scheduled_count: 120_000, job_count: 12,
+    running_count: 8, queued_count: 4, paused_count: 2, cancelled_count: 1,
+    more_jobs_being_prepared: true
+  } }]);
+  await flush();
+  const progress = get(processingSubmissions).submissions[0].progress;
+  assert.equal(progress?.scheduled_count, 120_000);
+  assert.equal(progress?.more_jobs_being_prepared, true);
+  assert.equal(progress?.paused_count, 2);
+  assert.equal(progress?.cancelled_count, 1);
+  assert.deepEqual([...timers.values()].map((timer) => timer.delay), [2500]);
+});
+
+test('planner status copy identifies waiting work and initial selection', async () => {
+  const { hasNoEligibleWork, submissionPhaseCopy } = await import('../src/lib/processing/submissionProgress');
+  assert.equal(submissionPhaseCopy({ phase: 'finding_eligible' }), 'Finding eligible detections.');
+  assert.equal(submissionPhaseCopy({ phase: 'finding_eligible' }, 'frames'), 'Finding eligible frames.');
+  assert.equal(submissionPhaseCopy({ phase: 'waiting', waiting_for_submission_id: '12345678-abcdef' }), 'Waiting behind request 12345678.');
+  assert.equal(submissionPhaseCopy({ phase: 'planning_and_processing' }), 'Planning and processing');
+  assert.equal(submissionPhaseCopy({ phase: 'complete' }), 'Processing complete.');
+  assert.equal(hasNoEligibleWork({ phase: 'complete', scheduled_count: 0, job_count: 0 }), true);
+  assert.equal(hasNoEligibleWork({ phase: 'complete', scheduled_count: 1, job_count: 0 }), false);
 });
 
 test('project changes clear submissions and reject previous project responses', async (t) => {

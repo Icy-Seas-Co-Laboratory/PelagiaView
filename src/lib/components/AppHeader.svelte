@@ -2,6 +2,7 @@
   import { browser } from '$app/environment';
   import { base } from '$app/paths';
   import HeaderImageInversionToggle from './HeaderImageInversionToggle.svelte';
+  import ComputerIdentity from './ComputerIdentity.svelte';
   import {
     dashboardSections,
     dashboardSectionViews,
@@ -18,6 +19,8 @@
   export let project: ProjectSummary | null = null;
   export let projects: ProjectSummary[] = [];
   export let switchingProject = false;
+  export let computerName: string | null = null;
+  export let registryCatalog = false;
   export let projectSwitchError: string | null = null;
   export let onProjectChange: ((event: Event) => void | Promise<void>) | null = null;
   export let onPreferences: (() => void) | null = null;
@@ -58,18 +61,19 @@
 
     <nav class="primary-navigation" aria-label="Primary navigation">
       {#each dashboardSections as section}
-        <a href={sectionHref(section.id)} class:active={activeSection === section.id} aria-current={activeSection === section.id ? 'page' : undefined}>
+        <a href={sectionHref(section.id)} class:active={!registryCatalog && activeSection === section.id} aria-current={!registryCatalog && activeSection === section.id ? 'page' : undefined}>
           <strong>{section.label}</strong>
           <small>{section.detail}</small>
         </a>
       {/each}
-      <a href={`${base}/registry/`}>
+      <a href={`${base}/registry/`} class:active={registryCatalog} aria-current={registryCatalog ? 'page' : undefined}>
         <strong>Registry</strong>
         <small>Curate portable datasets</small>
       </a>
     </nav>
 
     <div class="global-tools">
+      <ComputerIdentity name={computerName} />
       <label class="project-switcher" title={projectSwitchError ?? 'Active scientific project'}>
         <span>Project</span>
         <select value={project?.id ?? ''} on:change={(event) => onProjectChange?.(event)} disabled={switchingProject || projects.length < 1}>
@@ -77,7 +81,7 @@
           {#each projects as option}<option value={option.id}>{projectLabel(option)}</option>{/each}
         </select>
       </label>
-      {#if activeSection === 'analysis' || activeSection === 'explorer'}<HeaderImageInversionToggle />{/if}
+      {#if !registryCatalog && (activeSection === 'analysis' || activeSection === 'explorer')}<HeaderImageInversionToggle />{/if}
       <details class="account-menu">
         <summary title={user?.username ?? 'Account'}><span>{(user?.display_name ?? user?.username ?? 'U').slice(0, 1).toUpperCase()}</span></summary>
         <div>
@@ -91,16 +95,16 @@
 
   <div class="context-navigation">
     <div class="page-identity">
-      <strong>{activeDefinition.label}</strong>
-      <small>{activeDefinition.detail}</small>
+      <strong>{registryCatalog ? 'Registry catalog' : activeDefinition.label}</strong>
+      <small>{registryCatalog ? 'Choose a workspace or load a portable dataset.' : activeDefinition.detail}</small>
     </div>
-    {#if secondaryViews.length}
+    {#if !registryCatalog && secondaryViews.length}
       <nav class="secondary-navigation" aria-label={`${activeDefinition.group} pages`}>
         {#each secondaryViews as view}
           <a href={dashboardViewHref(view.id, currentUrl)} class:active={activeView === view.id} aria-current={activeView === view.id ? 'page' : undefined}>{view.label}</a>
         {/each}
       </nav>
-    {:else if activeSection === 'workflow'}
+    {:else if !registryCatalog && activeSection === 'workflow'}
       <p class="workflow-context">Follow the processing sequence from source assets to refined ROIs.</p>
     {/if}
   </div>

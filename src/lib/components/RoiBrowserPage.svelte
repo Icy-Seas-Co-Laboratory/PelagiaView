@@ -10,6 +10,7 @@
   import TelemetryFilterModal from '$lib/components/TelemetryFilterModal.svelte';
   import TelemetrySummary from '$lib/components/TelemetrySummary.svelte';
   import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
+  import LoadingOverlay from '$lib/components/LoadingOverlay.svelte';
   import { authenticatedFetch } from '$lib/api/client';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { getClient, session } from '$lib/stores/session';
@@ -42,7 +43,6 @@
   // refined image, bbox, and measurement comes from the same record.
   let refinedDetectionsByCandidateId = new Map<string, DetectionSummary>();
   let unavailableRefinedRecords = 0;
-  let pendingDetectionReload = false;
   let selectedAssetId = '';
   let selectedFrameId = '';
   let collection = '';
@@ -250,13 +250,9 @@
     }
   });
 
-  async function loadDetections(reset = false) {
+  async function loadDetections(reset = false, fresh = false) {
     const client = getClient();
     if (!client) return;
-    if (loading) {
-      pendingDetectionReload = true;
-      return;
-    }
     const projectId = $session.project?.id ?? null;
     if (reset) browserPage = 0;
     const offset = browserPage * pageSize;
@@ -268,7 +264,7 @@
     fullResolutionTileKeys = new Set();
     selectedBrowserRoiIds = new Set();
     try {
-      const response = await client.searchDetectionsPage(currentFilters(offset));
+      const response = await client.searchDetectionsPage(currentFilters(offset), { fresh });
       const resultPage = response.detections ?? [];
       if (!isDetectionRequestCurrent(serial, projectId, client)) return;
       const refined = await loadRefinedRecords(resultPage, serial, projectId, client);
@@ -278,12 +274,15 @@
       unavailableRefinedRecords = refined.unavailable;
       browserHasNextPage = response.page?.next_offset !== null && response.page?.next_offset !== undefined;
     } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
+      if (isDetectionRequestCurrent(serial, projectId, client)) {
+        error = err instanceof Error ? err.message : String(err);
+      }
     } finally {
-      loading = false;
-      if (pendingDetectionReload) {
-        pendingDetectionReload = false;
-        void loadDetections(true);
+      // The overlay remains until Svelte has applied the accepted response.
+      // Older requests may finish later, but cannot hide the current request's wait state.
+      if (serial === requestSerial) {
+        await tick();
+        loading = false;
       }
     }
   }
@@ -415,7 +414,7 @@
     maxBBoxH = null;
     telemetryFilters = [];
     fullResolutionTileKeys = new Set();
-    void loadDetections(true);
+    void loadDetections(true, true);
   }
 
   function changeBrowserPage(direction: -1 | 1) {
@@ -561,11 +560,8 @@
     if (roiViewMode === mode) return;
     roiViewMode = mode;
     closeRoiDetail();
-    // Invalidate an in-flight query before requesting the other scope. The
-    // pending reload runs as soon as the current request releases the loader.
-    requestSerial += 1;
-    if (loading) pendingDetectionReload = true;
-    void loadDetections(true);
+    // A newer request wins even if an older server response arrives afterwards.
+    void loadDetections(true, true);
   }
 
   function nullableNumberPreference(value: unknown, fallback: number | null): number | null {
@@ -1728,6 +1724,7 @@
 
 <div
   class="roi-browser-layout browser-top-layout resizable-browser-workspace"
+  aria-busy={loading}
   style={`--browser-filter-width:${filterRailWidth}px;--browser-inspector-width:${inspectorWidth}px`}
 >
   <section class="panel roi-filter-panel browser-filter-bar">
@@ -1805,7 +1802,7 @@
       </div>
 
       <div class="button-row browser-filter-actions">
-        <button type="button" on:click={() => loadDetections(true)}>Apply</button>
+        <button type="button" on:click={() => loadDetections(true, true)}>Apply</button>
         <button class="ghost" type="button" on:click={resetFilters}>Reset</button>
       </div>
     </div>
@@ -2035,6 +2032,8 @@
 
   <button class="scroll-top-button" type="button" aria-label="Scroll to top" on:click={scrollToTop}></button>
 </div>
+
+{#if loading}<LoadingOverlay label="Loading ROI results…" />{/if}
 
 {#if telemetryFilterModalOpen}
   <TelemetryFilterModal

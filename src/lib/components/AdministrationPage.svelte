@@ -5,7 +5,10 @@
   import type {
     AuthUserSummary,
     DirectoryListing,
+    Job,
+    ProjectMembershipSummary,
     ProjectStorageSettingsResponse,
+    ProjectStorageUsageResponse,
     ProjectSummary,
     SystemConfigResponse
   } from '$lib/api/types';
@@ -30,6 +33,14 @@
     maskEncoding: string;
   };
 
+  const projectAccessLevels = [
+    { value: 'none', label: 'No access' },
+    { value: 'viewer', label: 'View' },
+    { value: 'editor', label: 'Edit' },
+    { value: 'manager', label: 'Manage' },
+    { value: 'admin', label: 'Project admin' }
+  ] as const;
+
   type AdministrationSection = 'overview' | 'projects' | 'people';
 
   let users: AuthUserSummary[] = [];
@@ -37,7 +48,8 @@
   let usersLoading = false;
   let usersUnavailable = false;
   let usersActiveOnly = true;
-  let usersIncludeAllProjects = false;
+  let membershipsByUserId: Record<string, ProjectMembershipSummary[]> = {};
+  let membershipsLoadingFor = '';
   let projectMessage: string | null = null;
   let projectError: string | null = null;
   let userMessage: string | null = null;
@@ -50,12 +62,12 @@
   let kvstoreRootPathTouched = false;
   let kvstoreDefaultDirectory = '.';
   let kvstorePathSuggestions: string[] = [];
-  let projectFrameStorageEncoding = 'zstd';
-  let projectFrameStorageQuality = 90;
+  let projectFrameStorageEncoding = 'jpg';
+  let projectFrameStorageQuality = 75;
   let projectSmallRoiStorageEncoding = 'zstd';
   let projectLargeRoiStorageEncoding = 'jpg';
-  let projectLargeRoiMinPixels = 50000;
-  let projectRoiStorageQuality = 90;
+  let projectLargeRoiMinPixels = 1000;
+  let projectRoiStorageQuality = 75;
   let projectMaskStorageEncoding = 'zstd';
   let imageCodecAvailability: CodecAvailability = {};
   let allowedStorageEncodings = ['zstd', 'jpg', 'png', 'jxl', 'jxs', 'raw'];
@@ -64,6 +76,15 @@
   let projectStorageDrafts: Record<string, ProjectStorageDraft> = {};
   let projectStorageSettingsByKey: Record<string, ProjectStorageSettingsResponse> = {};
   let updatingProjectStorageFor = '';
+  let updatingDatastoresFor = '';
+  let storageReencodeJobsByKey: Record<string, Job | null> = {};
+  let storageWorkerAvailableByKey: Record<string, boolean> = {};
+  let projectStorageUsageByKey: Record<string, ProjectStorageUsageResponse> = {};
+  let storageReencodeError: string | null = null;
+  let storageReencodeActionMessage: string | null = null;
+  let storageReencodeActionError: string | null = null;
+  let storageUpdateConfirmedFor = '';
+  let storageConfirmationInput: HTMLInputElement | null = null;
 
   let username = '';
   let password = '';
@@ -76,8 +97,8 @@
   let userActionTarget = '';
   let resetPassword = '';
   let userActionBusy = '';
-  let roleDrafts: Record<string, string> = {};
-  let updatingRoleFor = '';
+  let updatingMembershipFor = '';
+  let pendingMembershipRoleByKey: Record<string, string> = {};
   let activeSection: AdministrationSection = 'overview';
   let projectSearch = '';
   let userSearch = '';
@@ -92,18 +113,19 @@
   $: if (!targetProjectId && activeProjectId) targetProjectId = activeProjectId;
   $: canCreateProject = Boolean($session.user?.is_admin);
   $: canListAllProjectUsers = Boolean($session.user?.is_admin);
-  $: if (!canListAllProjectUsers && usersIncludeAllProjects) usersIncludeAllProjects = false;
   $: frameStorageOptions = allowedStorageEncodings;
   $: roiStorageOptions = allowedStorageEncodings;
   $: maskStorageOptions = allowedStorageEncodings.filter((encoding) => ['zstd', 'png', 'raw'].includes(encoding));
   $: filteredProjects = projects.filter((project) => searchableProject(project).includes(projectSearch.trim().toLowerCase()));
   $: filteredUsers = users.filter((user) => searchableUser(user).includes(userSearch.trim().toLowerCase()));
   $: selectedProject = projects.find((project) => projectKeyForDraft(project) === selectedProjectKey) ?? null;
+  $: selectedProjectStorageChanged = projectStorageDrafts && projectStorageSettingsByKey && selectedProject
+    ? projectStorageChanged(selectedProject)
+    : false;
   $: selectedUser = users.find((user) => userKey(user) === selectedUserKey) ?? null;
   $: if (projects.length && !projects.some((project) => projectKeyForDraft(project) === selectedProjectKey)) {
     selectedProjectKey = projectKeyForDraft(projects[0]);
   }
-  $: if (users.length && !users.some((user) => userKey(user) === selectedUserKey)) selectUser(users[0]);
   $: uniqueOverviewUsers = uniqueUsers(userOverview);
   $: activeUserCount = uniqueOverviewUsers.filter((user) => user.is_active !== false).length;
   $: inactiveUserCount = uniqueOverviewUsers.filter((user) => user.is_active === false).length;
@@ -115,7 +137,13 @@
   onMount(() => {
     const stopUsagePolling = startSystemUsagePolling();
     void loadAdministrationData();
-    return () => stopUsagePolling();
+    const storagePoll = window.setInterval(() => {
+      if (selectedProject) void refreshStorageReencodeJob(selectedProject);
+    }, 3000);
+    return () => {
+      stopUsagePolling();
+      window.clearInterval(storagePoll);
+    };
   });
 
   async function loadAdministrationData() {
@@ -152,6 +180,11 @@
       const nextProjects = await refreshSessionProjects();
       projectStorageSettingsByKey = await fetchProjectStorageSettings(nextProjects);
       syncProjectStorageDrafts(nextProjects);
+      const selected = nextProjects.find((project) => projectKeyForDraft(project) === selectedProjectKey) ?? nextProjects[0];
+      if (selected) {
+        void refreshStorageReencodeJob(selected);
+        void refreshProjectStorageUsage(selected);
+      }
     } catch (error) {
       projectError = error instanceof Error ? error.message : String(error);
     }
@@ -165,12 +198,11 @@
     try {
       users = await client.listUsers({
         active_only: usersActiveOnly,
-        include_all_projects: usersIncludeAllProjects
+        include_all_projects: canListAllProjectUsers
       });
-      syncRoleDrafts(users);
     } catch (error) {
       users = [];
-      roleDrafts = {};
+      membershipsByUserId = {};
       usersUnavailable = true;
       if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) {
         userError = 'User listing is not available for this session.';
@@ -228,12 +260,12 @@
       projectDescription = '';
       kvstoreRootPath = '';
       kvstoreRootPathTouched = false;
-      projectFrameStorageEncoding = 'zstd';
-      projectFrameStorageQuality = 90;
+      projectFrameStorageEncoding = 'jpg';
+      projectFrameStorageQuality = 75;
       projectSmallRoiStorageEncoding = 'zstd';
       projectLargeRoiStorageEncoding = 'jpg';
-      projectLargeRoiMinPixels = 50000;
-      projectRoiStorageQuality = 90;
+      projectLargeRoiMinPixels = 1000;
+      projectRoiStorageQuality = 75;
       projectMaskStorageEncoding = 'zstd';
       await refreshProjects();
       createProjectOpen = false;
@@ -285,12 +317,110 @@
         mask_encoding: availableMaskStorageEncoding(draft.maskEncoding)
       });
       projectMessage = `Updated storage defaults for ${projectLabel(response.project ?? project)}.`;
+      storageUpdateConfirmedFor = '';
       await refreshProjects();
     } catch (error) {
       projectError = error instanceof Error ? error.message : String(error);
     } finally {
       updatingProjectStorageFor = '';
     }
+  }
+
+  async function refreshStorageReencodeJob(project: ProjectSummary) {
+    const client = getClient();
+    const projectId = project.id || project.project_key;
+    if (!client || !projectId) return;
+    try {
+      const response = await client.getProjectStorageReencode(projectId);
+      const key = projectKeyForDraft(project);
+      const previousStatus = storageReencodeJobsByKey[key]?.status;
+      storageReencodeJobsByKey = {
+        ...storageReencodeJobsByKey,
+        [key]: response.job
+      };
+      if (typeof response.worker_available === 'boolean') {
+        storageWorkerAvailableByKey = { ...storageWorkerAvailableByKey, [key]: response.worker_available };
+      }
+      if (previousStatus && ['queued', 'leased', 'working', 'paused'].includes(previousStatus) && !storageReencodeActive(response.job)) {
+        void refreshProjectStorageUsage(project);
+      }
+      storageReencodeError = null;
+    } catch (error) {
+      storageReencodeError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async function refreshProjectStorageUsage(project: ProjectSummary) {
+    const client = getClient();
+    const projectId = project.id || project.project_key;
+    if (!client || !projectId) return;
+    try {
+      const usage = await client.getProjectStorageUsage(projectId);
+      projectStorageUsageByKey = { ...projectStorageUsageByKey, [projectKeyForDraft(project)]: usage };
+    } catch {
+      // Optional metric; storage configuration remains usable if unavailable.
+    }
+  }
+
+  async function updateProjectDatastores(project: ProjectSummary) {
+    const client = getClient();
+    const projectId = project.id || project.project_key;
+    if (!client || !projectId || projectStorageChanged(project)) return;
+    if (!storageConfirmationInput?.checked) {
+      storageReencodeActionError = 'Verify the saved policy using the checkbox before updating datastores.';
+      return;
+    }
+    updatingDatastoresFor = projectKeyForDraft(project);
+    projectError = null;
+    storageReencodeActionError = null;
+    storageReencodeActionMessage = null;
+    try {
+      const response = await client.startProjectStorageReencode(projectId);
+      storageReencodeJobsByKey = {
+        ...storageReencodeJobsByKey,
+        [projectKeyForDraft(project)]: response.job
+      };
+      if (typeof response.worker_available === 'boolean') {
+        storageWorkerAvailableByKey = {
+          ...storageWorkerAvailableByKey,
+          [projectKeyForDraft(project)]: response.worker_available
+        };
+      }
+      storageUpdateConfirmedFor = '';
+      projectMessage = response.created
+        ? `Datastore update queued for ${projectLabel(project)}.`
+        : `The existing datastore update for ${projectLabel(project)} is shown below.`;
+      storageReencodeActionMessage = projectMessage;
+    } catch (error) {
+      projectError = error instanceof Error ? error.message : String(error);
+      storageReencodeActionError = projectError;
+    } finally {
+      updatingDatastoresFor = '';
+    }
+  }
+
+  async function cancelProjectDatastoreUpdate(project: ProjectSummary) {
+    const client = getClient();
+    const projectId = project.id || project.project_key;
+    if (!client || !projectId) return;
+    updatingDatastoresFor = projectKeyForDraft(project);
+    projectError = null;
+    try {
+      const response = await client.cancelProjectStorageReencode(projectId);
+      storageReencodeJobsByKey = {
+        ...storageReencodeJobsByKey,
+        [projectKeyForDraft(project)]: response.job
+      };
+      projectMessage = `Requested cancellation of the datastore update for ${projectLabel(project)}.`;
+    } catch (error) {
+      projectError = error instanceof Error ? error.message : String(error);
+    } finally {
+      updatingDatastoresFor = '';
+    }
+  }
+
+  function storageReencodeActive(job: Job | null | undefined): boolean {
+    return Boolean(job && ['queued', 'leased', 'working', 'paused'].includes(job.status ?? ''));
   }
 
   async function createUser() {
@@ -434,8 +564,8 @@
       ),
       smallRoiEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.small_encoding) ?? stringValue(configuredRoi.small_encoding) ?? 'zstd', 'zstd'),
       largeRoiEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.large_encoding) ?? stringValue(configuredRoi.large_encoding) ?? 'jpg', 'jpg'),
-      largeRoiMinPixels: normalizeRoiCutoff(numberValue(effectiveRoi.large_min_pixels) ?? numberValue(configuredRoi.large_min_pixels) ?? 50000),
-      roiQuality: normalizeFrameStorageQuality(numberValue(effectiveRoi.quality) ?? numberValue(configuredRoi.quality) ?? 90),
+      largeRoiMinPixels: normalizeRoiCutoff(numberValue(effectiveRoi.large_min_pixels) ?? numberValue(configuredRoi.large_min_pixels) ?? 1000),
+      roiQuality: normalizeFrameStorageQuality(numberValue(effectiveRoi.quality) ?? numberValue(configuredRoi.quality) ?? 75),
       maskEncoding: normalizeRoiStorageEncoding(stringValue(effectiveRoi.mask_encoding) ?? stringValue(configuredRoi.mask_encoding) ?? 'zstd', 'zstd')
     };
   }
@@ -446,7 +576,7 @@
     const processingFrameStorage = objectValue(processing.frame_storage);
     const metadataFrameStorage = objectValue(metadata.frame_storage);
     const frameStorage = Object.keys(processingFrameStorage).length ? processingFrameStorage : metadataFrameStorage;
-    return normalizeFrameStorageEncoding(stringValue(frameStorage.image_encoding) ?? stringValue(metadata.frame_storage_image_encoding) ?? 'zstd');
+    return normalizeFrameStorageEncoding(stringValue(frameStorage.image_encoding) ?? stringValue(metadata.frame_storage_image_encoding) ?? 'jpg');
   }
 
   function projectLegacyFrameStorageQuality(project: ProjectSummary): number {
@@ -455,7 +585,7 @@
     const processingFrameStorage = objectValue(processing.frame_storage);
     const metadataFrameStorage = objectValue(metadata.frame_storage);
     const frameStorage = Object.keys(processingFrameStorage).length ? processingFrameStorage : metadataFrameStorage;
-    return normalizeFrameStorageQuality(numberValue(frameStorage.image_quality) ?? numberValue(metadata.frame_storage_image_quality) ?? 90);
+    return normalizeFrameStorageQuality(numberValue(frameStorage.image_quality) ?? numberValue(metadata.frame_storage_image_quality) ?? 75);
   }
 
   function setProjectStorageDraft(project: ProjectSummary, patch: Partial<ProjectStorageDraft>) {
@@ -508,12 +638,12 @@
   }
 
   function normalizeRoiCutoff(value: number): number {
-    return Math.max(1, Math.round(Number.isFinite(value) ? value : 50000));
+    return Math.max(1, Math.round(Number.isFinite(value) ? value : 1000));
   }
 
   function normalizeFrameStorageQuality(value: number): number {
     const next = Math.round(Number(value));
-    if (!Number.isFinite(next)) return 90;
+    if (!Number.isFinite(next)) return 75;
     return Math.max(0, Math.min(100, next));
   }
 
@@ -589,46 +719,88 @@
     userActionTarget = user.username || user.id;
     selectedUserKey = userKey(user);
     resetPassword = '';
+    if (canListAllProjectUsers) void loadUserMemberships(user);
   }
 
-  async function updateUserRole(user: AuthUserSummary) {
+  async function loadUserMemberships(user: AuthUserSummary) {
     const client = getClient();
     const target = user.username || user.id;
-    const projectId = user.project_id || activeProjectId;
-    const nextRole = roleDrafts[userKey(user)] || projectRoleForUser(user);
-    if (!client || !target || !projectId || !nextRole) return;
-    updatingRoleFor = userKey(user);
+    const key = userKey(user);
+    if (!client || !target) return;
+    membershipsLoadingFor = key;
+    try {
+      const response = await client.getUserProjectMemberships(target);
+      membershipsByUserId = { ...membershipsByUserId, [key]: response.memberships ?? [] };
+    } catch (error) {
+      userError = error instanceof Error ? error.message : String(error);
+    } finally {
+      if (membershipsLoadingFor === key) membershipsLoadingFor = '';
+    }
+  }
+
+  function membershipsForUser(user: AuthUserSummary): ProjectMembershipSummary[] {
+    return membershipsByUserId[userKey(user)] ?? [];
+  }
+
+  function membershipForProject(user: AuthUserSummary, project: ProjectSummary): ProjectMembershipSummary | undefined {
+    const projectId = project.id || project.project_key;
+    return membershipsForUser(user).find((membership) => membership.project_id === projectId);
+  }
+
+  function membershipUpdateKey(user: AuthUserSummary, project: ProjectSummary): string {
+    return `${userKey(user)}:${project.id || project.project_key}`;
+  }
+
+  async function setProjectAccessRole(user: AuthUserSummary, project: ProjectSummary, role: string) {
+    const client = getClient();
+    const target = user.username || user.id;
+    const projectId = project.id || project.project_key;
+    if (!client || !target || !projectId) return;
+    const busyKey = membershipUpdateKey(user, project);
+    const currentRole = membershipForProject(user, project)?.role ?? 'none';
+    if (role === currentRole || updatingMembershipFor) return;
+    updatingMembershipFor = busyKey;
+    pendingMembershipRoleByKey = { ...pendingMembershipRoleByKey, [busyKey]: role };
     userMessage = null;
     userError = null;
     try {
-      await client.updateProjectUserRole(projectId, target, nextRole);
-      userMessage = `Updated ${target} to ${nextRole} in the current project.`;
+      if (role === 'none') {
+        await client.removeUserProjectMembership(target, projectId);
+        removeProjectMembership(user, project);
+        userMessage = `Removed ${target} from ${projectLabel(project)}.`;
+      } else {
+        const response = await client.setUserProjectMembership(target, projectId, role);
+        replaceProjectMembership(user, project, response.membership);
+        userMessage = `Set ${target} to ${projectAccessLevels.find((level) => level.value === role)?.label ?? role} in ${projectLabel(project)}.`;
+      }
       await loadUsers();
     } catch (error) {
       userError = error instanceof Error ? error.message : String(error);
     } finally {
-      updatingRoleFor = '';
+      const { [busyKey]: _finished, ...remaining } = pendingMembershipRoleByKey;
+      pendingMembershipRoleByKey = remaining;
+      if (updatingMembershipFor === busyKey) updatingMembershipFor = '';
     }
   }
 
-  function syncRoleDrafts(nextUsers: AuthUserSummary[]) {
-    const nextDrafts: Record<string, string> = {};
-    for (const user of nextUsers) {
-      nextDrafts[userKey(user)] = roleDrafts[userKey(user)] ?? projectRoleForUser(user);
-    }
-    roleDrafts = nextDrafts;
+  function replaceProjectMembership(user: AuthUserSummary, project: ProjectSummary, membership: ProjectMembershipSummary) {
+    const key = userKey(user);
+    const projectId = project.id || project.project_key;
+    const memberships = membershipsForUser(user).filter((item) => item.project_id !== projectId);
+    membershipsByUserId = { ...membershipsByUserId, [key]: [...memberships, membership] };
+  }
+
+  function removeProjectMembership(user: AuthUserSummary, project: ProjectSummary) {
+    const key = userKey(user);
+    const projectId = project.id || project.project_key;
+    membershipsByUserId = {
+      ...membershipsByUserId,
+      [key]: membershipsForUser(user).filter((membership) => membership.project_id !== projectId)
+    };
   }
 
   function userKey(user: AuthUserSummary): string {
-    return `${user.id || user.username}:${user.project_id || activeProjectId || 'unscoped'}`;
-  }
-
-  function projectRoleForUser(user: AuthUserSummary): string {
-    return user.project_role ?? user.role ?? (user.is_admin ? 'admin' : 'viewer');
-  }
-
-  function setRoleDraft(user: AuthUserSummary, value: string) {
-    roleDrafts = { ...roleDrafts, [userKey(user)]: value };
+    return user.id || user.username;
   }
 
   function updateTypedKvstoreRootPath() {
@@ -644,7 +816,7 @@
   }
 
   function searchableUser(user: AuthUserSummary): string {
-    return [user.display_name, user.username, user.id, user.project_id, projectRoleForUser(user)]
+    return [user.display_name, user.username, user.id, user.is_admin ? 'system administrator' : 'standard account']
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
@@ -696,6 +868,12 @@
   function selectProject(project: ProjectSummary) {
     selectedProjectKey = projectKeyForDraft(project);
     projectStorageAdvanced = false;
+    storageUpdateConfirmedFor = '';
+    if (storageConfirmationInput) storageConfirmationInput.checked = false;
+    storageReencodeActionMessage = null;
+    storageReencodeActionError = null;
+    void refreshStorageReencodeJob(project);
+    void refreshProjectStorageUsage(project);
   }
 
   function discardProjectStorage(project: ProjectSummary) {
@@ -795,6 +973,9 @@
         {#if projectError}<p class="admin-notice form-error">{projectError}</p>{/if}
         {#if selectedProject}
           {@const storageDraft = projectStorageDrafts[projectKeyForDraft(selectedProject)] ?? projectStorageDraftFor(selectedProject)}
+          {@const savedStorage = projectStorageDraftFor(selectedProject)}
+          {@const storageReencodeJob = storageReencodeJobsByKey[projectKeyForDraft(selectedProject)]}
+          {@const storageUsage = projectStorageUsageByKey[projectKeyForDraft(selectedProject)]}
           <header class="inspector-header"><div><span class="section-kicker">Project</span><h2>{selectedProject.project_name || selectedProject.name || selectedProject.project_key || selectedProject.id}</h2><p>{selectedProject.description || 'No project description.'}</p></div><span class="status-pill {selectedProject.is_active === false ? 'bad' : 'good'}">{selectedProject.is_active === false ? 'Inactive' : projectRole(selectedProject)}</span></header>
 
           <section class="inspector-section">
@@ -809,12 +990,34 @@
               <label><span>Frame quality (%) <small>{storageSource(selectedProject, 'frame_quality')}</small></span><input type="number" min="0" max="100" value={storageDraft.frameQuality} on:input={(event) => setProjectStorageDraft(selectedProject, { frameQuality: normalizeFrameStorageQuality(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={!frameQualityApplies(storageDraft.frameEncoding) || updatingProjectStorageFor === projectKeyForDraft(selectedProject)} />{#if !frameQualityApplies(storageDraft.frameEncoding)}<small>Not used by {codecLabel(storageDraft.frameEncoding)}.</small>{/if}</label>
               <label><span>Small ROI codec <small>{storageSource(selectedProject, 'small_roi_encoding')}</small></span><select value={storageDraft.smallRoiEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { smallRoiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value, 'zstd') })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)} title={codecUnavailableTitle(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select></label>
               <label><span>Large ROI codec <small>{storageSource(selectedProject, 'large_roi_encoding')}</small></span><select value={storageDraft.largeRoiEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { largeRoiEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value, 'jpg') })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)} title={codecUnavailableTitle(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select></label>
-              <label><span>Large ROI cutoff (px²) <small>{storageSource(selectedProject, 'large_roi_min_pixels')}</small></span><input type="number" min="1" step="1000" value={storageDraft.largeRoiMinPixels} on:input={(event) => setProjectStorageDraft(selectedProject, { largeRoiMinPixels: normalizeRoiCutoff(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)} /><small>Uses padded crop width × height.</small></label>
+              <label><span>Large ROI cutoff (px²) <small>{storageSource(selectedProject, 'large_roi_min_pixels')}</small></span><input type="number" min="1" step="1" value={storageDraft.largeRoiMinPixels} on:input={(event) => setProjectStorageDraft(selectedProject, { largeRoiMinPixels: normalizeRoiCutoff(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)} /><small>Uses padded crop width × height.</small></label>
               <label><span>ROI quality (%) <small>{storageSource(selectedProject, 'roi_quality')}</small></span><input type="number" min="0" max="100" value={storageDraft.roiQuality} on:input={(event) => setProjectStorageDraft(selectedProject, { roiQuality: normalizeFrameStorageQuality(Number((event.currentTarget as HTMLInputElement).value)) })} disabled={!frameQualityApplies(storageDraft.largeRoiEncoding) || updatingProjectStorageFor === projectKeyForDraft(selectedProject)} />{#if !frameQualityApplies(storageDraft.largeRoiEncoding)}<small>Not used by {codecLabel(storageDraft.largeRoiEncoding)}.</small>{/if}</label>
             </div>
             <button class="advanced-toggle" type="button" aria-expanded={projectStorageAdvanced} on:click={() => (projectStorageAdvanced = !projectStorageAdvanced)}>Advanced storage details <span>{projectStorageAdvanced ? '−' : '+'}</span></button>
             {#if projectStorageAdvanced}<div class="storage-form storage-advanced"><label><span>Mask codec <small>{storageSource(selectedProject, 'mask_encoding')}</small></span><select value={storageDraft.maskEncoding} on:change={(event) => setProjectStorageDraft(selectedProject, { maskEncoding: normalizeRoiStorageEncoding((event.currentTarget as HTMLSelectElement).value, 'zstd') })} disabled={updatingProjectStorageFor === projectKeyForDraft(selectedProject)}>{#each maskStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)} — {codecDescription(encoding)}</option>{/each}</select><small>Masks are always stored losslessly.</small></label></div><dl class="definition-grid storage-details"><div><dt>KV store</dt><dd>{selectedProject.kvstore_root_path || 'Managed by server configuration'}</dd></div><div><dt>Configuration provenance</dt><dd>{projectStorageSourceLabel(selectedProject)}</dd></div></dl>{/if}
-            {#if projectStorageChanged(selectedProject)}<div class="save-bar"><span>Unsaved storage changes</span><div><button class="ghost" type="button" on:click={() => discardProjectStorage(selectedProject)} disabled={Boolean(updatingProjectStorageFor)}>Discard</button><button type="button" on:click={() => updateProjectFrameStorage(selectedProject)} disabled={Boolean(updatingProjectStorageFor)}>{updatingProjectStorageFor ? 'Saving…' : 'Save changes'}</button></div></div>{/if}
+            {#if selectedProjectStorageChanged}<div class="save-bar"><span>Unsaved storage changes</span><div><button class="ghost" type="button" on:click={() => discardProjectStorage(selectedProject)} disabled={Boolean(updatingProjectStorageFor)}>Discard</button><button type="button" on:click={() => updateProjectFrameStorage(selectedProject)} disabled={Boolean(updatingProjectStorageFor)}>{updatingProjectStorageFor ? 'Saving…' : 'Save changes'}</button></div></div>{/if}
+          </section>
+
+          <section class="inspector-section">
+            <div class="section-title"><div><span class="section-kicker">Existing images</span><h3>Update datastores</h3><p>Apply the saved storage policy to existing frames, candidate ROIs, refined ROIs, and masks. This runs in the background and can take a long time for large projects.</p></div></div>
+            <p><strong>Saved policy for {projectLabel(selectedProject)}:</strong> frames {codecLabel(savedStorage.frameEncoding)}{frameQualityApplies(savedStorage.frameEncoding) ? ` at ${savedStorage.frameQuality}%` : ''}; ROIs under {savedStorage.largeRoiMinPixels.toLocaleString()} px² {codecLabel(savedStorage.smallRoiEncoding)}; larger ROIs {codecLabel(savedStorage.largeRoiEncoding)}{frameQualityApplies(savedStorage.largeRoiEncoding) ? ` at ${savedStorage.roiQuality}%` : ''}; masks {codecLabel(savedStorage.maskEncoding)}.</p>
+            <p><strong>Project KVStore on disk:</strong> {storageUsage?.kvstore_file_bytes != null ? formatBytes(storageUsage.kvstore_file_bytes) : 'Unavailable'} <small>(includes retained frame blobs; PostgreSQL ROI storage is separate)</small></p>
+            <p>JPEG conversion is lossy. Previous frame blobs are retained; PostgreSQL may reuse old ROI space after vacuum, but its files may not immediately shrink.</p>
+            {#if storageReencodeActionMessage}<p class="admin-notice success" role="status">{storageReencodeActionMessage}</p>{/if}
+            {#if storageReencodeActionError}<p class="admin-notice form-error" role="alert">Datastore update failed: {storageReencodeActionError}</p>{/if}
+            {#if storageReencodeError}<p class="admin-notice form-error">Could not load datastore update status: {storageReencodeError}</p>{/if}
+            <p><a href="/system/status">View queue status</a>{#if activeProjectId && activeProjectId !== selectedProject.id} · The Status page currently shows {$session.project?.project_name || $session.project?.project_key || 'the active project'}; select {projectLabel(selectedProject)} in the top project menu to see this project's queue.{/if}</p>
+            {#if storageReencodeJob}
+              <p role="status">{storageReencodeJob.status || 'Unknown'} · {storageReencodeJob.progress?.message || storageReencodeJob.summary || 'Waiting for a worker'}</p>
+              {#if storageReencodeJob.status === 'queued' && storageWorkerAvailableByKey[projectKeyForDraft(selectedProject)] === false}<p class="admin-notice form-error">No storage update worker is online. This request will remain queued until a worker with the storage_reencode capability starts.</p>{/if}
+              {#if storageReencodeJob.progress?.secondary}
+                <p>{numberValue(storageReencodeJob.progress.secondary.examined) ?? 0} resources examined · {numberValue(storageReencodeJob.progress.secondary.rewritten) ?? 0} payloads rewritten</p>
+              {/if}
+              {#if storageReencodeJob.error_message}<p class="admin-notice form-error">{storageReencodeJob.error_message}</p>{/if}
+            {:else}<p role="status">No datastore update has been submitted for this project.</p>{/if}
+            {#if selectedProjectStorageChanged}<p>Save the storage settings before updating existing images.</p>{/if}
+            <label class="storage-update-confirmation"><input type="checkbox" bind:this={storageConfirmationInput} checked={storageUpdateConfirmedFor === projectKeyForDraft(selectedProject)} on:change={(event) => (storageUpdateConfirmedFor = (event.currentTarget as HTMLInputElement).checked ? projectKeyForDraft(selectedProject) : '')} /> I have verified this project's saved policy and understand that lossy codecs can change existing images.</label>
+            <div class="save-bar"><span>The job uses a snapshot of the saved policy.</span><div><button type="button" on:click={() => updateProjectDatastores(selectedProject)} disabled={Boolean(updatingDatastoresFor || updatingProjectStorageFor) || selectedProjectStorageChanged || storageReencodeActive(storageReencodeJob)}>{updatingDatastoresFor ? 'Submitting…' : 'Update datastores'}</button>{#if storageReencodeActive(storageReencodeJob)}<button class="ghost" type="button" on:click={() => cancelProjectDatastoreUpdate(selectedProject)} disabled={Boolean(updatingDatastoresFor)}>Cancel update</button>{/if}</div></div>
           </section>
 
           {#if canCreateProject}<section class="inspector-section danger-zone"><div><span class="section-kicker">Danger zone</span><h3>Delete project</h3><p>Permanently removes the project record and invalidates its active sessions.</p></div><button class="ghost danger" type="button" on:click={() => deleteProject(selectedProject)} disabled={isDefaultProject(selectedProject) || deletingProjectId === selectedProject.id}>{deletingProjectId ? 'Deleting…' : isDefaultProject(selectedProject) ? 'Default project protected' : 'Delete project'}</button></section>{/if}
@@ -828,11 +1031,11 @@
           <label><span class="sr-only">Search accounts</span><input type="search" bind:value={userSearch} placeholder="Search accounts…" /></label>
           <button type="button" on:click={() => (createUserOpen = true)}>Create account</button>
         </div>
-        <div class="filter-strip"><label><input type="checkbox" bind:checked={usersActiveOnly} on:change={loadUsers} /> Active only</label>{#if canListAllProjectUsers}<label><input type="checkbox" bind:checked={usersIncludeAllProjects} on:change={loadUsers} /> All projects</label>{/if}</div>
+        <div class="filter-strip"><label><input type="checkbox" bind:checked={usersActiveOnly} on:change={loadUsers} /> Active only</label></div>
         {#if usersUnavailable}<div class="empty-state"><p>User listing is unavailable for this session.</p><label>Username or ID<input bind:value={userActionTarget} placeholder="account name" /></label></div>{:else}
           <div class="record-list" aria-label="Accounts">
             {#each filteredUsers as user}
-              <button type="button" class:selected={selectedUserKey === userKey(user)} on:click={() => selectUser(user)}><span class="record-main"><strong>{user.display_name || user.username}</strong><small>@{user.username}{user.project_id ? ` · ${user.project_id}` : ''}</small></span><span class="record-meta"><span class="status-pill {user.is_active === false ? 'bad' : user.is_admin ? 'warn' : 'good'}">{user.is_active === false ? 'Inactive' : user.is_admin ? 'System admin' : 'Active'}</span><small>{projectRoleForUser(user)}</small></span></button>
+              <button type="button" class:selected={selectedUserKey === userKey(user)} on:click={() => selectUser(user)}><span class="record-main"><strong>{user.display_name || user.username}</strong><small>@{user.username}</small></span><span class="record-meta"><span class="status-pill {user.is_active === false ? 'bad' : user.is_admin ? 'warn' : 'good'}">{user.is_active === false ? 'Inactive' : user.is_admin ? 'System admin' : 'Active'}</span><small>{user.is_admin ? 'System access' : 'Project access'}</small></span></button>
             {:else}<p class="empty-state">{usersLoading ? 'Loading accounts…' : userSearch ? 'No accounts match this search.' : 'No accounts returned.'}</p>{/each}
           </div>
         {/if}
@@ -845,8 +1048,27 @@
           <header class="inspector-header"><div><span class="section-kicker">Account</span><h2>{selectedUser.display_name || selectedUser.username}</h2><p>@{selectedUser.username}</p></div><span class="status-pill {selectedUser.is_active === false ? 'bad' : selectedUser.is_admin ? 'warn' : 'good'}">{selectedUser.is_active === false ? 'Inactive' : selectedUser.is_admin ? 'System administrator' : 'Active'}</span></header>
           <section class="inspector-section"><div class="section-title"><div><span class="section-kicker">Identity</span><h3>Account record</h3></div></div><dl class="definition-grid"><div><dt>Username</dt><dd>{selectedUser.username}</dd></div><div><dt>Account ID</dt><dd>{selectedUser.id}</dd></div><div><dt>System access</dt><dd>{selectedUser.is_admin ? 'System administrator' : 'Standard account'}</dd></div><div><dt>State</dt><dd>{selectedUser.is_active === false ? 'Inactive' : 'Active'}</dd></div></dl></section>
           <section class="inspector-section">
-            <div class="section-title"><div><span class="section-kicker">Project membership</span><h3>{selectedUser.project_id || $session.project?.project_name || $session.project?.project_key || 'Current project'}</h3><p>Project roles control access only within this project.</p></div></div>
-            <div class="membership-editor"><label>Project role<select value={roleDrafts[userKey(selectedUser)] ?? projectRoleForUser(selectedUser)} on:change={(event) => setRoleDraft(selectedUser, (event.currentTarget as HTMLSelectElement).value)} disabled={updatingRoleFor === userKey(selectedUser)}><option value="viewer">Viewer</option><option value="editor">Editor</option><option value="manager">Manager</option><option value="admin">Project admin</option></select></label><button type="button" on:click={() => updateUserRole(selectedUser)} disabled={updatingRoleFor === userKey(selectedUser) || (roleDrafts[userKey(selectedUser)] ?? projectRoleForUser(selectedUser)) === projectRoleForUser(selectedUser)}>{updatingRoleFor ? 'Saving…' : 'Save role'}</button></div>
+            <div class="section-title"><div><span class="section-kicker">Project access</span><h3>Project roles</h3><p>Choose one permission level for each project. No access removes membership and signs the user out of that project.</p></div></div>
+            {#if !canListAllProjectUsers}
+              <p class="membership-scope-note">A system administrator can review and change this account’s access across projects. Your account can manage users in the active project only.</p>
+            {:else if membershipsLoadingFor === userKey(selectedUser)}
+              <p class="empty-state">Loading project access…</p>
+            {:else}
+              <div class="membership-matrix" aria-label={`Project access for ${selectedUser.username}`}>
+                <div class="membership-matrix-header"><span>Project</span>{#each projectAccessLevels as level}<span>{level.label}</span>{/each}</div>
+                {#each projects as project}
+                  {@const membership = membershipForProject(selectedUser, project)}
+                  {@const updateKey = membershipUpdateKey(selectedUser, project)}
+                  {@const selectedRole = pendingMembershipRoleByKey[updateKey] ?? membership?.role ?? 'none'}
+                  <div class="membership-matrix-row">
+                    <span><strong>{projectLabel(project)}</strong><small>{project.project_key || project.id}</small>{#if updatingMembershipFor === updateKey}<small class="membership-saving" role="status">Saving…</small>{/if}</span>
+                    {#each projectAccessLevels as level}
+                      <label class="membership-choice"><input type="radio" name={`project-access-${userKey(selectedUser)}-${project.id || project.project_key}`} value={level.value} checked={selectedRole === level.value} disabled={Boolean(updatingMembershipFor)} aria-label={`${projectLabel(project)}: ${level.label}`} on:change={() => setProjectAccessRole(selectedUser, project, level.value)} /></label>
+                    {/each}
+                  </div>
+                {:else}<p class="empty-state">No projects are available for access management.</p>{/each}
+              </div>
+            {/if}
           </section>
           <section class="inspector-section"><div class="section-title"><div><span class="section-kicker">Security</span><h3>Reset password</h3><p>Set a temporary password according to the server password policy.</p></div></div><div class="password-action"><label>New password<input type="password" bind:value={resetPassword} autocomplete="new-password" placeholder="New temporary password" /></label><button class="ghost" type="button" on:click={resetUserPassword} disabled={userActionBusy === 'reset-password' || !resetPassword}>{userActionBusy === 'reset-password' ? 'Resetting…' : 'Reset password'}</button></div></section>
           <section class="inspector-section danger-zone"><div><span class="section-kicker">Danger zone</span><h3>Account access</h3><p>Deactivate to block sign-in while preserving the account. Permanent deletion cannot be undone.</p></div><div class="danger-actions"><button class="ghost" type="button" on:click={() => deactivateUser()} disabled={selectedUser.is_active === false || userActionBusy === 'deactivate' || selectedUser.id === $session.user?.id}>{selectedUser.is_active === false ? 'Already inactive' : userActionBusy === 'deactivate' ? 'Deactivating…' : 'Deactivate account'}</button><button class="ghost danger" type="button" on:click={() => deleteUser()} disabled={userActionBusy === 'delete' || selectedUser.id === $session.user?.id}>{userActionBusy === 'delete' ? 'Deleting…' : 'Delete account'}</button></div></section>
@@ -859,7 +1081,7 @@
 
 {#if createProjectOpen}
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-  <div class="admin-modal-layer"><section class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><header><div><span class="section-kicker">New project</span><h2 id="new-project-title">Create a project workspace</h2><p>Start with a stable identity and managed storage defaults.</p></div><button class="ghost dialog-close" type="button" aria-label="Close new project dialog" on:click={() => (createProjectOpen = false)}>×</button></header><div class="dialog-body"><section><h3>1. Identity</h3><div class="form-grid"><label>Project key<input bind:value={projectKey} placeholder="project-key" disabled={creatingProject} /><small>Stable identifier; treat as immutable after creation.</small></label><label>Display name<input bind:value={projectName} placeholder="Optional descriptive name" disabled={creatingProject} /></label><label class="span-2">Description<textarea bind:value={projectDescription} rows="3" placeholder="Scientific purpose or project scope" disabled={creatingProject}></textarea></label></div></section><section><h3>2. Storage</h3><div class="managed-storage"><strong>Managed project storage</strong><span>{kvstoreRootPath || joinKvstorePath(kvstoreDefaultDirectory, suggestedKvstoreName(projectKey))}</span><small>{kvstoreDiskHint() || 'Capacity information unavailable'}</small></div><details><summary>Use a custom path or codec policy</summary><div class="form-grid dialog-advanced"><label class="span-2">KV store root path<input bind:value={kvstoreRootPath} list="admin-kvstore-path-suggestions" autocomplete="off" on:input={updateTypedKvstoreRootPath} /><datalist id="admin-kvstore-path-suggestions">{#each kvstorePathSuggestions as path}<option value={path}></option>{/each}</datalist></label><label>Frame encoding<select bind:value={projectFrameStorageEncoding}>{#each frameStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Frame quality (%)<input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={!frameQualityApplies(projectFrameStorageEncoding)} /></label><label>Small ROI codec<select bind:value={projectSmallRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Large ROI codec<select bind:value={projectLargeRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Large ROI cutoff (px²)<input type="number" min="1" step="1000" bind:value={projectLargeRoiMinPixels} /></label><label>ROI quality (%)<input type="number" min="0" max="100" bind:value={projectRoiStorageQuality} disabled={!frameQualityApplies(projectLargeRoiStorageEncoding)} /></label><label>Mask codec<select bind:value={projectMaskStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label></div></details></section></div>{#if projectError}<p class="admin-notice form-error">{projectError}</p>{/if}<footer><button class="ghost" type="button" on:click={() => (createProjectOpen = false)} disabled={creatingProject}>Cancel</button><button type="button" on:click={createProject} disabled={creatingProject || !projectKey.trim()}>{creatingProject ? 'Creating…' : 'Create project'}</button></footer></section></div>
+  <div class="admin-modal-layer"><section class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="new-project-title"><header><div><span class="section-kicker">New project</span><h2 id="new-project-title">Create a project workspace</h2><p>Start with a stable identity and managed storage defaults.</p></div><button class="ghost dialog-close" type="button" aria-label="Close new project dialog" on:click={() => (createProjectOpen = false)}>×</button></header><div class="dialog-body"><section><h3>1. Identity</h3><div class="form-grid"><label>Project key<input bind:value={projectKey} placeholder="project-key" disabled={creatingProject} /><small>Stable identifier; treat as immutable after creation.</small></label><label>Display name<input bind:value={projectName} placeholder="Optional descriptive name" disabled={creatingProject} /></label><label class="span-2">Description<textarea bind:value={projectDescription} rows="3" placeholder="Scientific purpose or project scope" disabled={creatingProject}></textarea></label></div></section><section><h3>2. Storage</h3><div class="managed-storage"><strong>Managed project storage</strong><span>{kvstoreRootPath || joinKvstorePath(kvstoreDefaultDirectory, suggestedKvstoreName(projectKey))}</span><small>{kvstoreDiskHint() || 'Capacity information unavailable'}</small></div><details><summary>Use a custom path or codec policy</summary><div class="form-grid dialog-advanced"><label class="span-2">KV store root path<input bind:value={kvstoreRootPath} list="admin-kvstore-path-suggestions" autocomplete="off" on:input={updateTypedKvstoreRootPath} /><datalist id="admin-kvstore-path-suggestions">{#each kvstorePathSuggestions as path}<option value={path}></option>{/each}</datalist></label><label>Frame encoding<select bind:value={projectFrameStorageEncoding}>{#each frameStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Frame quality (%)<input type="number" min="0" max="100" bind:value={projectFrameStorageQuality} disabled={!frameQualityApplies(projectFrameStorageEncoding)} /></label><label>Small ROI codec<select bind:value={projectSmallRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Large ROI codec<select bind:value={projectLargeRoiStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label><label>Large ROI cutoff (px²)<input type="number" min="1" step="1" bind:value={projectLargeRoiMinPixels} /></label><label>ROI quality (%)<input type="number" min="0" max="100" bind:value={projectRoiStorageQuality} disabled={!frameQualityApplies(projectLargeRoiStorageEncoding)} /></label><label>Mask codec<select bind:value={projectMaskStorageEncoding}>{#each roiStorageOptions as encoding}<option value={encoding} disabled={!codecAvailable(imageCodecAvailability, encoding)}>{codecLabel(encoding)}</option>{/each}</select></label></div></details></section></div>{#if projectError}<p class="admin-notice form-error">{projectError}</p>{/if}<footer><button class="ghost" type="button" on:click={() => (createProjectOpen = false)} disabled={creatingProject}>Cancel</button><button type="button" on:click={createProject} disabled={creatingProject || !projectKey.trim()}>{creatingProject ? 'Creating…' : 'Create project'}</button></footer></section></div>
 {/if}
 
 {#if createUserOpen}
@@ -931,16 +1153,34 @@
   .definition-grid dt { color: #60746c; font-size: var(--wb-font-caption, .75rem); font-weight: 800; text-transform: uppercase; }
   .definition-grid dd { overflow-wrap: anywhere; margin: .1rem 0 0; font-weight: 700; }
   .storage-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem .65rem; }
-  .storage-form label, .membership-editor label, .password-action label { display: grid; gap: .22rem; font-weight: 800; }
+  .storage-form label, .password-action label { display: grid; gap: .22rem; font-weight: 800; }
   .storage-form label > span { display: flex; justify-content: space-between; gap: .5rem; }
   .storage-form small { color: #60746c; font-weight: 500; }
-  .storage-form select, .storage-form input, .membership-editor select, .password-action input { min-height: 2.15rem; padding-block: .35rem; }
+  .storage-form select, .storage-form input, .password-action input { min-height: 2.15rem; padding-block: .35rem; }
   .advanced-toggle { display: flex; justify-content: space-between; width: 100%; margin-top: .65rem; border: 0; border-top: 1px solid #dbe7e2; border-radius: 0; padding: .52rem 0 0; background: transparent; color: #315a4f; text-align: left; }
   .storage-details { margin-top: .55rem; }
   .save-bar { display: flex; justify-content: space-between; gap: .7rem; align-items: center; position: sticky; bottom: 0; z-index: 2; margin: .65rem -.9rem -.72rem; padding: .5rem .9rem; border-top: 1px solid #b9d3ca; background: #eff8f4; font-weight: 800; }
+  .storage-update-confirmation { display: flex; align-items: flex-start; gap: .55rem; margin-top: .85rem; font-weight: 700; }
+  .storage-update-confirmation input { width: 1rem; height: 1rem; margin-top: .15rem; flex: none; }
   .save-bar > div, .danger-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-  .membership-editor, .password-action { display: grid; grid-template-columns: minmax(12rem, 1fr) auto; gap: .5rem; align-items: end; }
-  .membership-editor > button, .password-action > button, .danger-zone > button, .danger-actions > button { min-height: 2.15rem; padding-block: .35rem; }
+  .password-action { display: grid; grid-template-columns: minmax(12rem, 1fr) auto; gap: .5rem; align-items: end; }
+  .password-action > button, .danger-zone > button, .danger-actions > button { min-height: 2.15rem; padding-block: .35rem; }
+  .membership-matrix { overflow-x: auto; border: 1px solid #dbe7e2; }
+  .membership-matrix-header, .membership-matrix-row { display: grid; grid-template-columns: minmax(12rem, 1.8fr) repeat(5, minmax(5.5rem, .7fr)); gap: .35rem; align-items: center; min-width: 45rem; padding: .48rem .62rem; }
+  .membership-matrix-header { border-bottom: 1px solid #dbe7e2; background: #f3f8f6; color: #52675f; font-size: var(--wb-font-caption, .75rem); font-weight: 800; text-transform: uppercase; }
+  .membership-matrix-header > span:not(:first-child) { text-align: center; }
+  .membership-matrix-row { position: relative; border-bottom: 1px solid #e1e9e6; }
+  .membership-matrix-row:last-child { border-bottom: 0; }
+  .membership-matrix-row > span:first-child { display: grid; gap: .14rem; min-width: 0; }
+  .membership-matrix-row small { color: #60746c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .membership-choice { display: grid; place-items: center; min-height: 2.15rem; cursor: pointer; }
+  .membership-choice input { appearance: none; display: grid; place-items: center; width: 1.15rem; height: 1.15rem; margin: 0; border: 2px solid #859e94; border-radius: .2rem; background: #fff; cursor: pointer; }
+  .membership-choice input:checked { border-color: #246b58; background: #246b58; }
+  .membership-choice input:checked::after { content: '✓'; color: #fff; font-size: .85rem; font-weight: 900; line-height: 1; }
+  .membership-choice input:focus-visible { outline: 3px solid #93bfad; outline-offset: 2px; }
+  .membership-choice input:disabled { cursor: wait; opacity: .6; }
+  .membership-saving { color: #315a4f !important; font-size: .68rem; font-weight: 800; }
+  .membership-scope-note { margin: 0; padding: .55rem .65rem; border-left: 3px solid #d1a053; background: #fffbf3; color: #68582f; }
   .danger-zone { display: flex; justify-content: space-between; gap: .9rem; align-items: center; border-left: 3px solid #bd5151; background: #fffafa; }
   .danger-zone h3 { margin: .15rem 0 0; }
   .danger-zone p { max-width: 48rem; margin: .12rem 0 0; color: #6f5c5c; }
@@ -986,7 +1226,7 @@
     .admin-index { border-right: 0; border-bottom: 1px solid #dbe7e2; }
     .record-list { max-height: 20rem; }
     .inspector-header, .inspector-section { padding-inline: .7rem; }
-    .definition-grid, .membership-editor, .password-action { grid-template-columns: 1fr; }
+    .definition-grid, .password-action { grid-template-columns: 1fr; }
     .definition-grid > div { border-right: 0; border-bottom: 1px solid #dbe7e2 !important; }
     .definition-grid > div:last-child { border-bottom: 0 !important; }
     .danger-zone, .save-bar { align-items: stretch; flex-direction: column; }

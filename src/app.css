@@ -96,6 +96,23 @@
   min-width: 0;
 }
 
+.computer-identity {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0.3rem;
+  align-items: center;
+  min-height: 1.95rem;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  padding: 0.2rem 0.45rem;
+  color: var(--app-muted);
+  background: var(--app-surface-raised);
+  font-size: var(--wb-font-caption, 0.75rem);
+  white-space: nowrap;
+}
+.computer-identity > span { font-weight: 750; }
+.computer-identity strong { max-width: 11rem; overflow: hidden; color: var(--app-text); text-overflow: ellipsis; }
+
 .project-switcher {
   display: grid;
   grid-template-columns: auto minmax(8rem, 12rem);
@@ -223,7 +240,7 @@
 
 @media (max-width: 1250px) {
   .app-header-main { grid-template-columns: auto minmax(20rem, 1fr) auto; gap: 0.55rem; }
-  .app-brand small, .primary-navigation small, .project-switcher > span, .global-tools .header-preset-select > span { display: none; }
+  .app-brand small, .primary-navigation small, .project-switcher > span, .global-tools .header-preset-select > span, .computer-identity > span { display: none; }
   .primary-navigation a { min-width: 6.5rem; }
   .project-switcher { grid-template-columns: minmax(7rem, 9rem); }
   .global-tools .header-preset-select { grid-template-columns: minmax(7rem, 8.5rem); }

@@ -42,7 +42,11 @@ export type SystemUsageFilesystem = {
 
 export type SystemUsageResponse = {
   reported_at?: string;
-  host?: Record<string, unknown>;
+  host?: {
+    hostname?: string | null;
+    display_name?: string | null;
+    [key: string]: unknown;
+  };
   cpu?: {
     logical_cpus?: number | null;
     physical_cpus?: number | null;
@@ -103,6 +107,7 @@ export type SystemConfigResponse = {
       roi_filter?: Record<string, unknown>;
       roi_recording?: Record<string, unknown>;
       roi_refinement?: Record<string, unknown>;
+      roi_continuity?: Record<string, unknown>;
       video_ingest?: Record<string, unknown>;
       frame_storage?: Record<string, unknown>;
     };
@@ -184,6 +189,18 @@ export type ProjectStorageSettingsResponse = {
   effective?: ProjectStorageSettings;
 };
 
+export type ProjectStorageReencodeResponse = {
+  project_id: string;
+  job: Job | null;
+  created?: boolean;
+  worker_available?: boolean;
+};
+
+export type ProjectStorageUsageResponse = {
+  project_id: string;
+  kvstore_file_bytes: number | null;
+};
+
 export type AuthUserSummary = {
   id: string;
   username: string;
@@ -201,7 +218,18 @@ export type ProjectMembershipSummary = {
   user_id?: string;
   project_id?: string;
   role?: string | null;
+  project_key?: string | null;
+  project_name?: string | null;
+  project_is_active?: boolean;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
   [key: string]: unknown;
+};
+
+export type UserProjectMembershipsResponse = {
+  user: AuthUserSummary;
+  memberships: ProjectMembershipSummary[];
 };
 
 export type AuthSessionSummary = {
@@ -1100,7 +1128,26 @@ export type ProcessingQueueResponse = {
 };
 
 export type ProcessingSubmissionKind = 'queue' | 'series';
-export type ProcessingSubmissionStatus = 'accepted' | 'planning' | 'succeeded' | 'failed';
+export type ProcessingSubmissionStatus = 'accepted' | 'planning' | 'processing' | 'succeeded' | 'failed' | 'cancelled';
+
+/**
+ * A server-owned snapshot of durable planning and the jobs it has released.
+ * Counts can grow while a submission is still planning, so the UI must not
+ * treat a first batch as a completed plan.
+ */
+export type ProcessingSubmissionProgress = {
+  phase?: 'finding_eligible' | 'waiting' | 'planning_and_processing' | 'processing' | 'complete' | 'failed' | 'cancelled';
+  scheduled_count?: number | string | null;
+  job_count?: number | string | null;
+  queued_count?: number | string | null;
+  running_count?: number | string | null;
+  paused_count?: number | string | null;
+  completed_count?: number | string | null;
+  failed_count?: number | string | null;
+  cancelled_count?: number | string | null;
+  more_jobs_being_prepared?: boolean;
+  waiting_for_submission_id?: string | null;
+};
 
 /** A durable, idempotent request for server-side processing planning. */
 export type ProcessingSubmission = {
@@ -1111,6 +1158,10 @@ export type ProcessingSubmission = {
   status: ProcessingSubmissionStatus;
   request?: ProcessingQueueRequest | JobSeriesRequest;
   result?: ProcessingQueueResponse | { series?: JobSeries; dry_run?: boolean } | null;
+  /** Durable checkpoint fields are useful for support and are never client cursors. */
+  selection_boundary?: Record<string, unknown> | null;
+  planning_cursor?: Record<string, unknown> | null;
+  progress?: ProcessingSubmissionProgress | null;
   error?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
@@ -1120,6 +1171,12 @@ export type ProcessingSubmissionRequest = {
   request_id: string;
   kind: ProcessingSubmissionKind;
   request: ProcessingQueueRequest | JobSeriesRequest;
+};
+
+export type ProcessingSubmissionSubmitResponse = {
+  submission: ProcessingSubmission;
+  /** The server recognized an active request with the same saved criteria. */
+  reused_active_submission: boolean;
 };
 
 export type PageMetadata = {

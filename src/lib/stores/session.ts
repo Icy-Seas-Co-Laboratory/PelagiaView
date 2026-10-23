@@ -60,6 +60,7 @@ export type SessionState = {
   error: string | null;
   health: HealthResponse | null;
   systemStatus: SystemStatus | null;
+  computerName: string | null;
   connectedAt: string | null;
 };
 
@@ -80,6 +81,7 @@ export const session = writable<SessionState>({
   error: null,
   health: null,
   systemStatus: null,
+  computerName: null,
   connectedAt: null
 });
 
@@ -105,7 +107,7 @@ export async function connectSession(input: ConnectSessionInput): Promise<void> 
 export async function beginProjectSelectionLogin(input: ConnectSessionInput): Promise<ProjectSelectionLogin> {
   const normalized = normalizeBaseUrl(input.baseUrl);
   configureAnalyticsTarget(null);
-  session.update((state) => ({ ...state, baseUrl: normalized, connecting: true, error: null }));
+  session.update((state) => ({ ...state, baseUrl: normalized, connecting: true, error: null, computerName: null }));
   const loginClient = new PelagiaApiClient(normalized);
 
   try {
@@ -147,6 +149,7 @@ export async function beginProjectSelectionLogin(input: ConnectSessionInput): Pr
       error: error instanceof Error ? error.message : String(error),
       health: null,
       systemStatus: null,
+      computerName: null,
       connectedAt: null
     }));
     recordSessionEvent('client_session_failed', {
@@ -237,6 +240,7 @@ export function skipSessionRestore(baseUrl?: string): void {
     error: null,
     health: null,
     systemStatus: null,
+    computerName: null,
     connectedAt: null
   }));
   if (browser) {
@@ -320,7 +324,10 @@ async function finishAuthenticatedSession(
     projects.find((candidate) => candidate.id === login.session?.project_id) ??
     projects.find((candidate) => candidate.project_key === login.session?.project_key) ??
     null;
-  const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
+  const [systemStatus, systemUsage] = await Promise.all([
+    nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null),
+    nextClient.systemUsage().catch(() => null)
+  ]);
   const connectedAt = new Date().toISOString();
   const expiresAt = login.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString();
   client = nextClient;
@@ -339,6 +346,7 @@ async function finishAuthenticatedSession(
     error: null,
     health,
     systemStatus,
+    computerName: computerNameFromUsage(systemUsage),
     connectedAt
   });
   configureSessionAnalytics(baseUrl, login.token, user, project);
@@ -389,7 +397,10 @@ async function restoreStoredSession(stored: StoredSession): Promise<void> {
     const projects = me.projects?.length ? me.projects : listedProjects.length ? listedProjects : me.project ? [me.project] : [];
     const user = me.user ?? stored.user ?? null;
     const project = me.project ?? stored.project ?? projects.find((candidate) => candidate.id === me.auth?.project_id) ?? null;
-    const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
+    const [systemStatus, systemUsage] = await Promise.all([
+      nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null),
+      nextClient.systemUsage().catch(() => null)
+    ]);
     const connectedAt = stored.connectedAt ?? new Date().toISOString();
     client = nextClient;
     session.set({
@@ -404,6 +415,7 @@ async function restoreStoredSession(stored: StoredSession): Promise<void> {
       error: null,
       health,
       systemStatus,
+      computerName: computerNameFromUsage(systemUsage),
       connectedAt
     });
     configureSessionAnalytics(normalized, token, user, project);
@@ -441,6 +453,7 @@ async function restoreStoredSession(stored: StoredSession): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
       health: null,
       systemStatus: null,
+      computerName: null,
       connectedAt: null
     }));
     recordSessionEvent('client_session_failed', {
@@ -457,7 +470,7 @@ export async function switchSessionProject(projectId: string): Promise<void> {
   if (!state.connected || !state.token || !projectId || projectId === state.project?.id) return;
   const activeClient = getClient();
   if (!activeClient) return;
-  session.update((current) => ({ ...current, switchingProject: true, error: null }));
+  session.update((current) => ({ ...current, switchingProject: true, error: null, computerName: null }));
 
   try {
     const nextSession = await activeClient.switchProject({ project_id: projectId, metadata: { client: 'PelagiaView' } });
@@ -480,7 +493,10 @@ export async function switchSessionProject(projectId: string): Promise<void> {
       nextSession.project ??
       projects.find((candidate) => candidate.id === projectId) ??
       state.project;
-    const systemStatus = await nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null);
+    const [systemStatus, systemUsage] = await Promise.all([
+      nextClient.systemStatus(project?.id ?? project?.project_key).catch(() => null),
+      nextClient.systemUsage().catch(() => null)
+    ]);
     const connectedAt = new Date().toISOString();
     const expiresAt = nextSession.session?.expires_at ?? new Date(Date.now() + SESSION_TTL_MS).toISOString();
     client = nextClient;
@@ -491,6 +507,7 @@ export async function switchSessionProject(projectId: string): Promise<void> {
       project,
       projects,
       systemStatus,
+      computerName: computerNameFromUsage(systemUsage),
       switchingProject: false,
       connectedAt
     }));
@@ -570,6 +587,7 @@ export function disconnectSession(): void {
     error: null,
     health: null,
     systemStatus: null,
+    computerName: null,
     connectedAt: null
   }));
   if (browser) {
@@ -634,4 +652,9 @@ function baseOrigin(value: string): string {
   } catch {
     return 'unknown';
   }
+}
+
+function computerNameFromUsage(usage: { host?: { display_name?: string | null; hostname?: string | null } } | null): string | null {
+  const name = usage?.host?.display_name ?? usage?.host?.hostname;
+  return typeof name === 'string' && name.trim() ? name.trim() : null;
 }

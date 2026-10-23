@@ -21,6 +21,7 @@
     setLiveProcessingPresetFromSettings
   } from '$lib/stores/processingPresetSession';
   import { numberDefault, processingSection } from '$lib/utils/configDefaults';
+  import { scanModeMetadata, type ContinuityScanAxis } from '$lib/processing/lineScanGeometry';
   import { formatBytes, formatCount, formatPercent, numericValue, statusTone } from '$lib/utils/format';
   import {
     numberPreference,
@@ -39,6 +40,7 @@
   let nTile = 2;
   let ingestionScanMode: IngestionScanMode = 'area_scan';
   let ingestionLineScanAxis = 0;
+  let ingestionContinuityAxis: ContinuityScanAxis = 'y';
   let ingestionBackgroundWindowWidth = 25;
   let ingestionBackgroundWindowStride = 25;
   let ingestionFlatfieldWindowWidth = 1;
@@ -65,6 +67,7 @@
     nTile: number;
     ingestionScanMode: IngestionScanMode;
     ingestionLineScanAxis: number;
+    ingestionContinuityAxis: ContinuityScanAxis;
     ingestionBackgroundWindowWidth: number;
     ingestionBackgroundWindowStride: number;
     ingestionFlatfieldWindowWidth: number;
@@ -99,6 +102,7 @@
     nTile,
     ingestionScanMode,
     ingestionLineScanAxis,
+    ingestionContinuityAxis,
     ingestionBackgroundWindowWidth,
     ingestionBackgroundWindowStride,
     ingestionFlatfieldWindowWidth,
@@ -175,6 +179,8 @@
     ingestionBackgroundWindowWidth = numberDefault(preprocessing, 'background_window_width', ingestionBackgroundWindowWidth);
     ingestionBackgroundWindowStride = numberDefault(preprocessing, 'background_window_stride', ingestionBackgroundWindowStride);
     ingestionLineScanAxis = numberDefault(flatfield, 'flatfield_axis', ingestionLineScanAxis);
+    const configuredScanAxis = processingSection(config, 'roi_continuity')?.scan_axis;
+    if (configuredScanAxis === 'x' || configuredScanAxis === 'y') ingestionContinuityAxis = configuredScanAxis;
     ingestionFlatfieldWindowWidth = numberDefault(flatfield, 'background_window_width', ingestionFlatfieldWindowWidth);
     ingestionFlatfieldWindowStride = numberDefault(flatfield, 'background_window_stride', ingestionFlatfieldWindowStride);
   }
@@ -185,6 +191,9 @@
     nTile = numberPreference(preferences.nTile, nTile);
     ingestionScanMode = normalizeIngestionScanMode(stringPreference(preferences.ingestionScanMode, ingestionScanMode));
     ingestionLineScanAxis = normalizeLineScanAxis(numberPreference(preferences.ingestionLineScanAxis, ingestionLineScanAxis));
+    if (preferences.ingestionContinuityAxis === 'x' || preferences.ingestionContinuityAxis === 'y') {
+      ingestionContinuityAxis = preferences.ingestionContinuityAxis;
+    }
     ingestionBackgroundWindowWidth = normalizePositiveInteger(numberPreference(preferences.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
     ingestionBackgroundWindowStride = normalizePositiveInteger(numberPreference(preferences.ingestionBackgroundWindowStride, ingestionBackgroundWindowStride));
     ingestionFlatfieldWindowWidth = normalizePositiveInteger(numberPreference(preferences.ingestionFlatfieldWindowWidth, ingestionFlatfieldWindowWidth));
@@ -204,6 +213,7 @@
       ingestionTileCount: Math.max(1, Math.round(numberPreference(nTile, 1))),
       ingestionScanMode,
       ingestionLineScanAxis: normalizeLineScanAxis(ingestionLineScanAxis),
+      ingestionContinuityAxis,
       ingestionBackgroundWindowWidth: normalizePositiveInteger(ingestionBackgroundWindowWidth),
       ingestionBackgroundWindowStride: normalizePositiveInteger(ingestionBackgroundWindowStride),
       ingestionFlatfieldWindowWidth: normalizePositiveInteger(ingestionFlatfieldWindowWidth),
@@ -236,6 +246,9 @@
     }
     if ('ingestionLineScanAxis' in settings) {
       ingestionLineScanAxis = normalizeLineScanAxis(numberPreference(settings.ingestionLineScanAxis, ingestionLineScanAxis));
+    }
+    if (settings.ingestionContinuityAxis === 'x' || settings.ingestionContinuityAxis === 'y') {
+      ingestionContinuityAxis = settings.ingestionContinuityAxis;
     }
     if ('ingestionBackgroundWindowWidth' in settings) {
       ingestionBackgroundWindowWidth = normalizePositiveInteger(numberPreference(settings.ingestionBackgroundWindowWidth, ingestionBackgroundWindowWidth));
@@ -446,7 +459,11 @@
       throw new Error(`Choose a light or dark background for ${asset.filename ?? asset.path}.`);
     }
     const sourceForegroundPolarity = asset.backgroundPolarity === 'light' ? 'dark' : 'bright';
-    const metadata = parseMetadataText(asset.metadataText, `Metadata for ${asset.filename ?? asset.path}`);
+    const metadata = scanModeMetadata(
+      parseMetadataText(asset.metadataText, `Metadata for ${asset.filename ?? asset.path}`),
+      ingestionScanMode,
+      ingestionContinuityAxis
+    );
     metadata.source_foreground_polarity = sourceForegroundPolarity;
     const sourceTimestamp = normalizeSourceTimestamp(asset.sourceTimestampText);
     if (sourceTimestamp) {
@@ -885,6 +902,19 @@
               <select bind:value={ingestionLineScanAxis}>
                 <option value={0}>0</option>
                 <option value={1}>1</option>
+              </select>
+            </label>
+            <label>
+              <span class="field-label-row">
+                Across frames, objects continue
+                <InfoChip
+                  label="Line scan continuity direction help"
+                  text="Choose the direction objects continue from one stored frame to the next. This controls automatic ROI continuity after refinement and is separate from the flatfield correction axis."
+                />
+              </span>
+              <select bind:value={ingestionContinuityAxis}>
+                <option value="x">Left to right</option>
+                <option value="y">Top to bottom</option>
               </select>
             </label>
           {/if}

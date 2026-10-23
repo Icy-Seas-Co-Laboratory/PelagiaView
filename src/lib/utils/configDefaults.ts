@@ -14,6 +14,7 @@ export function processingSection(
     | 'roi_filter'
     | 'roi_recording'
     | 'roi_refinement'
+    | 'roi_continuity'
     | 'video_ingest'
     | 'frame_storage'
 ): ConfigSection {

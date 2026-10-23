@@ -40,12 +40,12 @@
   let kvstorePathSuggestions: string[] = [];
   let kvstoreName = '';
   let kvstoreNameTouched = false;
-  let projectFrameStorageEncoding = 'zstd';
-  let projectFrameStorageQuality = 90;
+  let projectFrameStorageEncoding = 'jpg';
+  let projectFrameStorageQuality = 75;
   let projectSmallRoiStorageEncoding = 'zstd';
   let projectLargeRoiStorageEncoding = 'jpg';
-  let projectLargeRoiMinPixels = 50000;
-  let projectRoiStorageQuality = 90;
+  let projectLargeRoiMinPixels = 1000;
+  let projectRoiStorageQuality = 75;
   let projectMaskStorageEncoding = 'zstd';
   let imageCodecAvailability: CodecAvailability = {};
   let allowedStorageEncodings = ['zstd', 'jpg', 'png', 'jxl', 'jxs', 'raw'];
@@ -270,7 +270,7 @@
 
   function normalizeFrameStorageQuality(value: number): number {
     const next = Math.round(Number(value));
-    if (!Number.isFinite(next)) return 90;
+    if (!Number.isFinite(next)) return 75;
     return Math.max(0, Math.min(100, next));
   }
 
@@ -507,7 +507,7 @@
             {/each}
           </select>
         </label>
-        <label>Large ROI cutoff (px²)<input type="number" min="1" step="1000" bind:value={projectLargeRoiMinPixels} disabled={creatingProject || $session.connecting} /></label>
+        <label>Large ROI cutoff (px²)<input type="number" min="1" step="1" bind:value={projectLargeRoiMinPixels} disabled={creatingProject || $session.connecting} /></label>
         <label>ROI quality (0–100)<input type="number" min="0" max="100" bind:value={projectRoiStorageQuality} disabled={creatingProject || $session.connecting} /></label>
         <label>
           Mask codec

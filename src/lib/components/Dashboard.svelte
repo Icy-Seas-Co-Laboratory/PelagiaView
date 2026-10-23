@@ -70,6 +70,7 @@
     project={$session.project}
     projects={$session.projects}
     switchingProject={$session.switchingProject}
+    computerName={$session.computerName}
     {projectSwitchError}
     onProjectChange={selectProject}
     onPreferences={() => (preferencesOpen = true)}

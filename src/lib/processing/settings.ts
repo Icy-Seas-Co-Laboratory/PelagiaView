@@ -2,6 +2,7 @@ export type ProcessingSettings = {
   ingestionTileCount?: number;
   ingestionScanMode?: 'area_scan' | 'line_scan';
   ingestionLineScanAxis?: number;
+  ingestionContinuityAxis?: 'x' | 'y';
   ingestionBackgroundWindowWidth?: number;
   ingestionBackgroundWindowStride?: number;
   ingestionFlatfieldWindowWidth?: number;
@@ -142,6 +143,7 @@ export function pruneProcessingSettings(settings: ProcessingSettings): Processin
   copy('ingestionTileCount');
   copy('ingestionScanMode');
   copy('ingestionLineScanAxis');
+  copy('ingestionContinuityAxis');
   copy('ingestionBackgroundWindowWidth');
   copy('ingestionBackgroundWindowStride');
   copy('ingestionFlatfieldWindowWidth');

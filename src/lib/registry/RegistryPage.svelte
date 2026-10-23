@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
+  import { page as route } from '$app/stores';
   import { api, registryUrl } from '$lib/registry/api';
   import { gridMoveIndex, nextSelection, stickyClickSelection } from '$lib/registry/selection';
   import type { CoreVocabulary, Dataset, DatasetDetails, DescriptorTag, EvidenceSource, FileListing, ImportPreview, ImportResult, InferenceSourceDetail, Item, ItemEvidence, Label, RegistryWorkspace, VocabularyNode, VocabularySummary } from '$lib/registry/types';
@@ -12,7 +14,10 @@
   import RegistryRoiModal from '$lib/registry/RegistryRoiModal.svelte';
   import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import HeaderImageInversionToggle from '$lib/components/HeaderImageInversionToggle.svelte';
+  import AppHeader from '$lib/components/AppHeader.svelte';
+  import ComputerIdentity from '$lib/components/ComputerIdentity.svelte';
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
+  import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import { AuthenticatedImageCache } from '$lib/utils/authenticatedImageCache';
 
   let dataset: Dataset | null = null;
@@ -107,7 +112,21 @@
   let roiModalItem: Record<string, any> | null = null;
   let roiModalMasks: { candidate: any | null; current: any | null } = { candidate: null, current: null };
   let roiModalTrigger: HTMLElement | null = null;
+  let projectSwitchError: string | null = null;
   const thumbnailCache = new AuthenticatedImageCache();
+
+  async function selectProject(event: Event) {
+    const projectId = (event.currentTarget as HTMLSelectElement).value;
+    const previousProjectId = $session.project?.id ?? '';
+    if (!projectId || projectId === previousProjectId) return;
+    projectSwitchError = null;
+    try {
+      await switchSessionProject(projectId);
+      if (get(session).project?.id === projectId && typeof window !== 'undefined') window.location.reload();
+    } catch (error) {
+      projectSwitchError = error instanceof Error ? error.message : String(error);
+    }
+  }
 
   $: activeLabels = labels.filter((label) => !label.deprecated_at);
   $: columns = Math.max(1, Math.floor((viewportWidth - 16) / (tileSize + 10)));
@@ -995,6 +1014,19 @@
 <svelte:head><title>Registry · Scientific image curation</title><meta name="description" content="Scientific image curation" /><meta property="og:image" content="/brand/pelagia_logo.png" /></svelte:head>
 
 {#if !dataset}
+  <AppHeader
+    activeView="rois"
+    currentUrl={$route.url}
+    user={$session.user}
+    project={$session.project}
+    projects={$session.projects}
+    switchingProject={$session.switchingProject}
+    computerName={$session.computerName}
+    registryCatalog={true}
+    {projectSwitchError}
+    onProjectChange={selectProject}
+    onDisconnect={disconnectSession}
+  />
   <main class="open-screen">
     <div class="landing">
       <section class="open-panel">
@@ -1066,6 +1098,7 @@
   <main class:dark={theme==='dark'} class="workspace" style={`--canvas-color:${canvasColor};--left-panel-width:${leftPanelWidth}px;--right-panel-width:${rightPanelWidth}px`}>
     <header>
       <div class="wordmark"><img src="/brand/pelagia_icon.png" alt="" /><div><span>PELAGIA</span><strong>Registry</strong></div></div>
+      <ComputerIdentity name={$session.computerName} />
       <div class="dataset-title"><strong>{dataset.title || dataset.name}</strong><span>{dataset.dataset_type.replace('_',' ')} · {dataset.lifecycle}</span></div>
       <div class="header-stats" aria-label="Dataset counts">
         <div title="Total ROIs"><strong>{dataset.stats.total.toLocaleString()}</strong><span>Total</span></div>
@@ -1419,6 +1452,8 @@
   .wordmark > div { display:flex; flex-direction:column; min-width:0; }
   .wordmark span { color: #6fcbd0; }
   .wordmark strong { font-size: 18px; letter-spacing: -.03em; }
+  .workspace > header :global(.computer-identity) { margin-left:auto; border-color:#36525c; color:#a9c0c7; background:#163944; }
+  .workspace > header :global(.computer-identity strong) { color:#edf7f8; }
   .dataset-title { display: flex; flex-direction: column; min-width: 135px; max-width:190px; }
   .dataset-title strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .dataset-title span { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #9fb6be; margin-top: 2px; }
