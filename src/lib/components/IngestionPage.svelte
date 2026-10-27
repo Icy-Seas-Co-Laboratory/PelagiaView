@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import CollectionTokenInput from '$lib/components/CollectionTokenInput.svelte';
   import FileSelector from '$lib/components/FileSelector.svelte';
+  import InterchangeCreateModal from '$lib/components/InterchangeCreateModal.svelte';
   import InfoChip from '$lib/components/InfoChip.svelte';
   import QueueStatusSummary from '$lib/components/QueueStatusSummary.svelte';
   import { getClient, session } from '$lib/stores/session';
@@ -31,6 +32,7 @@
     writePreferences
   } from '$lib/utils/preferences';
 
+  let interchangeOpen = false;
   let selected = new Set<string>();
   let selectedPathList: string[] = [];
   let currentPath = '.';
@@ -836,12 +838,15 @@
   }
 </script>
 
+{#if interchangeOpen}<InterchangeCreateModal initialSource={selectedPathList.length === 1 ? selectedPathList[0] : currentPath} on:close={() => interchangeOpen = false} />{/if}
+
 <div class="ingestion-layout">
   <section class="panel ingestion-file-panel">
     <div class="panel-heading">
       <div>
         <p class="eyebrow">Server storage</p>
         <h2>Raw asset browser</h2>
+        <button type="button" on:click={() => interchangeOpen = true}>Create interchange…</button>
       </div>
     </div>
 

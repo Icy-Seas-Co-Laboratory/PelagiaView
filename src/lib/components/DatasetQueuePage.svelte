@@ -100,7 +100,9 @@
   let preprocessOptionFrameCounts = new Map<string, number>();
   let detectionOptionFrameCounts = new Map<string, number>();
   let refinementOptionRoiCounts = new Map<string, number>();
+  let refinementQueueCounts: { candidates: number; refined: number; unrefined: number } | null = null;
   let activeStatusSummary: ProcessingStatusSummary | null = null;
+  let stateOptionSummary: ProcessingStatusSummary | null = null;
   let statusSnapshotVersion: string | null = null;
   let statusRefreshTimer: number | null = null;
   let statusRefreshSequence = 0;
@@ -407,20 +409,20 @@
   }));
   $: assetAnyFrameCount = statusFrameCount(activeStatusSummary);
   $: collectionAnyFrameCount = statusFrameCount(activeStatusSummary);
-  $: preprocessAnyFrameCount = statusFrameCount(activeStatusSummary);
-  $: detectionAnyFrameCount = statusFrameCount(activeStatusSummary);
-  $: refinementAnyRoiCount = prospectiveUnrefinedDetectionCount;
+  $: preprocessAnyFrameCount = statusFrameCount(stateOptionSummary);
+  $: detectionAnyFrameCount = statusFrameCount(stateOptionSummary);
+  $: refinementAnyRoiCount = numericStatusValue(refinementQueueCounts?.candidates);
   $: prospectiveFrameCount = statusFrameCount(activeStatusSummary);
   $: prospectivePreprocessedCount = numericStatusValue(activeStatusSummary?.preprocessing_succeeded_count);
-  $: prospectiveDetectionCount = numericStatusValue(activeStatusSummary?.candidate_detection_count);
+  $: prospectiveDetectionCount = mode === 'roi_refinement' ? numericStatusValue(refinementQueueCounts?.candidates) : numericStatusValue(activeStatusSummary?.candidate_detection_count);
   $: prospectiveRefinedCandidateCount = numericStatusValue(activeStatusSummary?.frames_with_refined_rois_count);
-  $: prospectiveUnrefinedDetectionCount = numericStatusValue(activeStatusSummary?.unrefined_candidate_count);
-  $: prospectiveRefinedDetectionCount = numericStatusValue(activeStatusSummary?.refined_detection_count);
+  $: prospectiveUnrefinedDetectionCount = numericStatusValue(refinementQueueCounts?.unrefined);
+  $: prospectiveRefinedDetectionCount = numericStatusValue(refinementQueueCounts?.refined);
   $: prospectiveRefinementCandidateCount =
     selectedRefinementStates.size === 0
-      ? prospectiveUnrefinedDetectionCount
+      ? prospectiveDetectionCount
       : selectedRefinementStates.has('refined') && selectedRefinementStates.has('unrefined')
-        ? prospectiveRefinedDetectionCount + prospectiveUnrefinedDetectionCount
+        ? prospectiveDetectionCount
         : selectedRefinementStates.has('refined')
           ? prospectiveRefinedDetectionCount
           : prospectiveUnrefinedDetectionCount;
@@ -1077,29 +1079,16 @@
     return 0;
   }
 
-  function activeStatusFacetFilters(): ProcessingStatusFilters {
+  function activeStatusFacetFilters(includeState = true): ProcessingStatusFilters {
     const filters: ProcessingStatusFilters = {};
     if (selectedAssetIds.size) filters.asset_id = [...selectedAssetIds];
     if (selectedCollections.size) filters.collection = [...selectedCollections];
     if (mode === 'preprocessing') {
-      filters.preprocessing_status = selectedPreprocessStates.size
-        ? [...selectedPreprocessStates]
-        : ['unknown', 'failed', 'cancelled'];
+      if (includeState && selectedPreprocessStates.size) filters.preprocessing_status = [...selectedPreprocessStates];
     }
     if (mode === 'segmentation') {
       filters.preprocessing_status = 'succeeded';
-      filters.candidate_detection_status = selectedDetectionStates.size
-        ? [...selectedDetectionStates]
-        : ['unknown', 'failed', 'cancelled'];
-    }
-    if (mode === 'roi_refinement') {
-      filters.candidate_detection_status = 'succeeded';
-      if (selectedRefinementStates.size === 0) {
-        filters.has_refined_rois = false;
-      } else if (selectedRefinementStates.size === 1) {
-        if (selectedRefinementStates.has('refined')) filters.has_refined_rois = true;
-        if (selectedRefinementStates.has('unrefined')) filters.has_refined_rois = false;
-      }
+      if (includeState && selectedDetectionStates.size) filters.candidate_detection_status = [...selectedDetectionStates];
     }
     return filters;
   }
@@ -1117,18 +1106,17 @@
     if (mode === 'preprocessing') {
       filters.preprocessing_status = selectedPreprocessStates.size
         ? [...selectedPreprocessStates]
-        : ['unknown', 'failed', 'cancelled'];
+        : statusOptions().map((option) => option.id);
     }
     if (mode === 'segmentation') {
       filters.preprocessing_status = ['succeeded'];
       filters.candidate_detection_status = selectedDetectionStates.size
         ? [...selectedDetectionStates]
-        : ['unknown', 'failed', 'cancelled'];
+        : statusOptions().map((option) => option.id);
     }
     if (mode === 'roi_refinement') {
-      filters.candidate_detection_status = ['succeeded'];
       const refinementStates = selectedQueueRefinementStates();
-      filters.refinement_state = refinementStates.length ? refinementStates : ['unrefined'];
+      filters.refinement_state = refinementStates.length ? refinementStates : ['refined', 'unrefined'];
     }
     return filters;
   }
@@ -1190,19 +1178,26 @@
     if (!client) return;
     const sequence = ++statusRefreshSequence;
     try {
-      const response = await client.processingStatusFacets(activeStatusFacetFilters());
+      const [response, stateOptions, refinementCounts] = await Promise.all([
+        client.processingStatusFacets(activeStatusFacetFilters()),
+        client.processingStatusFacets(activeStatusFacetFilters(false)),
+        mode === 'roi_refinement' ? client.refinementQueueCounts(activeStatusFacetFilters(false)) : Promise.resolve(null)
+      ]);
       if (sequence !== statusRefreshSequence) return;
+      refinementQueueCounts = refinementCounts;
       const facets = response.facets ?? {};
+      const stateFacets = stateOptions.facets ?? {};
+      stateOptionSummary = stateOptions.summary ?? {};
       activeStatusSummary = response.summary ?? {};
       statusSnapshotVersion = String(response.snapshot?.status_version ?? '') || null;
       assetOptionFrameCounts = facetCountMap(facets.assets);
       collectionOptionFrameCounts = facetCountMap(facets.collections);
       preprocessOptionFrameCounts =
-        mode === 'preprocessing' ? facetCountMap(facets.preprocessing_status) : new Map<string, number>();
+        mode === 'preprocessing' ? facetCountMap(stateFacets.preprocessing_status) : new Map<string, number>();
       detectionOptionFrameCounts =
-        mode === 'segmentation' ? facetCountMap(facets.candidate_detection_status) : new Map<string, number>();
+        mode === 'segmentation' ? facetCountMap(stateFacets.candidate_detection_status) : new Map<string, number>();
       refinementOptionRoiCounts =
-        mode === 'roi_refinement' ? facetCountMap(facets.refinement_state) : new Map<string, number>();
+        mode === 'roi_refinement' && refinementCounts ? new Map([['refined', refinementCounts.refined], ['unrefined', refinementCounts.unrefined]]) : new Map<string, number>();
     } catch (err) {
       if (sequence === statusRefreshSequence) {
         error = err instanceof Error ? err.message : String(err);
@@ -1592,7 +1587,7 @@
       {/if}
       {#if mode === 'roi_refinement'}
         <div class="metric">
-          <span>Refined ROIs</span>
+          <span>Refined candidates</span>
           <strong>{formatCount(prospectiveRefinedDetectionCount)}</strong>
         </div>
         <div class="metric">
@@ -1630,15 +1625,15 @@
       />
 
       {#if mode === 'preprocessing'}
-        <LiveFilterSelect eyebrow="State" title="Preprocessing state" options={preprocessFilterOptions} selected={selectedPreprocessStates} allLabel="Any preprocessing state" allCount={preprocessAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedPreprocessStates = next)} />
+        <LiveFilterSelect eyebrow="State" title="Preprocessing state" options={preprocessFilterOptions} selected={selectedPreprocessStates} allLabel="No state filter" allCount={preprocessAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedPreprocessStates = next)} />
       {/if}
 
       {#if mode === 'segmentation'}
-        <LiveFilterSelect eyebrow="State" title="Detection state" options={detectionFilterOptions} selected={selectedDetectionStates} allLabel="Any detection state" allCount={detectionAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedDetectionStates = next)} />
+        <LiveFilterSelect eyebrow="State" title="Detection state" options={detectionFilterOptions} selected={selectedDetectionStates} allLabel="No state filter" allCount={detectionAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedDetectionStates = next)} />
       {/if}
 
       {#if mode === 'roi_refinement'}
-        <LiveFilterSelect eyebrow="State" title="ROI refinement state" options={refinementFilterOptions} selected={selectedRefinementStates} allLabel="Default: unrefined ROIs" allDetail="Safe workflow default" allCount={refinementAnyRoiCount} allCountLabel="ROIs" searchable={false} onChange={(next) => (selectedRefinementStates = next)} />
+        <LiveFilterSelect eyebrow="State" title="ROI refinement state" options={refinementFilterOptions} selected={selectedRefinementStates} allLabel="No state filter" allCount={refinementAnyRoiCount} allCountLabel="ROIs" searchable={false} onChange={(next) => (selectedRefinementStates = next)} />
       {/if}
     </div>
     

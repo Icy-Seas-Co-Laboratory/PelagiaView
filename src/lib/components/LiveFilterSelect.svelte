@@ -63,7 +63,7 @@
     return `${formatCount(option.count)}${option.countLabel ? ` ${option.countLabel}` : ''}`;
   }
 
-  function allCountText(): string {
+  function allCountText(allCount: number | null, allCountLabel: string, allDetail: string): string {
     if (allCount === null || allCount === undefined) return allDetail;
     return `${formatCount(allCount)}${allCountLabel ? ` ${allCountLabel}` : ''}`;
   }
@@ -94,7 +94,7 @@
     <div class="filter-option-list" aria-label={`${title} options`}>
       <button class="all-option" class:active={selected.size === 0} type="button" aria-pressed={selected.size === 0} on:click={chooseAll} disabled={disabled}>
         <span class="option-control" aria-hidden="true">{selected.size === 0 ? '✓' : '○'}</span>
-        <span class="option-copy"><strong>{allLabel}</strong><small>{allCountText()}</small></span>
+        <span class="option-copy"><strong>{allLabel}</strong><small>{allCountText(allCount, allCountLabel, allDetail)}</small></span>
       </button>
 
       {#each visibleOptions as option (option.id)}
