@@ -1018,9 +1018,17 @@ export type ProcessingStatusSummary = {
   by_status?: Record<string, Record<string, number | string>>;
 };
 
+export type ProcessingCountMetadata = {
+  exact: boolean;
+  method: 'exact' | 'block_sample';
+  matching_sample_rows: number;
+  sample_fraction: number;
+};
+
 export type ProcessingStatusSummaryResponse = {
   summary?: ProcessingStatusSummary;
   snapshot?: ProcessingStatusSnapshot;
+  counts?: ProcessingCountMetadata;
 };
 
 export type ProcessingStatusFacets = {
@@ -1036,6 +1044,14 @@ export type ProcessingStatusFacetsResponse = {
   summary?: ProcessingStatusSummary;
   facets?: ProcessingStatusFacets;
   snapshot?: ProcessingStatusSnapshot;
+  counts?: ProcessingCountMetadata;
+};
+
+export type RefinementQueueCountsResponse = {
+  candidates: number;
+  refined: number;
+  unrefined: number;
+  counts?: ProcessingCountMetadata;
 };
 
 export type ProcessingStatusFrame = {
@@ -1085,6 +1101,10 @@ export type ProcessingStatusFilters = {
   has_refined_rois?: boolean | null;
   start_frame?: number | null;
   end_frame?: number | null;
+  /** Inclusive candidate bounding-box area limits, in px². */
+  min_area?: number | null;
+  max_area?: number | null;
+  count_mode?: 'exact' | 'auto';
   limit?: number | null;
   cursor?: string | null;
   offset?: number | null;
@@ -1102,6 +1122,9 @@ export type ProcessingQueueFilters = {
   refinement_state?: Array<'refined' | 'unrefined'>;
   start_frame?: number | null;
   end_frame?: number | null;
+  /** Inclusive candidate bounding-box area limits, in px²; used by ROI refinement. */
+  min_area?: number | null;
+  max_area?: number | null;
 };
 
 export type ProcessingQueueRequest = {

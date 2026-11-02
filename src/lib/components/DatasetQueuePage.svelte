@@ -18,6 +18,9 @@
     ProcessingSubmission,
     ProcessingQueueStage,
     ProcessingStatusFacets,
+    ProcessingStatusFacetsResponse,
+    ProcessingCountMetadata,
+    RefinementQueueCountsResponse,
     ProcessingStatusFilters,
     ProcessingStatusSummary,
     RawAsset,
@@ -34,6 +37,7 @@
     stringDefault
   } from '$lib/utils/configDefaults';
   import { formatCount } from '$lib/utils/format';
+  import { createSingleFlightRefresh, isCurrentRefresh } from '$lib/utils/singleFlightRefresh';
   import type { LiveFilterOption } from '$lib/types/liveFilters';
   import type { ProcessingPreset, ProcessingSettings } from '$lib/processing/settings';
   import {
@@ -100,12 +104,17 @@
   let preprocessOptionFrameCounts = new Map<string, number>();
   let detectionOptionFrameCounts = new Map<string, number>();
   let refinementOptionRoiCounts = new Map<string, number>();
-  let refinementQueueCounts: { candidates: number; refined: number; unrefined: number } | null = null;
+  let refinementQueueCounts: RefinementQueueCountsResponse | null = null;
+  let previewCountsExact: boolean | null = null;
+  let previewCountsPending = false;
+  let previewCountsFailed = false;
+  let activeFacetCountMetadata: ProcessingCountMetadata | null = null;
+  let stateFacetCountMetadata: ProcessingCountMetadata | null = null;
   let activeStatusSummary: ProcessingStatusSummary | null = null;
   let stateOptionSummary: ProcessingStatusSummary | null = null;
   let statusSnapshotVersion: string | null = null;
-  let statusRefreshTimer: number | null = null;
-  let statusRefreshSequence = 0;
+  let statusRefreshIntent = 0;
+  let statusPollingEnabled = false;
   let catalogLoadSequence = 0;
   let selectedAssetIds = new Set<string>();
   let selectedCollections = new Set<string>();
@@ -239,6 +248,15 @@
   let refinementEncodingOptions = ['auto', 'zstd', 'png', 'jpg', 'jxl', 'jxs', 'raw'];
   let refinementStore = true;
   let refinementDryRun = false;
+  let refinementMinArea: number | null = null;
+  let refinementMaxArea: number | null = null;
+  const statusRefreshCoordinator = createSingleFlightRefresh(
+    () => refreshStatusSummary(++statusRefreshIntent),
+    {
+      pollDelayMs: 5000,
+      shouldPoll: () => statusPollingEnabled && $session.connected && preferencesReady
+    }
+  );
 
   type DatasetQueuePreferences = {
     selectedAssetIds: string[];
@@ -246,6 +264,8 @@
     selectedPreprocessStates: string[];
     selectedDetectionStates: string[];
     selectedRefinementStates: string[];
+    refinementMinArea: number | null;
+    refinementMaxArea: number | null;
     minFieldValue: number;
     maxFieldValue: number | null;
     applyMask: boolean;
@@ -378,40 +398,45 @@
   $: preprocessFrameCounts = preprocessOptionFrameCounts;
   $: detectionFrameCounts = detectionOptionFrameCounts;
   $: refinementRoiCounts = refinementOptionRoiCounts;
+  $: activeFacetCountsExact = activeFacetCountMetadata?.exact ?? true;
+  $: stateFacetCountsExact = stateFacetCountMetadata?.exact ?? true;
+  $: activeFacetCountsInsufficient = activeFacetCountsExact === false && (activeFacetCountMetadata?.matching_sample_rows ?? 0) === 0;
+  $: stateFacetCountsInsufficient = stateFacetCountsExact === false && (stateFacetCountMetadata?.matching_sample_rows ?? 0) === 0;
   $: assetFilterOptions = datasets.map((dataset) => ({
     id: dataset.asset.id,
     label: dataset.asset.filename ?? dataset.asset.id,
     detail: dataset.collections.length ? dataset.collections.join(', ') : 'No collection tags',
-    count: countFor(assetFrameCounts, dataset.asset.id),
-    countLabel: 'frames',
+    count: previewCountsPending || previewCountsFailed || activeFacetCountsInsufficient ? null : countFor(assetFrameCounts, dataset.asset.id),
+    countLabel: activeFacetCountsExact ? 'frames' : 'estimated frames',
     keywords: [dataset.asset.path ?? '', dataset.asset.id]
   }));
   $: collectionFilterOptions = collectionOptions.map((collection) => ({
     id: collection,
     label: collection,
-    count: countFor(collectionFrameCounts, collection),
-    countLabel: 'frames'
+    count: previewCountsPending || previewCountsFailed || activeFacetCountsInsufficient ? null : countFor(collectionFrameCounts, collection),
+    countLabel: activeFacetCountsExact ? 'frames' : 'estimated frames'
   }));
   $: preprocessFilterOptions = preprocessStateOptions.map((option) => ({
     ...option,
-    count: countFor(preprocessFrameCounts, option.id),
-    countLabel: 'frames'
+    count: previewCountsPending || previewCountsFailed || stateFacetCountsInsufficient ? null : countFor(preprocessFrameCounts, option.id),
+    countLabel: stateFacetCountsExact ? 'frames' : 'estimated frames'
   }));
   $: detectionFilterOptions = detectionStateOptions.map((option) => ({
     ...option,
-    count: countFor(detectionFrameCounts, option.id),
-    countLabel: 'frames'
+    count: previewCountsPending || previewCountsFailed || stateFacetCountsInsufficient ? null : countFor(detectionFrameCounts, option.id),
+    countLabel: stateFacetCountsExact ? 'frames' : 'estimated frames'
   }));
   $: refinementFilterOptions = refinementStateOptions.map((option) => ({
     ...option,
-    count: countFor(refinementRoiCounts, option.id),
-    countLabel: 'ROIs'
+    count: previewCountsPending || previewCountsFailed || previewCountsInsufficient ? null : countFor(refinementRoiCounts, option.id),
+    countLabel: previewCountsExact === false ? 'estimated ROIs' : 'ROIs'
   }));
-  $: assetAnyFrameCount = statusFrameCount(activeStatusSummary);
-  $: collectionAnyFrameCount = statusFrameCount(activeStatusSummary);
-  $: preprocessAnyFrameCount = statusFrameCount(stateOptionSummary);
-  $: detectionAnyFrameCount = statusFrameCount(stateOptionSummary);
+  $: assetAnyFrameCount = previewCountsPending || previewCountsFailed || activeFacetCountsInsufficient ? null : statusFrameCount(activeStatusSummary);
+  $: collectionAnyFrameCount = previewCountsPending || previewCountsFailed || activeFacetCountsInsufficient ? null : statusFrameCount(activeStatusSummary);
+  $: preprocessAnyFrameCount = previewCountsPending || previewCountsFailed || stateFacetCountsInsufficient ? null : statusFrameCount(stateOptionSummary);
+  $: detectionAnyFrameCount = previewCountsPending || previewCountsFailed || stateFacetCountsInsufficient ? null : statusFrameCount(stateOptionSummary);
   $: refinementAnyRoiCount = numericStatusValue(refinementQueueCounts?.candidates);
+  $: refinementDisplayCount = previewCountsPending || previewCountsFailed || previewCountsInsufficient ? null : refinementAnyRoiCount;
   $: prospectiveFrameCount = statusFrameCount(activeStatusSummary);
   $: prospectivePreprocessedCount = numericStatusValue(activeStatusSummary?.preprocessing_succeeded_count);
   $: prospectiveDetectionCount = mode === 'roi_refinement' ? numericStatusValue(refinementQueueCounts?.candidates) : numericStatusValue(activeStatusSummary?.candidate_detection_count);
@@ -427,6 +452,8 @@
           ? prospectiveRefinedDetectionCount
           : prospectiveUnrefinedDetectionCount;
   $: prospectiveQueueItemCount = mode === 'roi_refinement' ? prospectiveRefinementCandidateCount : prospectiveFrameCount;
+  $: previewCountsInsufficient = mode === 'roi_refinement' && previewCountsExact === false && (refinementQueueCounts?.counts?.matching_sample_rows ?? 0) === 0;
+  $: activeFrameCountsUnavailable = previewCountsPending || previewCountsFailed || activeFacetCountsInsufficient;
   $: payloadStorageThresholdsActive = Boolean(
     fieldChanged('storeRoiPayloadMinArea', storeRoiPayloadMinArea) ||
       fieldChanged('storeRoiPayloadMinWidth', storeRoiPayloadMinWidth) ||
@@ -500,7 +527,9 @@
     collections: selectedCollectionArray,
     preprocessing: [...selectedPreprocessStates],
     candidateDetection: [...selectedDetectionStates],
-    roiRefinement: [...selectedRefinementStates]
+    roiRefinement: [...selectedRefinementStates],
+    refinementMinArea,
+    refinementMaxArea
   });
   $: if (preferencesReady && $session.connected) {
     statusFilterKey;
@@ -511,13 +540,12 @@
     window.addEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
     applyStoredLiveProcessingPreset();
     if ($session.connected) void loadCatalog();
-    const statusPollTimer = window.setInterval(() => {
-      if ($session.connected && preferencesReady) void refreshStatusSummary();
-    }, 5000);
+    statusPollingEnabled = true;
     return () => {
+      statusPollingEnabled = false;
+      statusRefreshIntent += 1;
+      statusRefreshCoordinator.stop();
       window.removeEventListener(PROCESSING_PRESET_APPLIED_EVENT, handleHeaderProcessingPresetApplied);
-      window.clearInterval(statusPollTimer);
-      if (statusRefreshTimer !== null) window.clearTimeout(statusRefreshTimer);
     };
   });
 
@@ -532,6 +560,8 @@
       selectedPreprocessStates: [...selectedPreprocessStates],
       selectedDetectionStates: [...selectedDetectionStates],
       selectedRefinementStates: [...selectedRefinementStates],
+      refinementMinArea,
+      refinementMaxArea,
       minFieldValue,
       maxFieldValue,
       applyMask,
@@ -616,6 +646,8 @@
     selectedPreprocessStates = stringSetPreference(preferences.selectedPreprocessStates, selectedPreprocessStates);
     selectedDetectionStates = stringSetPreference(preferences.selectedDetectionStates, selectedDetectionStates);
     selectedRefinementStates = stringSetPreference(preferences.selectedRefinementStates, selectedRefinementStates);
+    refinementMinArea = nullablePreferenceNumber(preferences.refinementMinArea, refinementMinArea);
+    refinementMaxArea = nullablePreferenceNumber(preferences.refinementMaxArea, refinementMaxArea);
     minFieldValue = numberPreference(preferences.minFieldValue, minFieldValue);
     maxFieldValue = nullablePreferenceNumber(preferences.maxFieldValue, maxFieldValue);
     applyMask = booleanPreference(preferences.applyMask, applyMask);
@@ -864,9 +896,9 @@
         ...collections.map((collection) => collection.collection),
         ...datasets.flatMap((dataset) => dataset.collections)
       ]);
-      await refreshStatusSummary();
+      await statusRefreshCoordinator.refresh();
       if (!current()) return;
-      catalogStatus = `Loaded queue status for ${formatCount(datasets.length)} asset${datasets.length === 1 ? '' : 's'}.`;
+      catalogStatus = `Loaded dataset catalog for ${formatCount(datasets.length)} asset${datasets.length === 1 ? '' : 's'}.`;
       preferencesReady = true;
     } catch (err) {
       if (current()) {
@@ -1117,6 +1149,8 @@
     if (mode === 'roi_refinement') {
       const refinementStates = selectedQueueRefinementStates();
       filters.refinement_state = refinementStates.length ? refinementStates : ['refined', 'unrefined'];
+      filters.min_area = refinementMinArea;
+      filters.max_area = refinementMaxArea;
     }
     return filters;
   }
@@ -1166,43 +1200,82 @@
   }
 
   function scheduleStatusRefresh() {
-    if (statusRefreshTimer !== null) window.clearTimeout(statusRefreshTimer);
-    statusRefreshTimer = window.setTimeout(() => {
-      statusRefreshTimer = null;
-      void refreshStatusSummary();
-    }, 150);
+    statusRefreshIntent += 1;
+    previewCountsPending = true;
+    previewCountsFailed = false;
+    statusRefreshCoordinator.schedule(150);
   }
 
-  async function refreshStatusSummary() {
+  async function refreshStatusSummary(intent = ++statusRefreshIntent) {
     const client = getClient();
     if (!client) return;
-    const sequence = ++statusRefreshSequence;
-    try {
-      const [response, stateOptions, refinementCounts] = await Promise.all([
-        client.processingStatusFacets(activeStatusFacetFilters()),
-        client.processingStatusFacets(activeStatusFacetFilters(false)),
-        mode === 'roi_refinement' ? client.refinementQueueCounts(activeStatusFacetFilters(false)) : Promise.resolve(null)
+    const sessionIdentity = `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`;
+    const current = () => isCurrentRefresh(
+      intent,
+      statusRefreshIntent,
+      client,
+      getClient(),
+      sessionIdentity,
+      `${$session.baseUrl}:${$session.token ?? ''}:${$session.project?.id ?? $session.project?.project_key ?? ''}`
+    );
+    const filters = activeStatusFacetFilters();
+    const stateFilters = activeStatusFacetFilters(false);
+    const refinementFilters: ProcessingStatusFilters = {
+      ...stateFilters,
+      min_area: refinementMinArea,
+      max_area: refinementMaxArea,
+      count_mode: 'auto'
+    };
+    const reportError = (err: unknown) => {
+      if (current()) error = err instanceof Error ? err.message : String(err);
+    };
+    const sharedFacets = JSON.stringify(filters) === JSON.stringify(stateFilters);
+    const results = await Promise.allSettled([
+        client.processingStatusFacets({ ...filters, count_mode: 'auto' }),
+        sharedFacets ? Promise.resolve(null) : client.processingStatusFacets({ ...stateFilters, count_mode: 'auto' }),
+        mode === 'roi_refinement' ? client.refinementQueueCounts(refinementFilters) : Promise.resolve(null)
       ]);
-      if (sequence !== statusRefreshSequence) return;
-      refinementQueueCounts = refinementCounts;
+    if (!current()) return;
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failure) {
+      previewCountsPending = false;
+      previewCountsFailed = true;
+      reportError(failure.reason);
+      return;
+    }
+    const response = (results[0] as PromiseFulfilledResult<ProcessingStatusFacetsResponse>).value;
+    const requestedStateOptions = (results[1] as PromiseFulfilledResult<ProcessingStatusFacetsResponse | null>).value;
+    const refinementCounts = (results[2] as PromiseFulfilledResult<RefinementQueueCountsResponse | null>).value;
+    try {
       const facets = response.facets ?? {};
-      const stateFacets = stateOptions.facets ?? {};
-      stateOptionSummary = stateOptions.summary ?? {};
+      previewCountsFailed = false;
       activeStatusSummary = response.summary ?? {};
+      activeFacetCountMetadata = response.counts ?? null;
       statusSnapshotVersion = String(response.snapshot?.status_version ?? '') || null;
       assetOptionFrameCounts = facetCountMap(facets.assets);
       collectionOptionFrameCounts = facetCountMap(facets.collections);
+      const stateOptions = requestedStateOptions ?? response;
+      const stateFacets = stateOptions.facets ?? {};
+      stateOptionSummary = stateOptions.summary ?? {};
+      stateFacetCountMetadata = stateOptions.counts ?? null;
       preprocessOptionFrameCounts =
         mode === 'preprocessing' ? facetCountMap(stateFacets.preprocessing_status) : new Map<string, number>();
       detectionOptionFrameCounts =
         mode === 'segmentation' ? facetCountMap(stateFacets.candidate_detection_status) : new Map<string, number>();
-      refinementOptionRoiCounts =
-        mode === 'roi_refinement' && refinementCounts ? new Map([['refined', refinementCounts.refined], ['unrefined', refinementCounts.unrefined]]) : new Map<string, number>();
-    } catch (err) {
-      if (sequence === statusRefreshSequence) {
-        error = err instanceof Error ? err.message : String(err);
+      if (mode === 'roi_refinement' && refinementCounts) {
+        refinementQueueCounts = refinementCounts;
+        previewCountsExact = refinementCounts.counts?.exact ?? true;
+        refinementOptionRoiCounts = new Map([
+          ['refined', refinementCounts.refined],
+          ['unrefined', refinementCounts.unrefined]
+        ]);
+      } else {
+        refinementQueueCounts = null;
+        previewCountsExact = response.counts?.exact ?? true;
+        refinementOptionRoiCounts = new Map<string, number>();
       }
-    }
+      previewCountsPending = false;
+    } catch (err) { reportError(err); }
   }
 
   function facetCountMap(facet: ProcessingStatusFacets[keyof ProcessingStatusFacets] | undefined): Map<string, number> {
@@ -1573,26 +1646,26 @@
     <div class="metric-grid compact-metrics">
       <div class="metric">
         <span>Matched frames</span>
-        <strong>{formatCount(prospectiveFrameCount)}</strong>
+        <strong>{activeFrameCountsUnavailable ? '—' : `${activeFacetCountsExact ? '' : '≈'}${formatCount(prospectiveFrameCount)}`}</strong>
       </div>
       <div class="metric">
         <span>Preprocessed frames</span>
-        <strong>{formatCount(prospectivePreprocessedCount)}</strong>
+        <strong>{activeFrameCountsUnavailable ? '—' : `${activeFacetCountsExact ? '' : '≈'}${formatCount(prospectivePreprocessedCount)}`}</strong>
       </div>
       {#if mode !== 'preprocessing'}
         <div class="metric">
           <span>{mode === 'roi_refinement' ? 'Candidate ROIs' : 'Existing detections'}</span>
-          <strong>{formatCount(prospectiveDetectionCount)}</strong>
+          <strong>{mode === 'roi_refinement' ? (previewCountsPending || previewCountsFailed || previewCountsInsufficient ? '—' : `${previewCountsExact === false ? '≈' : ''}${formatCount(prospectiveDetectionCount)}`) : (activeFrameCountsUnavailable ? '—' : `${activeFacetCountsExact ? '' : '≈'}${formatCount(prospectiveDetectionCount)}`)}</strong>
         </div>
       {/if}
       {#if mode === 'roi_refinement'}
         <div class="metric">
           <span>Refined candidates</span>
-          <strong>{formatCount(prospectiveRefinedDetectionCount)}</strong>
+          <strong>{previewCountsPending || previewCountsFailed || previewCountsInsufficient ? '—' : `${previewCountsExact === false ? '≈' : ''}${formatCount(prospectiveRefinedDetectionCount)}`}</strong>
         </div>
         <div class="metric">
           <span>Unrefined candidates</span>
-          <strong>{formatCount(prospectiveUnrefinedDetectionCount)}</strong>
+          <strong>{previewCountsPending || previewCountsFailed || previewCountsInsufficient ? '—' : `${previewCountsExact === false ? '≈' : ''}${formatCount(prospectiveUnrefinedDetectionCount)}`}</strong>
         </div>
       {/if}
     </div>
@@ -1606,7 +1679,7 @@
         allLabel="Any asset"
         allDetail="No asset restriction"
         allCount={assetAnyFrameCount}
-        allCountLabel="frames"
+        allCountLabel={activeFacetCountsExact ? 'frames' : 'estimated frames'}
         searchPlaceholder="Search filenames or collections"
         onChange={(next) => (selectedAssetIds = next)}
       />
@@ -1619,21 +1692,29 @@
         allLabel="Any collection"
         allDetail="No collection restriction"
         allCount={collectionAnyFrameCount}
-        allCountLabel="frames"
+        allCountLabel={activeFacetCountsExact ? 'frames' : 'estimated frames'}
         searchPlaceholder="Search collections"
         onChange={(next) => (selectedCollections = next)}
       />
 
       {#if mode === 'preprocessing'}
-        <LiveFilterSelect eyebrow="State" title="Preprocessing state" options={preprocessFilterOptions} selected={selectedPreprocessStates} allLabel="No state filter" allCount={preprocessAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedPreprocessStates = next)} />
+        <LiveFilterSelect eyebrow="State" title="Preprocessing state" options={preprocessFilterOptions} selected={selectedPreprocessStates} allLabel="No state filter" allCount={preprocessAnyFrameCount} allCountLabel={stateFacetCountsExact ? 'frames' : 'estimated frames'} searchable={false} onChange={(next) => (selectedPreprocessStates = next)} />
       {/if}
 
       {#if mode === 'segmentation'}
-        <LiveFilterSelect eyebrow="State" title="Detection state" options={detectionFilterOptions} selected={selectedDetectionStates} allLabel="No state filter" allCount={detectionAnyFrameCount} allCountLabel="frames" searchable={false} onChange={(next) => (selectedDetectionStates = next)} />
+        <LiveFilterSelect eyebrow="State" title="Detection state" options={detectionFilterOptions} selected={selectedDetectionStates} allLabel="No state filter" allCount={detectionAnyFrameCount} allCountLabel={stateFacetCountsExact ? 'frames' : 'estimated frames'} searchable={false} onChange={(next) => (selectedDetectionStates = next)} />
       {/if}
 
       {#if mode === 'roi_refinement'}
-        <LiveFilterSelect eyebrow="State" title="ROI refinement state" options={refinementFilterOptions} selected={selectedRefinementStates} allLabel="No state filter" allCount={refinementAnyRoiCount} allCountLabel="ROIs" searchable={false} onChange={(next) => (selectedRefinementStates = next)} />
+        <LiveFilterSelect eyebrow="State" title="ROI refinement state" options={refinementFilterOptions} selected={selectedRefinementStates} allLabel="No state filter" allCount={refinementDisplayCount} allCountLabel={previewCountsExact === false ? 'estimated ROIs' : 'ROIs'} searchable={false} onChange={(next) => (selectedRefinementStates = next)} />
+        <label>
+          <span>Minimum ROI bbox area (px²)</span>
+          <input type="number" min="0" step="1" bind:value={refinementMinArea} placeholder="No minimum" />
+        </label>
+        <label>
+          <span>Maximum ROI bbox area (px²)</span>
+          <input type="number" min="0" step="1" bind:value={refinementMaxArea} placeholder="No maximum" />
+        </label>
       {/if}
     </div>
     
@@ -2194,9 +2275,9 @@
 
     <div class="selected-frame-summary">
       <span>Currently selected</span>
-      <strong>{formatCount(prospectiveQueueItemCount)} {prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}</strong>
+      <strong>{previewCountsPending ? 'Updating estimate…' : previewCountsFailed ? 'Preview unavailable' : mode !== 'roi_refinement' && activeFacetCountsInsufficient ? 'Estimate unavailable' : previewCountsInsufficient ? 'Estimate unavailable' : `${mode === 'roi_refinement' && previewCountsExact === false ? '≈' : mode !== 'roi_refinement' && !activeFacetCountsExact ? '≈' : ''}${formatCount(prospectiveQueueItemCount)} ${prospectiveQueueItemCount === 1 ? queueItemLabel : queueItemLabelPlural}`}</strong>
       {#if mode === 'roi_refinement'}
-        <small>from {formatCount(prospectiveFrameCount)} frame{prospectiveFrameCount === 1 ? '' : 's'}</small>
+        <small>from {activeFrameCountsUnavailable ? 'an unavailable estimate' : `${activeFacetCountsExact ? '' : '≈'}${formatCount(prospectiveFrameCount)} frame${prospectiveFrameCount === 1 ? '' : 's'}`}</small>
       {/if}
     </div>
 
@@ -2204,7 +2285,7 @@
       {queueing ? 'Queueing' : actionLabel}
     </button>
     <p class="soft">
-      The server evaluates the saved selection when it plans work. The displayed count can be stale; final work counts appear when planning completes.
+      The server evaluates the saved selection when it plans work. The displayed count can be stale; final work counts appear when planning completes.{previewCountsFailed ? ' The current preview could not be refreshed.' : previewCountsInsufficient || activeFacetCountsInsufficient ? ' The sample did not contain a matching item, so no count estimate is shown.' : mode === 'roi_refinement' && previewCountsExact === false || !activeFacetCountsExact || !stateFacetCountsExact ? ' This is an estimate for a large queue.' : ''}
     </p>
     {#if message}<p class="success">{message}</p>{/if}
     {#if error}<p class="form-error">{error}</p>{/if}

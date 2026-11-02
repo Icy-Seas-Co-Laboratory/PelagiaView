@@ -18,3 +18,5 @@ PelagiaView groups pages by the work an operator needs to complete.
 | Event Log | Search merged job and application events by stage, status, run, worker, level, and source. |
 
 Processing submissions return immediately and are planned in the backend. A submitted request is not evidence that every matching job has completed; use Status and the queue views to follow the authoritative state.
+
+The ROI refinement queue can restrict candidates by inclusive bounding-box area in px². On large projects, queue facet and ROI preview counts may show `≈` because the server used a bounded sample; an empty sample is shown as **Estimate unavailable** rather than zero. The submitted request always uses the complete saved criteria, and its planner reports the authoritative count.

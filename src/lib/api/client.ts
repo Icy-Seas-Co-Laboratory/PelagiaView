@@ -73,6 +73,7 @@ import type {
   ProjectStorageUsageResponse,
   ProcessingQueueRequest,
   ProcessingQueueResponse,
+  RefinementQueueCountsResponse,
   ProcessingSubmission,
   ProcessingSubmissionRequest,
   ProcessingSubmissionSubmitResponse,
@@ -646,8 +647,8 @@ export class PelagiaApiClient {
     return this.get<ProcessingStatusFacetsResponse>('/processing/status/facets', compact(filters), 3000);
   }
 
-  async refinementQueueCounts(filters: ProcessingStatusFilters = {}): Promise<{ candidates: number; refined: number; unrefined: number }> {
-    return this.get('/processing/status/refinement-counts', compact(filters), 3000);
+  async refinementQueueCounts(filters: ProcessingStatusFilters = {}): Promise<RefinementQueueCountsResponse> {
+    return this.get<RefinementQueueCountsResponse>('/processing/status/refinement-counts', compact(filters), 3000);
   }
 
   async processingStatusFrames(filters: ProcessingStatusFilters = {}): Promise<ProcessingStatusFramesResponse> {
