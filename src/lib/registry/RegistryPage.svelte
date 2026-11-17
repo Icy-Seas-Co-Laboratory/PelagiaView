@@ -19,6 +19,7 @@
   import { imageInversionEnabled } from '$lib/stores/displayPreferences';
   import { disconnectSession, session, switchSessionProject } from '$lib/stores/session';
   import { AuthenticatedImageCache } from '$lib/utils/authenticatedImageCache';
+  import { downloadBlob } from '$lib/utils/zipDownload';
 
   let dataset: Dataset | null = null;
   let labels: Label[] = [];
@@ -67,6 +68,10 @@
   let importDuplicateActions: Record<string,'skip'|'merge'> = {};
   let importDuplicatePage = 0;
   const importDuplicatePageSize = 100;
+  let uploadInput: HTMLInputElement;
+  let uploadTarget: 'open' | 'import' = 'open';
+  let uploading = false;
+  let downloading = false;
   const defaultCanvasColors = { light: '#eef3f5', dark: '#111b1f' } as const;
   let theme: 'light' | 'dark' = 'light';
   let canvasColor: string = defaultCanvasColors.light;
@@ -445,6 +450,45 @@
     finally { loading = false; }
   }
 
+  function chooseUpload(target: 'open' | 'import') {
+    uploadTarget = target;
+    uploadInput?.click();
+  }
+
+  async function uploadDataset(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    uploading = true; error = ''; notice = '';
+    try {
+      const uploaded = await api.upload(file);
+      if (uploadTarget === 'import') {
+        importPath = uploaded.path;
+        await inspectImport();
+      } else {
+        path = uploaded.path;
+        localStorage.setItem('pelagia.registry.lastPath', path);
+        await openDataset();
+      }
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    finally {
+      uploading = false;
+      input.value = '';
+    }
+  }
+
+  async function downloadDataset() {
+    if (!dataset || downloading) return;
+    downloading = true; error = ''; notice = '';
+    try {
+      const downloaded = await api.download();
+      const safeName = `${(dataset.name || 'pelagia-registry').replace(/[^a-z0-9._-]+/gi, '-')}.sqlite`;
+      downloadBlob(downloaded.blob, downloaded.filename || safeName);
+      notice = 'SQLite revision downloaded.';
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    finally { downloading = false; }
+  }
+
   async function openWorkspace(workspace: RegistryWorkspace, updateHistory = true) {
     workspaceOpening = workspace.workspace_id; error = ''; notice = '';
     try {
@@ -625,6 +669,8 @@
     importLoading = true; error = '';
     try {
       importResult = await api.importDataset({ path: importPreview.source.path,
+        workspace_id: importPreview.workspace_id || dataset?.workspace_id,
+        expected_source_sha256: importPreview.source.sha256,
         include_labels: importIncludeLabels, include_evidence: importIncludeEvidence,
         duplicate_policy: importDuplicatePolicy, duplicate_actions: importDuplicateActions });
       await refresh();
@@ -1013,6 +1059,7 @@
 
 <svelte:head><title>Registry · Scientific image curation</title><meta name="description" content="Scientific image curation" /><meta property="og:image" content="/brand/pelagia_logo.png" /></svelte:head>
 
+<input class="file-upload-input" bind:this={uploadInput} type="file" accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3,application/x-sqlite3" on:change={uploadDataset} />
 {#if !dataset}
   <AppHeader
     activeView="rois"
@@ -1036,6 +1083,7 @@
         <div class="open-row">
           <input id="dataset-path" bind:value={path} on:keydown={(e) => e.key === 'Enter' && openDataset()} placeholder="/path/to/dataset.sqlite" spellcheck="false" />
           <button on:click={() => browseFiles(undefined,'open')}>Browse…</button>
+          <button on:click={() => chooseUpload('open')} disabled={loading || uploading}>{uploading ? 'Uploading…' : 'Upload…'}</button>
           <button class="primary" on:click={() => { localStorage.setItem('pelagia.registry.lastPath', path); openDataset(); }} disabled={loading}>{loading ? 'Opening…' : 'Load dataset'}</button>
         </div>
         <small>The source remains unchanged until you explicitly save a new revision back to SQLite.</small>
@@ -1110,6 +1158,8 @@
       </div>
       <button class="quiet information-button" on:click={openInformation}>ⓘ Details</button>
       <button class="quiet preferences-button" on:click={() => preferencesOpen = true}>⚙ Preferences</button>
+      <button class="quiet" on:click={openImport}>Import SQLite</button>
+      <button class="quiet" disabled={downloading} on:click={downloadDataset}>{downloading ? 'Downloading…' : 'Download SQLite'}</button>
       <button class="quiet" disabled={saving} on:click={() => saveDataset(false)}>{saving ? 'Saving…' : 'Save as…'}</button>
       <div class:dirty={dataset.dirty} class="save-state" title={dataset.dirty ? 'This workspace has changes that have not been saved to SQLite.' : 'All workspace changes are saved to SQLite.'}>
         <span role="status" aria-live="polite">{dataset.dirty ? 'Unsaved changes' : 'Saved'}</span>
@@ -1246,7 +1296,7 @@
           {:else if datasetDetails}
             <div class="information-body">
               <section class="dataset-information">
-                <div class="information-heading"><div><span>DATASET</span><h3>{datasetDetails.dataset.title||datasetDetails.dataset.name}</h3></div><div class="information-actions"><em>{datasetDetails.dataset.lifecycle}</em><button disabled title="Cross-dataset merge will move to Pelagia in a later migration step">⇥ Merge SQLite…</button></div></div>
+                <div class="information-heading"><div><span>DATASET</span><h3>{datasetDetails.dataset.title||datasetDetails.dataset.name}</h3></div><div class="information-actions"><em>{datasetDetails.dataset.lifecycle}</em><button on:click={openImport}>⇥ Import SQLite…</button></div></div>
                 <div class="information-stats"><div><strong>{datasetDetails.summary.stats.total.toLocaleString()}</strong><span>ROIs</span></div><div><strong>{datasetDetails.database.counts.assets?.toLocaleString()||'0'}</strong><span>Assets</span></div><div><strong>{datasetDetails.summary.stats.active_labels.toLocaleString()}</strong><span>Labels</span></div><div><strong>{formatBytes(datasetDetails.database.size_bytes)}</strong><span>Database</span></div></div>
                 {#if datasetDetails.dataset.description}<p class="dataset-description">{datasetDetails.dataset.description}</p>{/if}
                 <dl class="detail-grid">
@@ -1284,14 +1334,14 @@
       </div>
     {/if}
     {#if importOpen}
-      <div class="preferences-backdrop import-backdrop" role="presentation" on:click={(event)=>event.currentTarget===event.target&&!importLoading&&(importOpen=false)}>
+      <div class="preferences-backdrop import-backdrop" role="presentation" on:click={(event)=>event.currentTarget===event.target&&!importLoading&&!uploading&&(importOpen=false)}>
         <div class="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
-          <div class="preferences-header"><div><span>DATA TRANSFER</span><h2 id="import-title">Import ROIs from SQLite</h2></div><button aria-label="Close import" disabled={importLoading} on:click={()=>importOpen=false}>×</button></div>
+          <div class="preferences-header"><div><span>DATA TRANSFER</span><h2 id="import-title">Import ROIs from SQLite</h2></div><button aria-label="Close import" disabled={importLoading||uploading} on:click={()=>importOpen=false}>×</button></div>
           <div class="import-body">
             <section class="import-source">
               <h3>Source database</h3>
               <p>Registry inspects the source read-only before making changes. Source and destination dataset types must match.</p>
-              <div class="import-path"><input bind:value={importPath} placeholder="/path/to/source.sqlite" spellcheck="false" on:keydown={(event)=>event.key==='Enter'&&inspectImport()} /><button on:click={()=>browseFiles(undefined,'import')}>Browse…</button><button class="primary" disabled={importLoading||!importPath.trim()} on:click={inspectImport}>{importLoading&&!importPreview?'Inspecting…':'Inspect'}</button></div>
+              <div class="import-path"><input bind:value={importPath} placeholder="/path/to/source.sqlite" spellcheck="false" on:keydown={(event)=>event.key==='Enter'&&inspectImport()} /><button on:click={()=>browseFiles(undefined,'import')}>Browse server…</button><button on:click={()=>chooseUpload('import')} disabled={importLoading||uploading}>{uploading ? 'Uploading…' : 'Upload…'}</button><button class="primary" disabled={importLoading||!importPath.trim()} on:click={inspectImport}>{importLoading&&!importPreview?'Inspecting…':'Inspect'}</button></div>
             </section>
             {#if importPreview}
               <section class="import-summary">
@@ -1301,7 +1351,7 @@
               <section class="import-options">
                 <h3>Content to retain</h3>
                 <div class="import-option-grid">
-                  {#if importPreview.labels.available||importPreview.descriptors.available}<label><input type="checkbox" bind:checked={importIncludeLabels} /><span><strong>Labels and descriptors</strong><small>{importPreview.labels.annotation_count.toLocaleString()} label assignments · {importPreview.descriptors.annotation_count.toLocaleString()} descriptors. Imported labels remain unverified.</small></span></label>{:else}<div class="unavailable-option"><strong>No annotations found</strong><span>Label retention does not apply to this source.</span></div>{/if}
+                  {#if importPreview.labels.available||importPreview.descriptors.available}<label><input type="checkbox" bind:checked={importIncludeLabels} /><span><strong>Labels and descriptors</strong><small>{importPreview.labels.annotation_count.toLocaleString()} label assignments · {importPreview.descriptors.annotation_count.toLocaleString()} descriptors. Source annotation and review history are retained.</small></span></label>{:else}<div class="unavailable-option"><strong>No annotations found</strong><span>Label retention does not apply to this source.</span></div>{/if}
                   {#if importPreview.evidence.available}<label><input type="checkbox" bind:checked={importIncludeEvidence} /><span><strong>Retain model evidence</strong><small>{importPreview.evidence.registry_count.toLocaleString()} Registry records · {importPreview.evidence.legacy_count.toLocaleString()} legacy predictions. Uncheck to reject source evidence.</small></span></label>{:else}<div class="unavailable-option"><strong>No model evidence found</strong><span>Evidence retention does not apply to this source.</span></div>{/if}
                 </div>
               </section>
@@ -1312,11 +1362,11 @@
                   {#if importPreview.duplicate_count>importDuplicatePageSize}<div class="duplicate-pager"><button disabled={importDuplicatePage===0} on:click={()=>importDuplicatePage--}>← Previous</button><span>{(importDuplicatePage*importDuplicatePageSize+1).toLocaleString()}–{Math.min(importPreview.duplicate_count,(importDuplicatePage+1)*importDuplicatePageSize).toLocaleString()} of {importPreview.duplicate_count.toLocaleString()}</span><button disabled={(importDuplicatePage+1)*importDuplicatePageSize>=importPreview.duplicate_count} on:click={()=>importDuplicatePage++}>Next →</button></div>{/if}
                 </section>
               {/if}
-              <section class="import-safety"><strong>Automatic recovery point</strong><span>Registry creates a complete pre-import SQLite backup before writing and records the import in dataset provenance.</span></section>
+              <section class="import-safety"><strong>Transactional import</strong><span>Registry records imported provenance and rolls the workspace back if the import fails. Your source SQLite file remains unchanged.</span></section>
             {/if}
-            {#if importResult}<section class="import-result"><h3>Import complete</h3><div><span><strong>{importResult.imported_items.toLocaleString()}</strong> new ROIs</span><span><strong>{importResult.merged_items.toLocaleString()}</strong> merged</span><span><strong>{importResult.skipped_items.toLocaleString()}</strong> skipped</span><span><strong>{importResult.imported_labels.toLocaleString()}</strong> labels</span><span><strong>{importResult.imported_descriptors.toLocaleString()}</strong> descriptors</span><span><strong>{importResult.imported_evidence.toLocaleString()}</strong> evidence records</span></div><code>Backup: {importResult.backup_path}</code>{#if importResult.label_conflicts}<p>{importResult.label_conflicts.toLocaleString()} conflicting duplicate labels were left unchanged in the destination.</p>{/if}</section>{/if}
+            {#if importResult}<section class="import-result"><h3>Import complete</h3><div><span><strong>{importResult.imported_items.toLocaleString()}</strong> new ROIs</span><span><strong>{importResult.merged_items.toLocaleString()}</strong> merged</span><span><strong>{importResult.skipped_items.toLocaleString()}</strong> skipped</span><span><strong>{importResult.imported_labels.toLocaleString()}</strong> labels</span><span><strong>{importResult.imported_descriptors.toLocaleString()}</strong> descriptors</span><span><strong>{importResult.imported_evidence.toLocaleString()}</strong> evidence records</span></div>{#if importResult.backup_path}<code>Backup: {importResult.backup_path}</code>{/if}{#if importResult.label_conflicts}<p>{importResult.label_conflicts.toLocaleString()} conflicting duplicate labels were left unchanged in the destination.</p>{/if}</section>{/if}
           </div>
-          <div class="preferences-footer"><span>{importPreview&&!importResult?`${importPreview.new_items.toLocaleString()} new and ${importPreview.duplicate_count.toLocaleString()} duplicate ROIs reviewed`:importResult?'The open dataset and evidence indexes have been refreshed.':'Choose a source database to begin.'}</span>{#if importResult}<button class="primary" on:click={()=>importOpen=false}>Done</button>{:else}<button class="primary" disabled={!importPreview||importLoading} on:click={executeImport}>{importLoading?'Importing…':'Create backup & import'}</button>{/if}</div>
+          <div class="preferences-footer"><span>{importPreview&&!importResult?`${importPreview.new_items.toLocaleString()} new and ${importPreview.duplicate_count.toLocaleString()} duplicate ROIs reviewed`:importResult?'The open dataset and evidence indexes have been refreshed. Download SQLite to keep a portable revision.':'Choose a source database to begin.'}</span>{#if importResult}<button class="primary" on:click={()=>importOpen=false}>Done</button>{:else}<button class="primary" disabled={!importPreview||importLoading||uploading} on:click={executeImport}>{importLoading?'Importing…':uploading?'Uploading…':'Import ROIs'}</button>{/if}</div>
         </div>
       </div>
     {/if}
@@ -1383,6 +1433,7 @@
   .open-panel { width: min(680px, calc(100vw - 40px)); background: #f7fafc; border: 1px solid #b7c7ce; box-shadow: 0 14px 40px #17343e18; padding: 38px; }
   .landing .open-panel { width:100%; }
   .wordmark span, .browser-header span { font-size: 10px; letter-spacing: .22em; color: #197997; font-weight: 800; }
+  .file-upload-input { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .brand-logo { display:block; width:min(430px, 82%); height:auto; margin:0 0 24px; }
   .open-panel p { color: #53656d; margin-bottom: 28px; }
   .open-panel label { display: block; font-weight: 650; margin-bottom: 6px; }

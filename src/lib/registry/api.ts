@@ -54,6 +54,10 @@ export const api = {
     await waitForTransfer(queued.job, onProgress);
     return client().get<Dataset>(route('/api/dataset'));
   },
+  upload: (file: File) => client().postBinary<{ path: string }>(
+    route(`/api/dataset/upload?filename=${encodeURIComponent(file.name)}`), file, file.type || 'application/octet-stream'
+  ),
+  download: () => client().getBlob(route('/api/dataset/download')),
   workspaces: async () => (await client().get<{ workspaces: RegistryWorkspace[] }>(route('/api/workspaces'))).workspaces,
   activateWorkspace: (workspaceId: string) => client().post<Dataset>(route(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`)),
   dataset: () => client().get<Dataset>(route('/api/dataset')),
@@ -65,7 +69,7 @@ export const api = {
   },
   purgeDataset: () => client().delete<{ workspace_id: string; status: string; deleted_rows: number }>(route('/api/dataset')),
   importPreview: (path: string) => client().post<ImportPreview>(route('/api/import/preview'), { path }),
-  importDataset: (body: { path: string; include_labels: boolean; include_evidence: boolean; duplicate_policy: 'skip' | 'merge'; duplicate_actions: Record<string, 'skip' | 'merge'> }) => client().post<ImportResult>(route('/api/import/execute'), body),
+  importDataset: (body: { path: string; workspace_id?: string; expected_source_sha256?: string; include_labels: boolean; include_evidence: boolean; duplicate_policy: 'skip' | 'merge'; duplicate_actions: Record<string, 'skip' | 'merge'> }) => client().post<ImportResult>(route('/api/import/execute'), body),
   labels: () => client().get<Label[]>(route('/api/labels')),
   vocabulary: () => client().get<CoreVocabulary>(route('/api/vocabulary')),
   vocabularies: () => client().get<VocabularySummary[]>(route('/api/vocabularies')),

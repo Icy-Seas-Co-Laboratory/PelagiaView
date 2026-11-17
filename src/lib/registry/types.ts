@@ -111,7 +111,8 @@ export type ImportDuplicate = {
 };
 
 export type ImportPreview = {
-  source: { path: string; dataset_id: string; name: string; dataset_type: string; lifecycle: string; schema_version: string; size_bytes: number };
+  source: { path: string; dataset_id: string; name: string; dataset_type: string; lifecycle: string; schema_version: string; size_bytes: number; sha256?: string };
+  workspace_id?: string;
   total_items: number; new_items: number; duplicate_count: number; duplicates: ImportDuplicate[];
   labels: { available: boolean; annotation_count: number };
   descriptors: { available: boolean; annotation_count: number };
@@ -121,7 +122,7 @@ export type ImportPreview = {
 export type ImportResult = {
   imported_items: number; merged_items: number; skipped_items: number; metadata_conflicts: number;
   imported_labels: number; label_conflicts: number; imported_descriptors: number; imported_evidence: number;
-  backup_path: string; source_path: string;
+  backup_path?: string | null; source_path: string;
 };
 
 export type FileEntry = {

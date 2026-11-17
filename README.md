@@ -30,7 +30,7 @@ flowchart LR
 - **Process:** submit preprocessing, segmentation, and ROI-refinement work with explicit asset, range, and state criteria.
 - **Curate:** browse ROIs, review model evidence, assign project labels, and record human annotations.
 - **Operate:** monitor jobs, workers, storage, telemetry imports, exports, and event logs.
-- **Registry:** open the integrated `/registry/` workspace to inspect and edit project-scoped Oracle Dataset revisions.
+- **Registry:** open the integrated `/registry/` workspace to inspect and edit project-scoped Oracle Dataset revisions. Load or incrementally import SQLite datasets by uploading a file or browsing configured server folders; imports retain available ROI annotations, review history, descriptors, masks, and model evidence. Use **Import SQLite** in the workspace header or **Details**, and **Download SQLite** to save the current workspace as a portable revision.
 
 ## Start here
 

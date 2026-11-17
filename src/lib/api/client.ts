@@ -294,6 +294,43 @@ export class PelagiaApiClient {
     return value;
   }
 
+  /** Upload an opaque file while retaining the same authenticated client path as JSON mutations. */
+  async postBinary<T>(path: string, body: Blob, contentType = 'application/octet-stream'): Promise<T> {
+    const value = await this.request<T>(this.url(path), {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body
+    });
+    this.cache.clear();
+    notifyQueueMutation();
+    return value;
+  }
+
+  /** Fetch a downloadable artifact and retain its server-provided filename when available. */
+  async getBlob(path: string): Promise<{ blob: Blob; filename?: string }> {
+    const input = this.url(path);
+    const requestInit = authenticatedRequestInit(undefined, this.token);
+    const started = performance.now();
+    let response: Response;
+    try {
+      response = await fetch(input, requestInit);
+      recordApiRequest(input, requestInit, response, performance.now() - started);
+    } catch (error) {
+      recordApiRequest(input, requestInit, null, performance.now() - started, error);
+      throw new ApiError(0, `Unable to reach Pelagia at ${this.baseUrl}. Check that the server is running and allows browser requests from PelagiaView.`, error);
+    }
+    if (!response.ok) {
+      const detail = await responseDetail(response);
+      const message = typeof detail === 'object' && detail && 'detail' in detail
+        ? String((detail as { detail: unknown }).detail)
+        : `Pelagia API returned HTTP ${response.status}`;
+      throw new ApiError(response.status, message, detail);
+    }
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = /filename\*?=(?:UTF-8''|\")?([^;\"]+)/i.exec(disposition);
+    return { blob: await response.blob(), filename: match?.[1] ? decodeURIComponent(match[1].trim()) : undefined };
+  }
+
   async patch<T>(path: string, body?: unknown, options: RequestOptions = {}): Promise<T> {
     const value = await this.request<T>(this.url(path), {
       method: 'PATCH',
