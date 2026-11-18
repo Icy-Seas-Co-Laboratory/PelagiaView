@@ -29,8 +29,9 @@ flowchart LR
 - **Ingest and explore:** analyze videos, image folders, and Pelagia interchange datasets; preview frames and processing overlays.
 - **Process:** submit preprocessing, segmentation, and ROI-refinement work with explicit asset, range, and state criteria.
 - **Curate:** browse ROIs, review model evidence, assign project labels, and record human annotations.
+- **Compare refinement:** in a refined ROI’s **Open full provenance** dialog, choose **Before / after** to compare its source candidate and exact refined record, optionally with masks applied. Merged ROIs offer a source-candidate picker. Crops fit independently and show pixel dimensions and scale bars.
 - **Operate:** monitor jobs, workers, storage, telemetry imports, exports, and event logs.
-- **Registry:** open the integrated `/registry/` workspace to inspect and edit project-scoped Oracle Dataset revisions. Load or incrementally import SQLite datasets by uploading a file or browsing configured server folders; imports retain available ROI annotations, review history, descriptors, masks, and model evidence. Use **Import SQLite** in the workspace header or **Details**, and **Download SQLite** to save the current workspace as a portable revision.
+- **Registry:** open the integrated `/registry/` workspace to inspect and edit project-scoped Oracle Dataset revisions. Create a blank workspace, then copy or move selected ROIs (or every ROI matching the active gallery filters) into a compatible workspace. A preview freezes the ROI selection and lets you choose how each duplicate is handled. Load or incrementally import SQLite datasets by uploading a file or browsing configured server folders; imports retain available ROI annotations, review history, descriptors, masks, and model evidence. The collapsible filters support independent annotation/review state chips, in-use image and target descriptor tags, bbox-area ranges (with crop bounds used where no bbox exists), and ML confidence ranges. Use **Import SQLite** in the workspace header or **Details**, and **Download SQLite** to save the current workspace as a portable revision.
 
 ## Start here
 

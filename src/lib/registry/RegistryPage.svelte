@@ -4,7 +4,7 @@
   import { page as route } from '$app/stores';
   import { api, registryUrl } from '$lib/registry/api';
   import { gridMoveIndex, nextSelection, stickyClickSelection } from '$lib/registry/selection';
-  import type { CoreVocabulary, Dataset, DatasetDetails, DescriptorTag, EvidenceSource, FileListing, ImportPreview, ImportResult, InferenceSourceDetail, Item, ItemEvidence, Label, RegistryWorkspace, VocabularyNode, VocabularySummary } from '$lib/registry/types';
+  import type { CoreVocabulary, Dataset, DatasetDetails, DescriptorTag, EvidenceSource, FileListing, ImportPreview, ImportResult, InferenceSourceDetail, Item, ItemEvidence, Label, RegistryFilterFacets, RegistryWorkspace, VocabularyNode, VocabularySummary, WorkspaceTransferPreview, WorkspaceTransferResult } from '$lib/registry/types';
   import { imageDimensions, itemCalibration, type ViewMode } from '$lib/registry/viewModes';
   import { buildOriginalLayout, originalMoveIndex, visibleOriginalEntries } from '$lib/registry/originalLayout';
   import { DIGIT_SHORTCUTS, shortcutLabel, withDefaultShortcuts } from '$lib/registry/preferences';
@@ -12,6 +12,7 @@
   import { clampPanelWidth, panelKeyDelta, PANEL_DEFAULT_WIDTH, PANEL_MAX_WIDTH, PANEL_MIN_WIDTH, type PanelSide } from '$lib/registry/panelSizing';
   import DescriptorPicker from '$lib/registry/DescriptorPicker.svelte';
   import RegistryRoiModal from '$lib/registry/RegistryRoiModal.svelte';
+  import RangeFilter from '$lib/registry/RangeFilter.svelte';
   import AuthenticatedImage from '$lib/components/AuthenticatedImage.svelte';
   import HeaderImageInversionToggle from '$lib/components/HeaderImageInversionToggle.svelte';
   import AppHeader from '$lib/components/AppHeader.svelte';
@@ -29,8 +30,8 @@
   let loading = false;
   let error = '';
   let notice = '';
-  let annotationState = 'all';
-  let reviewState = 'all';
+  let annotationStates = new Set(['unlabeled', 'labeled']);
+  let reviewStates = new Set(['unreviewed', 'verified', 'needs_review', 'rejected', 'no_annotation']);
   let labelFilter = '';
   let sort = 'original';
   let randomSeed = 'registry';
@@ -101,12 +102,41 @@
   let evidenceSource = '';
   let detailEvidence: ItemEvidence[] = [];
   let mlState = 'all';
-  let confidenceMin = '';
-  let confidenceMax = '';
+  let confidenceMin: number | null = null;
+  let confidenceMax: number | null = null;
   let knnSimilarityMin = '';
   let knnAgreementMin = '';
   let prototypeSimilarityMin = '';
   let mlDisagreement = false;
+  let filterFacets: RegistryFilterFacets | null = null;
+  let filterTimer: ReturnType<typeof setTimeout> | undefined;
+  let itemRequest = 0;
+  let detailRequest = 0;
+  let targetTagFilter = new Set<string>();
+  let imageTagFilter = new Set<string>();
+  let targetTagsUntagged = false;
+  let imageTagsUntagged = false;
+  let bboxAreaMin: number | null = null;
+  let bboxAreaMax: number | null = null;
+  let bboxLongestSideMin = '';
+  let bboxLongestSideMax = '';
+  let bboxAspectRatioMin = '';
+  let bboxAspectRatioMax = '';
+  let filterSections: Record<string, boolean> = { annotation: true, review: true, descriptors: true, geometry: true, evidence: true, taxonomy: true };
+  let transferOpen = false;
+  let transferMode: 'copy' | 'move' = 'copy';
+  let transferScope: 'selected' | 'filtered' = 'selected';
+  let transferDestination = '';
+  let transferNewName = '';
+  let transferNewTitle = '';
+  let transferNewDatasetType = 'classification';
+  let transferPreview: WorkspaceTransferPreview | null = null;
+  let transferResult: WorkspaceTransferResult | null = null;
+  let transferLoading = false;
+  let transferDuplicatePolicy: 'skip' | 'overwrite' | 'keep_destination_remove_source' = 'skip';
+  let transferDuplicateActions: Record<string, 'skip' | 'overwrite' | 'keep_destination_remove_source'> = {};
+  let transferDialog: HTMLElement | null = null;
+  let transferTrigger: HTMLElement | null = null;
   let browseMode: '' | 'similarity' | 'knn' = '';
   let browseReference = '';
   let similarityMinimum = 0.7;
@@ -203,7 +233,7 @@
     expandedTaxonomy = next;
   }
 
-  function filterByLabel(labelId: string) { labelFilter = labelId; page = 0; loadItems(); }
+  function filterByLabel(labelId: string) { labelFilter = labelId; applyFilter(); }
   function chooseTaxonomy(row: TaxonomyRow) {
     if (row.label) filterByLabel(row.label.label_id);
     else if (row.hasChildren) toggleTaxonomy(row.id, new Event('toggle'));
@@ -279,6 +309,7 @@
       leftPanelWidth = clampPanelWidth('left', savedLeft, sizingViewport, PANEL_DEFAULT_WIDTH.right);
       rightPanelWidth = clampPanelWidth('right', savedRight, sizingViewport, leftPanelWidth);
       shortcutLabelIds = saved.shortcutLabelIds && typeof saved.shortcutLabelIds === 'object' ? saved.shortcutLabelIds : {};
+      filterSections = saved.filterSections && typeof saved.filterSections === 'object' ? { ...filterSections, ...saved.filterSections } : filterSections;
     } catch {
       shortcutLabelIds = {}; stickySelection = false;
       canvasColorCustom = false; canvasColor = defaultCanvasColors[theme];
@@ -288,7 +319,33 @@
 
   function savePreferences() {
     localStorage.setItem('pelagia.registry.preferences', JSON.stringify({ theme, canvasColor,
-      canvasColorMode: canvasColorCustom ? 'custom' : 'theme', stickySelection, leftPanelWidth, rightPanelWidth, shortcutLabelIds }));
+      canvasColorMode: canvasColorCustom ? 'custom' : 'theme', stickySelection, leftPanelWidth, rightPanelWidth, shortcutLabelIds, filterSections }));
+  }
+
+  function toggleFilterSection(name: string) { filterSections = { ...filterSections, [name]: !filterSections[name] }; savePreferences(); }
+  function toggleFilter(set: Set<string>, value: string) {
+    const next = new Set(set); next.has(value) ? next.delete(value) : next.add(value); return next;
+  }
+  function applyFilter() {
+    if (browseMode) { browseMode = ''; browseReference = ''; notice = 'Applied filters in the Registry gallery.'; }
+    page = 0; itemRequest++; loading = true; selected = new Set();
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => { filterTimer = undefined; void loadItems(); }, 150);
+  }
+  function resetFilters() {
+    annotationStates = new Set(['unlabeled', 'labeled']); reviewStates = new Set(['unreviewed', 'verified', 'needs_review', 'rejected', 'no_annotation']);
+    targetTagFilter = new Set(); imageTagFilter = new Set(); targetTagsUntagged = false; imageTagsUntagged = false;
+    bboxAreaMin = null; bboxAreaMax = null; bboxLongestSideMin = ''; bboxLongestSideMax = ''; bboxAspectRatioMin = ''; bboxAspectRatioMax = '';
+    confidenceMin = null; confidenceMax = null; labelFilter = ''; mlState = 'all'; knnSimilarityMin = ''; knnAgreementMin = ''; prototypeSimilarityMin = ''; mlDisagreement = false; applyFilter();
+  }
+  function filterSummary(name: string) {
+    if (name === 'annotation') return `${annotationStates.size}/2`;
+    if (name === 'review') return `${reviewStates.size}/5`;
+    if (name === 'descriptors') return targetTagFilter.size + imageTagFilter.size + Number(targetTagsUntagged) + Number(imageTagsUntagged) ? 'active' : 'all';
+    if (name === 'geometry') return bboxAreaMin !== null || bboxAreaMax !== null || bboxLongestSideMin || bboxLongestSideMax || bboxAspectRatioMin || bboxAspectRatioMax ? 'active' : 'all';
+    if (name === 'evidence') return confidenceMin !== null || confidenceMax !== null || mlState !== 'all' || knnSimilarityMin || knnAgreementMin || mlDisagreement ? 'active' : 'all';
+    if (name === 'taxonomy') return labelFilter ? 'active' : 'all';
+    return '';
   }
 
   function panelWidth(side: PanelSide) { return side === 'left' ? leftPanelWidth : rightPanelWidth; }
@@ -379,16 +436,27 @@
   }
 
   function params() {
-    const p = new URLSearchParams({ limit: String(pageSize), offset: String(page * pageSize), annotation_state: annotationState, review: reviewState, sort, random_seed: randomSeed });
+    const p = new URLSearchParams({ limit: String(pageSize), offset: String(page * pageSize), sort, random_seed: randomSeed });
+    if (annotationStates.size) annotationStates.forEach((value) => p.append('annotation_states', value));
+    else p.append('annotation_states', '__none__');
+    if (reviewStates.size) reviewStates.forEach((value) => p.append('review_states', value));
+    else p.append('review_states', '__none__');
     if (labelFilter) p.append('label_id', labelFilter);
     if (evidenceSource) p.set('evidence_source', evidenceSource);
     if (mlState !== 'all') p.set('ml_state', mlState);
-    if (confidenceMin !== '') p.set('confidence_min', confidenceMin);
-    if (confidenceMax !== '') p.set('confidence_max', confidenceMax);
+    if (confidenceMin !== null) p.set('confidence_min', String(confidenceMin));
+    if (confidenceMax !== null) p.set('confidence_max', String(confidenceMax));
     if (knnSimilarityMin !== '') p.set('knn_similarity_min', knnSimilarityMin);
     if (knnAgreementMin !== '') p.set('knn_agreement_min', knnAgreementMin);
     if (prototypeSimilarityMin !== '') p.set('prototype_similarity_min', prototypeSimilarityMin);
     if (mlDisagreement) p.set('ml_disagreement', 'true');
+    targetTagFilter.forEach((value) => p.append('target_tag_id', value));
+    imageTagFilter.forEach((value) => p.append('image_tag_id', value));
+    if (targetTagsUntagged) p.set('target_tags_untagged', 'true');
+    if (imageTagsUntagged) p.set('image_tags_untagged', 'true');
+    for (const [key, value] of Object.entries({ bbox_area_min: bboxAreaMin, bbox_area_max: bboxAreaMax,
+      bbox_longest_side_min: bboxLongestSideMin, bbox_longest_side_max: bboxLongestSideMax,
+      bbox_aspect_ratio_min: bboxAspectRatioMin, bbox_aspect_ratio_max: bboxAspectRatioMax })) if (value !== '' && value != null) p.set(key, String(value));
     return p;
   }
 
@@ -409,6 +477,8 @@
   async function hydrateWorkspace(openedDataset: Dataset) {
       if (dataset?.workspace_id !== openedDataset.workspace_id) thumbnailCache.clear();
       const [openedLabels, openedCatalog, openedTags, openedEvidence] = await Promise.all([api.labels(), api.vocabularies(), api.tags(), api.evidenceSources()]);
+      const openedEvidenceSource = openedEvidence[0]?.source_key || '';
+      const openedFacets = await api.filterFacets(openedEvidenceSource);
       let savedVocabularyKeys: string[] = [];
       try {
         const saved = JSON.parse(localStorage.getItem(vocabularyPreferenceKey(openedDataset.dataset_id)) || 'null');
@@ -416,9 +486,16 @@
       } catch { savedVocabularyKeys = []; }
       savedVocabularyKeys = savedVocabularyKeys.filter((key) => openedCatalog.some((entry) => entry.key === key));
       const openedVocabularies = await Promise.all(savedVocabularyKeys.map((key) => api.installedVocabulary(key)));
-      dataset = openedDataset; labels = openedLabels; vocabularyCatalog = openedCatalog; vocabularies = openedVocabularies; enabledVocabularyKeys = savedVocabularyKeys; descriptorTags = openedTags; evidenceSources = openedEvidence;
-      evidenceSource = openedEvidence[0]?.source_key || '';
-      path = openedDataset.path; localStorage.setItem('pelagia.registry.lastPath', path);
+      dataset = openedDataset; labels = openedLabels; vocabularyCatalog = openedCatalog; vocabularies = openedVocabularies; enabledVocabularyKeys = savedVocabularyKeys; descriptorTags = openedTags; evidenceSources = openedEvidence; filterFacets = openedFacets;
+      evidenceSource = openedEvidenceSource;
+      annotationStates = new Set(['unlabeled', 'labeled']); reviewStates = new Set(['unreviewed', 'verified', 'needs_review', 'rejected', 'no_annotation']);
+      targetTagFilter = new Set(); imageTagFilter = new Set(); targetTagsUntagged = false; imageTagsUntagged = false;
+      bboxAreaMin = null; bboxAreaMax = null; bboxLongestSideMin = ''; bboxLongestSideMax = ''; bboxAspectRatioMin = ''; bboxAspectRatioMax = '';
+      clearTimeout(filterTimer); itemRequest++; detailRequest++;
+      confidenceMin = null; confidenceMax = null; labelFilter = ''; mlState = 'all';
+      knnSimilarityMin = ''; knnAgreementMin = ''; prototypeSimilarityMin = ''; mlDisagreement = false;
+      browseMode = ''; browseReference = '';
+      path = openedDataset.path || ''; if (path) localStorage.setItem('pelagia.registry.lastPath', path);
       if (openedDataset.thawed_from_path) notice = `Frozen source preserved. Working copy opened: ${openedDataset.path}`;
       else if (openedDataset.backup_path) notice = `Migration backup: ${openedDataset.backup_path}`;
       expandedTaxonomy = new Set(['dataset-labels', ...openedVocabularies.flatMap((catalog) => [`vocabulary:${catalog.catalog_key}`, ...catalog.taxonomy.nodes.map((node) => `${catalog.catalog_key}:${node.id}`)])]);
@@ -500,6 +577,7 @@
   }
 
   function closeWorkspace(updateHistory = true, refreshWorkspaces = true) {
+    clearTimeout(filterTimer); itemRequest++; detailRequest++;
     thumbnailCache.clear();
     dataset = null; items = []; labels = []; selected = new Set(); detail = null;
     if (updateHistory) updateWorkspaceUrl(null);
@@ -534,7 +612,9 @@
 
   async function saveDataset(replaceSource = false) {
     if (!dataset || saving) return;
-    const suggested = dataset.path || path;
+    const isBlank = !dataset.path;
+    const suggested = dataset.path || `${(dataset.name || 'pelagia-registry').replace(/[^a-z0-9._-]+/gi, '-')}.sqlite`;
+    if (isBlank) replaceSource = false;
     const destination = replaceSource ? suggested : window.prompt('Save Registry dataset as:', suggested);
     if (!destination) return;
     saving = true; error = ''; notice = '';
@@ -681,8 +761,92 @@
     finally { importLoading = false; }
   }
 
+  function transferFilters() {
+    return {
+      annotation_states: [...annotationStates], review_states: [...reviewStates],
+      label_ids: labelFilter ? [labelFilter] : [], target_tag_ids: [...targetTagFilter], image_tag_ids: [...imageTagFilter],
+      target_tags_untagged: targetTagsUntagged, image_tags_untagged: imageTagsUntagged,
+      bbox_area_min: bboxAreaMin ?? undefined, bbox_area_max: bboxAreaMax ?? undefined,
+      bbox_longest_side_min: bboxLongestSideMin === '' ? undefined : Number(bboxLongestSideMin), bbox_longest_side_max: bboxLongestSideMax === '' ? undefined : Number(bboxLongestSideMax),
+      bbox_aspect_ratio_min: bboxAspectRatioMin === '' ? undefined : Number(bboxAspectRatioMin), bbox_aspect_ratio_max: bboxAspectRatioMax === '' ? undefined : Number(bboxAspectRatioMax),
+      evidence_source: evidenceSource || undefined, ml_state: mlState, confidence_min: confidenceMin ?? undefined,
+      confidence_max: confidenceMax ?? undefined, knn_similarity_min: knnSimilarityMin === '' ? undefined : Number(knnSimilarityMin),
+      knn_agreement_min: knnAgreementMin === '' ? undefined : Number(knnAgreementMin), ml_disagreement: mlDisagreement
+    };
+  }
+
+  function openNewWorkspace() {
+    transferTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    transferMode = 'copy'; transferScope = 'filtered';
+    transferNewName = ''; transferNewTitle = ''; transferNewDatasetType = 'classification';
+    transferDestination = ''; transferPreview = null; transferResult = null; error = ''; transferOpen = true;
+  }
+  function focusTransferDialog(node: HTMLElement) { node.focus(); }
+
+  function openTransfer(mode: 'copy' | 'move') {
+    if (browseMode && !selected.size) { error = 'Select ROIs before transferring from a similarity or neighbor view.'; return; }
+    error = ''; notice = '';
+    transferTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    transferMode = mode; transferScope = selected.size ? 'selected' : 'filtered'; transferDestination = '';
+    transferNewName = ''; transferNewTitle = ''; transferPreview = null; transferResult = null; transferDuplicateActions = {}; transferDuplicatePolicy = 'skip'; transferOpen = true;
+  }
+  function closeTransfer() { transferOpen = false; requestAnimationFrame(() => transferTrigger?.focus()); }
+  function transferKeydown(event: KeyboardEvent) {
+    event.stopPropagation();
+    if (event.key === 'Escape' && !transferLoading) { event.preventDefault(); closeTransfer(); return; }
+    if (event.key !== 'Tab' || !transferDialog) return;
+    const focusable = [...transferDialog.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter((element) => element.offsetParent !== null);
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable.at(-1)!;
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  }
+
+  async function inspectTransfer() {
+    transferLoading = true; transferDuplicateActions = {}; error = '';
+    try {
+      if (!dataset?.workspace_id) {
+        if (!transferNewName.trim()) throw new Error('Enter a workspace name.');
+        const created = await api.createWorkspace({ name: transferNewName.trim(), title: transferNewTitle.trim() || undefined, dataset_type: transferNewDatasetType, activate: true });
+        await loadWorkspaces(); await openWorkspace(created); transferOpen = false; notice = 'Blank Registry workspace created.'; return;
+      }
+      let destinationWorkspaceId = transferDestination;
+      if (!destinationWorkspaceId && transferNewName.trim()) {
+        const created = await api.createWorkspace({ name: transferNewName.trim(), title: transferNewTitle.trim() || undefined, dataset_type: dataset?.dataset_type || transferNewDatasetType, activate: false });
+        destinationWorkspaceId = created.workspace_id; transferDestination = created.workspace_id; await loadWorkspaces();
+      }
+      if (!destinationWorkspaceId) throw new Error('Choose a destination workspace or give the new workspace a name.');
+      transferPreview = await api.transferPreview({ source_workspace_id: dataset.workspace_id, destination_workspace_id: destinationWorkspaceId,
+        mode: transferMode, item_ids: transferScope === 'selected' ? [...selected] : undefined, filters: transferScope === 'filtered' ? transferFilters() : undefined });
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    finally { transferLoading = false; }
+  }
+
+  function setTransferDuplicate(itemId: string, event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    const next = { ...transferDuplicateActions };
+    if (value) next[itemId] = value as typeof transferDuplicatePolicy;
+    else delete next[itemId];
+    transferDuplicateActions = next;
+  }
+
+  async function executeTransfer() {
+    if (!dataset?.workspace_id || !transferPreview?.destination_workspace_id) return;
+    transferLoading = true; error = '';
+    try {
+      const completed = await api.transfer({ source_workspace_id: dataset.workspace_id, destination_workspace_id: transferPreview.destination_workspace_id,
+        item_ids: transferPreview.item_ids, mode: transferMode, expected_preview_token: transferPreview.preview_token,
+        duplicate_policy: transferDuplicatePolicy, duplicate_actions: transferDuplicateActions }, (message) => notice = message);
+      transferResult = completed.result; await refresh(); await loadWorkspaces();
+      notice = transferMode === 'move' ? 'ROI transfer completed and source records were updated.' : 'ROI copies were added to the destination workspace.';
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    finally { transferLoading = false; }
+  }
+
   async function loadItems() {
     if (!dataset) return;
+    clearTimeout(filterTimer); filterTimer = undefined;
+    const request = ++itemRequest;
     loading = true; error = '';
     try {
       const result = browseMode === 'similarity' && browseReference && evidenceSource
@@ -690,6 +854,7 @@
         : browseMode === 'knn' && browseReference && evidenceSource
           ? await api.neighbors(browseReference,evidenceSource)
           : await api.items(params());
+      if (request !== itemRequest) return;
       items = result.items; total = result.total;
       const initialReference = browseMode && items.some((item)=>item.item_id===browseReference)
         ? browseReference : undefined;
@@ -697,22 +862,32 @@
       focused = initialReference || items[0]?.item_id; anchor = initialReference;
       stickyCandidate = undefined;
       gallery?.scrollTo({ top: 0 }); await loadDetail();
-    } catch (e) { error = e instanceof Error ? e.message : String(e); }
-    finally { loading = false; }
+    } catch (e) { if (request === itemRequest) error = e instanceof Error ? e.message : String(e); }
+    finally { if (request === itemRequest) loading = false; }
   }
 
   async function refresh() {
     if (!dataset) return;
-    const [summary, newLabels, newTags, result] = await Promise.all([api.dataset(), api.labels(), api.tags(), api.items(params())]);
-    dataset = summary; labels = newLabels; descriptorTags = newTags; items = result.items; total = result.total; await loadDetail();
+    const request = ++itemRequest;
+    const [summary, newLabels, newTags, result, facets] = await Promise.all([api.dataset(), api.labels(), api.tags(), api.items(params()), api.filterFacets(evidenceSource)]);
+    if (request !== itemRequest) return;
+    dataset = summary; labels = newLabels; descriptorTags = newTags; filterFacets = facets; total = result.total;
+    if (page > 0 && page * pageSize >= total) { page = Math.max(0, Math.ceil(total / pageSize) - 1); await loadItems(); return; }
+    items = result.items;
+    const visibleIds = new Set(items.map(item => item.item_id));
+    selected = new Set([...selected].filter(id => visibleIds.has(id)));
+    if (!focused || !visibleIds.has(focused)) focused = items[0]?.item_id;
+    await loadDetail();
   }
 
   async function loadDetail() {
+    const request = ++detailRequest;
     if (!focused) { detail = null; detailEvidence = []; return; }
     try {
       const [itemDetail,itemEvidence] = await Promise.all([api.item(focused), evidenceSource ? api.itemEvidence(focused,evidenceSource) : Promise.resolve([])]);
+      if (request !== detailRequest) return;
       detail = itemDetail; detailEvidence = itemEvidence;
-    } catch { detail = null; detailEvidence = []; }
+    } catch { if (request === detailRequest) { detail = null; detailEvidence = []; } }
   }
 
   function evidenceLabel(labelId?: string) {
@@ -725,7 +900,9 @@
 
   async function changeEvidenceSource() {
     browseMode = ''; browseReference = ''; page = 0;
-    await loadItems(); await loadDetail();
+    confidenceMin = null; confidenceMax = null;
+    try { filterFacets = await api.filterFacets(evidenceSource); await loadItems(); }
+    catch (e) { error = e instanceof Error ? e.message : String(e); }
   }
 
   function findSimilar() {
@@ -1010,6 +1187,10 @@
       if (event.key === 'Escape' && !importLoading) { event.preventDefault(); importOpen = false; }
       return;
     }
+    if (transferOpen) {
+      if (event.key === 'Escape' && !transferLoading) { event.preventDefault(); closeTransfer(); }
+      return;
+    }
     if (reassignSource) {
       if (event.key === 'Escape') { event.preventDefault(); reassignSource = null; }
       return;
@@ -1043,6 +1224,7 @@
     if (stored) path = stored;
     void openWorkspaceFromUrl();
     return () => {
+      clearTimeout(filterTimer); itemRequest++; detailRequest++;
       window.removeEventListener('keydown', keydown);
       window.removeEventListener('resize', fitPanelsToViewport);
       window.removeEventListener('popstate', handleWorkspaceNavigation);
@@ -1092,7 +1274,7 @@
       <section class="workspace-panel" aria-busy={workspacesLoading}>
         <div class="workspace-panel-heading">
           <div><span>POSTGRESQL</span><h1>Available workspaces</h1></div>
-          <button on:click={loadWorkspaces} disabled={workspacesLoading}>{workspacesLoading ? 'Refreshing…' : 'Refresh'}</button>
+          <button on:click={openNewWorkspace} disabled={workspacesLoading}>New workspace</button><button on:click={loadWorkspaces} disabled={workspacesLoading}>{workspacesLoading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
         {#if workspacesLoading && !workspaces.length}
           <div class="workspace-empty">Loading workspaces…</div>
@@ -1109,7 +1291,7 @@
                     {#if workspace.dirty_at}<span class="badge dirty">Unsaved changes</span>{/if}
                   </div>
                   <div class="workspace-meta">{humanize(workspace.dataset_type)} · {workspace.lifecycle} · {workspace.item_count.toLocaleString()} ROIs · {workspace.labeled_count.toLocaleString()} labeled</div>
-                  <div class="workspace-source" title={workspace.source_path}>{workspace.source_path}</div>
+                  <div class="workspace-source" title={workspace.source_path || 'Created in Registry'}>{workspace.source_path || 'Created in Registry'}</div>
                   <div class="workspace-revision">Revision {workspace.revision_id.slice(0, 12)} · loaded {formatDate(workspace.loaded_at)}</div>
                 </div>
                 <button class="primary" on:click={() => openWorkspace(workspace)} disabled={!!workspaceOpening || loading}>
@@ -1170,26 +1352,36 @@
     </header>
 
     <aside class="filters">
-      <section>
-        <h2>Annotation state</h2>
-        <div class="segmented">{#each ['all','unlabeled','labeled'] as state}<button class:active={annotationState===state} on:click={() => {annotationState=state;page=0;loadItems()}}>{state}</button>{/each}</div>
+      <div class="filter-actions"><strong>Filters</strong><button on:click={resetFilters}>Reset filters</button></div>
+      <section class="filter-section">
+        <button class="filter-heading" aria-expanded={filterSections.annotation} on:click={()=>toggleFilterSection('annotation')}><h2>Annotation state</h2><span>{#if !filterSections.annotation}{filterSummary('annotation')} {/if}{filterSections.annotation?'▾':'▸'}</span></button>
+        {#if filterSections.annotation}<div class="segmented">{#each ['unlabeled','labeled'] as state}<button class:active={annotationStates.has(state)} aria-pressed={annotationStates.has(state)} on:click={() => {annotationStates=toggleFilter(annotationStates,state);applyFilter()}}>{state}</button>{/each}</div>{/if}
       </section>
-      <section>
-        <h2>Review</h2>
-        <select bind:value={reviewState} on:change={() => {page=0;loadItems()}}><option value="all">All review states</option><option value="unreviewed">Unreviewed</option><option value="verified">Verified</option><option value="needs_review">Needs review</option><option value="rejected">Rejected</option></select>
+      <section class="filter-section">
+        <button class="filter-heading" aria-expanded={filterSections.review} on:click={()=>toggleFilterSection('review')}><h2>Review</h2><span>{#if !filterSections.review}{filterSummary('review')} {/if}{filterSections.review?'▾':'▸'}</span></button>
+        {#if filterSections.review}<div class="chip-set">{#each [['unreviewed','Unreviewed'],['verified','Verified'],['needs_review','Needs review'],['rejected','Rejected'],['no_annotation','No annotation']] as [state,label]}<button class:active={reviewStates.has(state)} aria-pressed={reviewStates.has(state)} on:click={()=>{reviewStates=toggleFilter(reviewStates,state);applyFilter()}}>{label}</button>{/each}</div>{/if}
       </section>
-      {#if evidenceSources.length}<section class="ml-filters">
-        <h2>ML evidence</h2>
+      <section class="filter-section">
+        <button class="filter-heading" aria-expanded={filterSections.descriptors} on:click={()=>toggleFilterSection('descriptors')}><h2>Descriptors</h2><span>{#if !filterSections.descriptors}{filterSummary('descriptors')} {/if}{filterSections.descriptors?'▾':'▸'}</span></button>
+        {#if filterSections.descriptors}<div class="descriptor-filter"><strong>Target</strong><div class="chip-set"><button class:active={targetTagsUntagged} aria-pressed={targetTagsUntagged} on:click={()=>{targetTagsUntagged=!targetTagsUntagged;applyFilter()}}>Untagged</button>{#each (filterFacets?.descriptors?.target_tags || descriptorTags.filter(tag=>tag.scope==='target_tags'&&tag.item_count)) as tag (tag.tag_id)}<button class:active={targetTagFilter.has(tag.tag_id)} aria-pressed={targetTagFilter.has(tag.tag_id)} on:click={()=>{targetTagFilter=toggleFilter(targetTagFilter,tag.tag_id);applyFilter()}}>{tag.name}<small>{tag.item_count}</small></button>{/each}</div></div><div class="descriptor-filter"><strong>Image</strong><div class="chip-set"><button class:active={imageTagsUntagged} aria-pressed={imageTagsUntagged} on:click={()=>{imageTagsUntagged=!imageTagsUntagged;applyFilter()}}>Untagged</button>{#each (filterFacets?.descriptors?.image_tags || descriptorTags.filter(tag=>tag.scope==='image_tags'&&tag.item_count)) as tag (tag.tag_id)}<button class:active={imageTagFilter.has(tag.tag_id)} aria-pressed={imageTagFilter.has(tag.tag_id)} on:click={()=>{imageTagFilter=toggleFilter(imageTagFilter,tag.tag_id);applyFilter()}}>{tag.name}<small>{tag.item_count}</small></button>{/each}</div></div>{/if}
+      </section>
+      <section class="filter-section geometry-filters">
+        <button class="filter-heading" aria-expanded={filterSections.geometry} on:click={()=>toggleFilterSection('geometry')}><h2>ROI geometry</h2><span>{#if !filterSections.geometry}{filterSummary('geometry')} {/if}{filterSections.geometry?'▾':'▸'}</span></button>
+        {#if filterSections.geometry}{#if filterFacets?.bbox_area}<div>Bbox area (px²)<RangeFilter label="Bounding box area" minimum={filterFacets.bbox_area.min} maximum={filterFacets.bbox_area.max} bind:low={bboxAreaMin} bind:high={bboxAreaMax} scale="sqrt" onChange={applyFilter} /></div>{/if}<div class="metric-pair"><label>Longest side (px)<input aria-label="Minimum bbox longest side" type="number" min="0" bind:value={bboxLongestSideMin} placeholder="min" on:change={applyFilter}/></label><label>Maximum<input aria-label="Maximum bbox longest side" type="number" min="0" bind:value={bboxLongestSideMax} placeholder="max" on:change={applyFilter}/></label></div><div class="metric-pair"><label>Aspect ratio<input aria-label="Minimum bbox aspect ratio" type="number" min="1" step="0.1" bind:value={bboxAspectRatioMin} placeholder="min" on:change={applyFilter}/></label><label>Maximum<input aria-label="Maximum bbox aspect ratio" type="number" min="1" step="0.1" bind:value={bboxAspectRatioMax} placeholder="max" on:change={applyFilter}/></label></div>{/if}
+      </section>
+      {#if evidenceSources.length}<section class="ml-filters filter-section">
+        <button class="filter-heading" aria-expanded={filterSections.evidence} on:click={()=>toggleFilterSection('evidence')}><h2>ML evidence</h2><span>{#if !filterSections.evidence}{filterSummary('evidence')} {/if}{filterSections.evidence?'▾':'▸'}</span></button>
+        {#if filterSections.evidence}
         <label>Evidence source<select bind:value={evidenceSource} on:change={changeEvidenceSource}>{#each evidenceSources as source}<option value={source.source_key}>{source.source_name}</option>{/each}</select></label>
         <label>Coverage<select bind:value={mlState}><option value="all">All ROIs</option><option value="with">With evidence</option><option value="without">Without evidence</option></select></label>
-        <div class="metric-pair"><label>Confidence ≥<input type="number" min="0" max="1" step="0.05" bind:value={confidenceMin} placeholder="any" /></label><label>Confidence ≤<input type="number" min="0" max="1" step="0.05" bind:value={confidenceMax} placeholder="any" /></label></div>
+        <div>Prediction confidence{#if filterFacets?.prediction_confidence?.count}<RangeFilter label="Prediction confidence" minimum={0} maximum={1} step={0.01} suffix="%" percent={true} bind:low={confidenceMin} bind:high={confidenceMax} onChange={applyFilter} />{:else}<small>No prediction confidence is available for this source.</small>{/if}</div>
         {#if evidenceSources.find((source)=>source.source_key===evidenceSource)?.capabilities.knn}<div class="metric-pair"><label>KNN similarity ≥<input type="number" min="-1" max="1" step="0.05" bind:value={knnSimilarityMin} placeholder="any" /></label><label>KNN agreement ≥<input type="number" min="0" max="1" step="0.05" bind:value={knnAgreementMin} placeholder="any" /></label></div>{/if}
-        {#if evidenceSources.find((source)=>source.source_key===evidenceSource)?.capabilities.prototype}<label>Prototype similarity ≥<input type="number" min="-1" max="1" step="0.05" bind:value={prototypeSimilarityMin} placeholder="any" /></label>{/if}
         <label class="ml-check"><input type="checkbox" bind:checked={mlDisagreement} /> Prediction differs from assigned label</label>
-        <div class="ml-actions"><button on:click={() => {page=0;loadItems()}}>Apply</button><button on:click={() => {mlState='all';confidenceMin='';confidenceMax='';knnSimilarityMin='';knnAgreementMin='';prototypeSimilarityMin='';mlDisagreement=false;page=0;loadItems()}}>Clear</button></div>
-      </section>{/if}
-      <section class="taxonomy">
-        <div class="taxonomy-title"><h2>Taxonomy</h2></div>
+        <div class="ml-actions"><button on:click={applyFilter}>Apply</button><button on:click={() => {mlState='all';confidenceMin=null;confidenceMax=null;knnSimilarityMin='';knnAgreementMin='';prototypeSimilarityMin='';mlDisagreement=false;applyFilter()}}>Clear</button></div>
+        {/if}</section>{/if}
+      <section class="taxonomy filter-section">
+        <button class="filter-heading" aria-expanded={filterSections.taxonomy} on:click={()=>toggleFilterSection('taxonomy')}><h2>Taxonomy</h2><span>{#if !filterSections.taxonomy}{filterSummary('taxonomy')} {/if}{filterSections.taxonomy?'▾':'▸'}</span></button>
+        {#if filterSections.taxonomy}
         <div class="taxonomy-columns"><span>Label</span><span title="Verified">V</span><span title="Unverified">U</span><span title="ML predictions">ML</span></div>
         <button class:active={!labelFilter} class="taxonomy-row taxonomy-all" on:click={() => filterByLabel('')}><span>All labels</span><em>{dataset.stats.labeled.toLocaleString()}</em></button>
         <div class="taxonomy-list">
@@ -1202,7 +1394,7 @@
           {/each}
           {#if !taxonomyRows.length}<div class="taxonomy-empty">No dataset labels or optional taxonomies to display.</div>{/if}
         </div>
-        <small>◆ enabled standardized concept · ＋ assign selected ROI(s)<br />V verified · U unverified · ML prediction evidence</small>
+        <small>◆ enabled standardized concept · ＋ assign selected ROI(s)<br />V verified · U unverified · ML prediction evidence</small>{/if}
       </section>
     </aside>
 
@@ -1266,7 +1458,7 @@
     </aside>
 
     <footer>
-      <div><strong>{selected.size}</strong> selected <button on:click={()=>selected=new Set(items.map(i=>i.item_id))}>Select page</button><button on:click={()=>selected=new Set()}>Clear</button></div>
+      <div><strong>{selected.size}</strong> selected <button on:click={()=>selected=new Set(items.map(i=>i.item_id))}>Select page</button><button on:click={()=>selected=new Set()}>Clear</button><button on:click={()=>openTransfer('copy')}>Copy…</button><button on:click={()=>openTransfer('move')}>Move…</button></div>
       <div class="annotation-bar"><span>Assign / modify</span>{#each DIGIT_SHORTCUTS as digit}{@const label = shortcutLabel(activeLabels,shortcutLabelIds,digit)}{#if label}<button on:click={()=>assign(label)}><kbd>{digit}</kbd>{label.display_name||label.name}</button>{/if}{/each}</div>
       <label class="auto"><input type="checkbox" bind:checked={autoAdvance} /> Auto-advance</label><button on:click={undo}>↶ Undo</button>
     </footer>
@@ -1401,6 +1593,26 @@
   </main>
 {/if}
 
+{#if transferOpen}
+  <div class="preferences-backdrop" role="presentation" on:click={(event)=>event.currentTarget===event.target&&!transferLoading&&closeTransfer()}>
+    <div class="transfer-modal" bind:this={transferDialog} use:focusTransferDialog role="dialog" aria-modal="true" aria-labelledby="transfer-title" tabindex="-1" on:keydown={transferKeydown}>
+      <div class="preferences-header"><div><span>WORKSPACE TRANSFER</span><h2 id="transfer-title">{!dataset?'New workspace':transferMode==='move'?'Move ROIs':'Copy ROIs'}</h2></div><button aria-label="Close transfer" disabled={transferLoading} on:click={closeTransfer}>×</button></div>
+      <div class="transfer-body">
+        {#if error}<p class="transfer-error" role="alert">{error}</p>{/if}
+        {#if transferLoading && notice}<p role="status">{notice}</p>{/if}
+        {#if dataset}
+        <div class="segmented"><button disabled={transferLoading || !!transferResult} class:active={transferMode==='copy'} on:click={()=>{transferMode='copy';transferPreview=null;transferDuplicatePolicy='skip';transferDuplicateActions={}}}>Copy</button><button disabled={transferLoading || !!transferResult} class:active={transferMode==='move'} on:click={()=>{transferMode='move';transferPreview=null;transferDuplicatePolicy='skip';transferDuplicateActions={}}}>Move</button></div>
+        <fieldset><legend>ROIs to transfer</legend><label><input type="radio" bind:group={transferScope} value="selected" on:change={()=>transferPreview=null} disabled={!selected.size || transferLoading || !!transferResult} /> {selected.size.toLocaleString()} selected ROIs</label><label><input type="radio" bind:group={transferScope} value="filtered" on:change={()=>transferPreview=null} disabled={!!browseMode || transferLoading || !!transferResult} /> All {total.toLocaleString()} ROIs matching current filters</label>{#if browseMode}<small>Similarity and neighbor views must use an explicit selection.</small>{/if}</fieldset>
+        <label>Destination workspace<select disabled={transferLoading || !!transferResult} bind:value={transferDestination} on:change={()=>transferPreview=null}><option value="">Create a new workspace below</option>{#each workspaces.filter(workspace=>workspace.workspace_id!==dataset?.workspace_id&&workspace.dataset_type===dataset?.dataset_type) as workspace}<option value={workspace.workspace_id}>{workspace.title||workspace.name} · {workspace.item_count.toLocaleString()} ROIs</option>{/each}</select></label>
+        {/if}
+        {#if !transferDestination}<div class="transfer-new"><label>Name<input disabled={transferLoading || !!transferResult} bind:value={transferNewName} placeholder="New workspace name" /></label><label>Title (optional)<input disabled={transferLoading || !!transferResult} bind:value={transferNewTitle} placeholder="Display title" /></label>{#if !dataset}<label>Dataset type<select disabled={transferLoading || !!transferResult} bind:value={transferNewDatasetType}><option value="classification">Classification</option><option value="mask_refinement">Mask refinement</option></select></label>{/if}</div>{/if}
+        {#if transferPreview}<section class="transfer-summary"><div><strong>{transferPreview.total_items.toLocaleString()}</strong><span>ROIs selected</span></div><div><strong>{transferPreview.new_items.toLocaleString()}</strong><span>New</span></div><div><strong>{transferPreview.duplicate_count.toLocaleString()}</strong><span>Duplicates</span></div></section>{#if transferPreview.duplicate_count}<section class="duplicate-options"><div class="duplicate-heading"><div><h3>Duplicate decisions</h3><p>Matching uses ROI UUID, source key, and image content. Your selections are frozen before transfer begins.</p></div><select disabled={transferLoading || !!transferResult} aria-label="Default duplicate action" bind:value={transferDuplicatePolicy}><option value="skip">Skip</option><option value="overwrite">Overwrite destination</option>{#if transferMode==='move'}<option value="keep_destination_remove_source">Keep destination and remove source</option>{/if}</select></div><div class="duplicate-list">{#each transferPreview.duplicates as duplicate}<div class="duplicate-row"><div><strong>{duplicate.source_key||duplicate.source_item_id}</strong><code>{duplicate.source_item_id}</code><span>{#if duplicate.conflicts?.length}<b>Conflicts: {duplicate.conflicts.join(', ')}</b>{/if}{#if duplicate.metadata_conflicts?.length}<b>Metadata: {duplicate.metadata_conflicts.join(', ')}</b>{/if}{#each duplicate.reasons as reason}<em>{reason}</em>{/each}{#if duplicate.matching_item_ids && duplicate.matching_item_ids.length>1}<b>{duplicate.matching_item_ids.length} matching destinations</b>{/if}{#if duplicate.roi_hash && duplicate.target_roi_hash && duplicate.roi_hash!==duplicate.target_roi_hash}<b>content conflict</b>{/if}</span></div><span class="duplicate-arrow">→</span><code title={(duplicate.matching_item_ids||[duplicate.target_item_id]).join(', ')}>{duplicate.target_item_id}</code><select disabled={transferLoading || !!transferResult} aria-label={`Duplicate action for ${duplicate.source_item_id}`} value={transferDuplicateActions[duplicate.source_item_id]||''} on:change={(event)=>setTransferDuplicate(duplicate.source_item_id,event)}><option value="">Use default ({transferDuplicatePolicy.replaceAll('_', ' ')})</option><option value="skip">Skip</option><option value="overwrite">Overwrite</option>{#if transferMode==='move'}<option value="keep_destination_remove_source">Keep destination; remove source</option>{/if}</select></div>{/each}</div></section>{/if}{/if}
+        {#if transferResult}<section class="import-result"><h3>Transfer complete</h3><div><span><strong>{transferResult.copied_items.toLocaleString()}</strong> new destination ROIs</span><span><strong>{transferResult.moved_items.toLocaleString()}</strong> moved</span><span><strong>{transferResult.overwritten_items.toLocaleString()}</strong> overwritten</span><span><strong>{transferResult.skipped_items.toLocaleString()}</strong> skipped</span>{#if transferResult.removed_source_duplicates}<span><strong>{transferResult.removed_source_duplicates.toLocaleString()}</strong> source duplicates removed</span>{/if}</div></section>{/if}
+      </div>
+      <div class="preferences-footer">{#if transferResult}<button class="primary" on:click={closeTransfer}>Done</button>{:else if transferPreview}<button on:click={()=>transferPreview=null} disabled={transferLoading}>Change selection</button><button class="primary" disabled={transferLoading} on:click={executeTransfer}>{transferLoading?'Transferring…':`${transferMode==='move'?'Move':'Copy'} ROIs`}</button>{:else}<button class="primary" disabled={transferLoading||(!!dataset&&(transferScope==='selected'?!selected.size:!total))} on:click={inspectTransfer}>{transferLoading?(dataset?'Preparing…':'Creating…'):(dataset?'Review transfer':'Create workspace')}</button>{/if}</div>
+    </div>
+  </div>
+{/if}
 {#if roiModalItem}
   <RegistryRoiModal
     open={true}
@@ -1520,7 +1732,9 @@
   .save-state.dirty > span::before { content:''; width:7px; height:7px; margin-right:6px; border-radius:50%; background:#ffb85c; box-shadow:0 0 0 2px #ffb85c30; }
   .save-state.dirty > button { border-left-color:#d59a4e; background:#d48431; color:#fff; }
   .save-state.dirty > button:hover:not(:disabled) { border-color:#ecad5b; background:#e0923e; }
-  .filters { grid-area: filters; min-height:0; overflow: hidden; display:flex; flex-direction:column; background: var(--surface); border-right: 1px solid var(--line); }
+  .filters { grid-area: filters; min-height:0; overflow:auto; display:flex; flex-direction:column; background: var(--surface); border-right: 1px solid var(--line); }
+  .filter-actions { display:flex; justify-content:space-between; align-items:center; padding:9px 14px; border-bottom:1px solid var(--line); font-size:10px; text-transform:uppercase; letter-spacing:.06em; }
+  .filter-actions button { padding:3px 5px; font-size:9px; text-transform:none; }
   .left-panel-resizer { grid-area:left-resizer; }
   .right-panel-resizer { grid-area:right-resizer; }
   .panel-resizer { position:relative; z-index:4; min-width:7px; cursor:col-resize; touch-action:none; background:color-mix(in srgb,var(--line) 35%,var(--app-bg)); outline:none; }
@@ -1530,12 +1744,15 @@
   :global(body.resizing-panels) { cursor:col-resize; user-select:none; }
   .filters section, .inspector section { padding: 14px; border-bottom: 1px solid #c7d1d5; }
   .filters h2, .inspector h2, .inspector h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 10px; color: #50656e; }
+  .filter-heading { display:flex; align-items:center; justify-content:space-between; width:100%; padding:0; border:0; background:transparent; text-align:left; color:inherit; }
+  .filter-heading h2 { margin:0; }
+  .filter-heading span { color:var(--muted); font-size:12px; }
+  .filter-section > :not(.filter-heading) { margin-top:10px; }
   .segmented { display: flex; }
   .segmented button { flex: 1; text-transform: capitalize; padding: 6px 3px; margin-right: -1px; }
   .segmented .active { background: #d9eff1; border-color: #197997; color: #105d72; }
   .filters select { width: 100%; }
   .ml-filters { display:grid; gap:7px; }
-  .ml-filters > h2 { margin-bottom:2px; }
   .ml-filters label { display:flex; flex-direction:column; gap:3px; color:var(--muted); font-size:9px; }
   .ml-filters input,.ml-filters select { min-width:0; padding:5px 6px; font-size:10px; }
   .metric-pair { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
@@ -1543,6 +1760,26 @@
   .ml-check input { margin:1px 0 0; accent-color:var(--accent); }
   .ml-actions { display:flex; }
   .ml-actions button { flex:1; padding:4px; font-size:9px; }
+  .chip-set { display:flex; flex-wrap:wrap; gap:4px; }
+  .chip-set button { padding:3px 6px; border-radius:999px; font-size:10px; text-transform:none; }
+  .chip-set button small { margin-left:4px; opacity:.7; }
+  .chip-set .active { background:#d9eff1; border-color:#197997; color:#105d72; }
+  .descriptor-filter { display:grid; gap:5px; margin-top:9px; }
+  .descriptor-filter > strong { color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.06em; }
+  .geometry-filters label { display:grid; gap:4px; color:var(--muted); font-size:9px; }
+  .transfer-error { color:var(--danger,#b54242); }
+  .transfer-modal { width:min(720px,calc(100vw - 28px)); max-height:min(780px,calc(100vh - 28px)); display:flex; flex-direction:column; background:var(--raised); border:1px solid var(--line); box-shadow:0 20px 50px #17252b55; }
+  .transfer-body { min-height:0; overflow:auto; padding:18px; display:grid; gap:14px; }
+  .transfer-body fieldset { display:grid; gap:7px; border:1px solid var(--line); }
+  .transfer-body fieldset label { display:flex; gap:7px; align-items:center; }
+  .transfer-body > label,.transfer-new label { display:grid; gap:5px; font-size:11px; color:var(--muted); }
+  .transfer-body select,.transfer-body input { min-width:0; padding:6px; }
+  .transfer-new { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .transfer-summary { display:grid; grid-template-columns:repeat(3,1fr); border:1px solid var(--line); }
+  .transfer-summary div { display:grid; gap:2px; padding:9px; border-right:1px solid var(--line); }
+  .transfer-summary div:last-child { border:0; }
+  .transfer-summary strong { font-size:18px; }
+  .transfer-summary span { color:var(--muted); font-size:10px; }
   .annotation-bar kbd { font: 600 10px ui-monospace, monospace; display: inline-grid; place-items: center; width: 19px; height: 19px; border: 1px solid #aebdc3; background: #fff; color: #40545c; }
   .new-label { display: flex; }
   .new-label input { width: 100%; min-width: 0; }
@@ -1654,8 +1891,6 @@
   .inspector-empty { margin-top: 100px; }
   .inspector section h3 { margin-bottom: 7px; }
   .taxonomy { min-height:0; flex:1; display:flex; flex-direction:column; padding: 10px 8px !important; }
-  .taxonomy-title { display: flex; align-items: center; justify-content: space-between; padding: 0 5px; }
-  .taxonomy-title h2 { margin: 0; }
   .taxonomy-columns { display:grid; grid-template-columns:minmax(0,1fr) 28px 28px 28px; padding:6px 2px 3px 20px; color:var(--muted); font:600 9px ui-monospace,monospace; }
   .taxonomy-columns span:not(:first-child) { text-align:right; }
   .taxonomy-list { min-height:0; flex:1; overflow: auto; border-top: 1px solid var(--line); }

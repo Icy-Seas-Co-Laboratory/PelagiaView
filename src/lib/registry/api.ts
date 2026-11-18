@@ -12,6 +12,9 @@ import type {
   ItemEvidence,
   Label,
   RegistryWorkspace,
+  RegistryFilterFacets,
+  WorkspaceTransferPreview,
+  WorkspaceTransferResult,
   VocabularySummary
 } from './types';
 
@@ -32,6 +35,7 @@ type TransferJob = {
 
 async function waitForTransfer(job: TransferJob, onProgress?: (message: string) => void): Promise<TransferJob> {
   let current = job;
+  onProgress?.(current.progress?.message || (current.status === 'queued' ? 'Queued; waiting for a Registry worker…' : current.summary || 'Registry job in progress…'));
   while (!['succeeded', 'failed', 'cancelled', 'dead_lettered'].includes(current.status)) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     current = (await client().get<{ job: TransferJob }>(`/jobs/${encodeURIComponent(current.id)}`)).job;
@@ -59,6 +63,7 @@ export const api = {
   ),
   download: () => client().getBlob(route('/api/dataset/download')),
   workspaces: async () => (await client().get<{ workspaces: RegistryWorkspace[] }>(route('/api/workspaces'))).workspaces,
+  createWorkspace: (body: { name: string; dataset_type: string; title?: string; description?: string; activate?: boolean }) => client().post<RegistryWorkspace>(route('/api/workspaces'), body),
   activateWorkspace: (workspaceId: string) => client().post<Dataset>(route(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`)),
   dataset: () => client().get<Dataset>(route('/api/dataset')),
   datasetDetails: () => client().get<DatasetDetails>(route('/api/dataset/details')),
@@ -80,6 +85,12 @@ export const api = {
   addTag: (body: { name: string; scope: 'target_tags' | 'image_tags' }) => client().post<DescriptorTag>(route('/api/tags'), body),
   setTag: (item_ids: string[], tag_id: string, assigned: boolean) => client().post(route('/api/item-tags/bulk'), { item_ids, tag_id, assigned }),
   items: (params: URLSearchParams) => client().get<{ items: Item[]; total: number }>(route('/api/items') + '?' + params.toString()),
+  filterFacets: (evidenceSource?: string) => client().get<RegistryFilterFacets>(route('/api/items/facets') + (evidenceSource ? `?evidence_source=${encodeURIComponent(evidenceSource)}` : '')),
+  transferPreview: (body: Record<string, unknown>) => client().post<WorkspaceTransferPreview>(route('/api/transfers/preview'), body),
+  transfer: async (body: Record<string, unknown>, onProgress?: (message: string) => void) => {
+    const queued = await client().post<{ job: TransferJob }>(route('/api/transfers/execute'), body);
+    return waitForTransfer(queued.job, onProgress) as Promise<TransferJob & { result: WorkspaceTransferResult }>;
+  },
   evidenceSources: () => client().get<EvidenceSource[]>(route('/api/evidence/sources')),
   itemEvidence: (id: string, sourceKey?: string) => client().get<ItemEvidence[]>(route(`/api/evidence/items/${id}`) + (sourceKey ? `?source_key=${encodeURIComponent(sourceKey)}` : '')),
   similar: (id: string, sourceKey: string, limit: number, offset: number, minimum: number) => client().get<{ items: Item[]; total: number }>(route(`/api/similarity/${id}`) + `?source_key=${encodeURIComponent(sourceKey)}&limit=${limit}&offset=${offset}&minimum=${minimum}`),

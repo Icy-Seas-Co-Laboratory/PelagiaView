@@ -871,6 +871,13 @@ export class PelagiaApiClient {
     return response.detection;
   }
 
+  async getDetection(detectionId: string): Promise<DetectionSummary> {
+    const response = await this.get<{ detection: DetectionSummary }>(
+      `/detections/${encodeURIComponent(detectionId)}`
+    );
+    return response.detection;
+  }
+
   refinedDetectionRecordImageUrl(refinedDetectionId: string, format = 'jpg', options: DetectionImageOptions = {}): string {
     return this.url(
       `/refined-detections/${encodeURIComponent(refinedDetectionId)}/roi`,

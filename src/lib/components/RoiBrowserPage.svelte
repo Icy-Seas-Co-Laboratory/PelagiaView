@@ -8,6 +8,7 @@
   import KonvaImageCanvas from '$lib/components/KonvaImageCanvas.svelte';
   import InspectorImageControls from '$lib/components/InspectorImageControls.svelte';
   import TelemetryFilterModal from '$lib/components/TelemetryFilterModal.svelte';
+  import RoiRefinementComparison from '$lib/components/RoiRefinementComparison.svelte';
   import TelemetrySummary from '$lib/components/TelemetrySummary.svelte';
   import WorkspaceResizeHandle from '$lib/components/WorkspaceResizeHandle.svelte';
   import LoadingOverlay from '$lib/components/LoadingOverlay.svelte';
@@ -83,6 +84,7 @@
   let preferencesReady = false;
   let selectedDetection: DetectionSummary | null = null;
   let roiDetailModalOpen = false;
+  let roiDetailImageView: 'image' | 'comparison' = 'image';
   let selectedParentAsset: RawAsset | null = null;
   let selectedParentFrame: FrameSummary | null = null;
   let selectedFrameContext: FrameContextResponse | null = null;
@@ -684,6 +686,7 @@
   }
 
   function closeRoiDetail() {
+    roiDetailImageView = 'image';
     roiDetailModalOpen = false;
   }
 
@@ -2044,6 +2047,11 @@
 {/if}
 
 <style>
+  .refinement-view-tabs { display:flex; flex-wrap:wrap; gap:.4rem; justify-self:start; }
+  .refinement-view-tabs button { color:#d9e8df; background:#1c3025; border:1px solid #587363; padding:.4rem .65rem; border-radius:.3rem; }
+  .refinement-view-tabs button[aria-pressed="true"] { background:#d2eadd; color:#152d20; }
+  .refinement-view-tabs button:focus-visible { outline:2px solid #b4e4ca; outline-offset:2px; }
+
   .telemetry-filter-control { border-top: 1px solid var(--border-subtle, #d9dee7); grid-column: 1 / -1; margin-top: 0.35rem; padding-top: 0.7rem; }
   .telemetry-filter-heading { align-items: center; display: flex; font-size: 0.78rem; font-weight: 650; justify-content: space-between; }
   .telemetry-filter-control small { color: var(--text-muted, #667085); display: block; font-size: 0.74rem; line-height: 1.35; margin-top: 0.35rem; }
@@ -2068,12 +2076,28 @@
 
       <div class="roi-detail-grid">
         <div class="roi-detail-image-panel">
+          {#if roiViewMode === 'refined'}
+            <div class="refinement-view-tabs" role="group" aria-label="ROI image view">
+              <button type="button" aria-pressed={roiDetailImageView === 'image'} on:click={() => roiDetailImageView = 'image'}>ROI image</button>
+              <button type="button" aria-pressed={roiDetailImageView === 'comparison'} on:click={() => roiDetailImageView = 'comparison'}>Before / after</button>
+            </div>
+          {/if}
+          {#if roiDetailImageView === 'comparison' && roiViewMode === 'refined'}
+            {#key selectedDetection.id}
+              <RoiRefinementComparison
+                refined={selectedDetection}
+                {bboxLabel}
+                renderSpec={(record, mode, masked) => roiRenderSpec(record, 300, modalRoiDisplayMaxHeight, 'menu', mode, imageFormat, masked, invertImages)}
+              />
+            {/key}
+          {:else}
           {#key roiCanvasKey(selectedDetection, roiViewMode, imageFormat, applyRoiMask, invertImages)}
             <KonvaImageCanvas
               spec={roiRenderSpec(selectedDetection, modalRoiDisplayMaxWidth, modalRoiDisplayMaxHeight, 'menu', roiViewMode, imageFormat, applyRoiMask, invertImages)}
               mode="static"
             />
           {/key}
+          {/if}
         </div>
 
         <div class="roi-detail-info">

@@ -86,6 +86,18 @@ export type RegistryWorkspace = {
   item_count: number; labeled_count: number;
 };
 
+export type RegistryFilterFacets = {
+  bbox_area?: { min: number | null; max: number | null; count: number } | null;
+  bbox_longest_side?: { min: number | null; max: number | null; count: number } | null;
+  bbox_aspect_ratio?: { min: number | null; max: number | null; count: number } | null;
+  prediction_confidence?: { min: number | null; max: number | null; count: number } | null;
+  descriptors?: { target_tags?: DescriptorTag[]; image_tags?: DescriptorTag[] };
+};
+
+export type WorkspaceTransferDuplicate = { source_item_id: string; source_key?: string; target_item_id: string; matching_item_ids?: string[]; reasons: string[]; roi_hash?: string; target_roi_hash?: string; metadata_conflicts?: string[]; conflicts?: string[]; content_conflict?: boolean };
+export type WorkspaceTransferPreview = { preview_token: string; source_workspace_id: string; destination_workspace_id?: string; total_items: number; new_items: number; duplicate_count: number; item_ids: string[]; duplicates: WorkspaceTransferDuplicate[] };
+export type WorkspaceTransferResult = { destination_workspace_id: string; copied_items: number; moved_items: number; overwritten_items: number; skipped_items: number; removed_source_duplicates?: number };
+
 export type InferenceSourceDetail = {
   source_key: string; source_kind: 'oracle' | 'registry'; name: string;
   evidence: EvidenceSource & { aggregates?: Record<string, number | null> };
