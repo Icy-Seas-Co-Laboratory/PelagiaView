@@ -70,7 +70,7 @@
   let importDuplicatePage = 0;
   const importDuplicatePageSize = 100;
   let uploadInput: HTMLInputElement;
-  let uploadTarget: 'open' | 'import' = 'open';
+  let uploadTarget: 'open' | 'import' | 'new' = 'open';
   let uploading = false;
   let downloading = false;
   const defaultCanvasColors = { light: '#eef3f5', dark: '#111b1f' } as const;
@@ -517,17 +517,18 @@
   }
 
   async function openDataset() {
-    if (!path.trim()) return;
+    if (!path.trim()) return false;
     loading = true; error = ''; notice = '';
     try {
       const openedDataset = await api.open(path.trim(), (message) => notice = message);
       await hydrateWorkspace(openedDataset);
       if (openedDataset.workspace_id) updateWorkspaceUrl(openedDataset.workspace_id);
-    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+      return true;
+    } catch (e) { error = e instanceof Error ? e.message : String(e); return false; }
     finally { loading = false; }
   }
 
-  function chooseUpload(target: 'open' | 'import') {
+  function chooseUpload(target: 'open' | 'import' | 'new') {
     uploadTarget = target;
     uploadInput?.click();
   }
@@ -545,7 +546,7 @@
       } else {
         path = uploaded.path;
         localStorage.setItem('pelagia.registry.lastPath', path);
-        await openDataset();
+        if (await openDataset() && uploadTarget === 'new') transferOpen = false;
       }
     } catch (e) { error = e instanceof Error ? e.message : String(e); }
     finally {
@@ -793,7 +794,7 @@
   function closeTransfer() { transferOpen = false; requestAnimationFrame(() => transferTrigger?.focus()); }
   function transferKeydown(event: KeyboardEvent) {
     event.stopPropagation();
-    if (event.key === 'Escape' && !transferLoading) { event.preventDefault(); closeTransfer(); return; }
+    if (event.key === 'Escape' && !transferLoading && !uploading) { event.preventDefault(); closeTransfer(); return; }
     if (event.key !== 'Tab' || !transferDialog) return;
     const focusable = [...transferDialog.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter((element) => element.offsetParent !== null);
     if (!focusable.length) return;
@@ -1188,7 +1189,7 @@
       return;
     }
     if (transferOpen) {
-      if (event.key === 'Escape' && !transferLoading) { event.preventDefault(); closeTransfer(); }
+      if (event.key === 'Escape' && !transferLoading && !uploading) { event.preventDefault(); closeTransfer(); }
       return;
     }
     if (reassignSource) {
@@ -1594,22 +1595,23 @@
 {/if}
 
 {#if transferOpen}
-  <div class="preferences-backdrop" role="presentation" on:click={(event)=>event.currentTarget===event.target&&!transferLoading&&closeTransfer()}>
+  <div class="preferences-backdrop" role="presentation" on:click={(event)=>event.currentTarget===event.target&&!transferLoading&&!uploading&&closeTransfer()}>
     <div class="transfer-modal" bind:this={transferDialog} use:focusTransferDialog role="dialog" aria-modal="true" aria-labelledby="transfer-title" tabindex="-1" on:keydown={transferKeydown}>
-      <div class="preferences-header"><div><span>WORKSPACE TRANSFER</span><h2 id="transfer-title">{!dataset?'New workspace':transferMode==='move'?'Move ROIs':'Copy ROIs'}</h2></div><button aria-label="Close transfer" disabled={transferLoading} on:click={closeTransfer}>×</button></div>
+      <div class="preferences-header"><div><span>{dataset ? 'WORKSPACE TRANSFER' : 'REGISTRY'}</span><h2 id="transfer-title">{!dataset?'New workspace':transferMode==='move'?'Move ROIs':'Copy ROIs'}</h2></div><button aria-label="Close dialog" disabled={transferLoading || uploading} on:click={closeTransfer}>×</button></div>
       <div class="transfer-body">
         {#if error}<p class="transfer-error" role="alert">{error}</p>{/if}
-        {#if transferLoading && notice}<p role="status">{notice}</p>{/if}
+        {#if (transferLoading || uploading) && notice}<p role="status">{notice}</p>{:else if uploading}<p role="status">Uploading SQLite dataset…</p>{/if}
+        {#if !dataset}<section><h3>Upload an SQLite dataset</h3><p>Choose a portable Registry dataset to create and open a workspace. Files up to 2 GiB are supported.</p><button disabled={uploading || transferLoading} on:click={() => chooseUpload('new')}>{uploading ? 'Loading dataset…' : 'Upload SQLite…'}</button><p>Or create an empty workspace below.</p></section>{/if}
         {#if dataset}
         <div class="segmented"><button disabled={transferLoading || !!transferResult} class:active={transferMode==='copy'} on:click={()=>{transferMode='copy';transferPreview=null;transferDuplicatePolicy='skip';transferDuplicateActions={}}}>Copy</button><button disabled={transferLoading || !!transferResult} class:active={transferMode==='move'} on:click={()=>{transferMode='move';transferPreview=null;transferDuplicatePolicy='skip';transferDuplicateActions={}}}>Move</button></div>
         <fieldset><legend>ROIs to transfer</legend><label><input type="radio" bind:group={transferScope} value="selected" on:change={()=>transferPreview=null} disabled={!selected.size || transferLoading || !!transferResult} /> {selected.size.toLocaleString()} selected ROIs</label><label><input type="radio" bind:group={transferScope} value="filtered" on:change={()=>transferPreview=null} disabled={!!browseMode || transferLoading || !!transferResult} /> All {total.toLocaleString()} ROIs matching current filters</label>{#if browseMode}<small>Similarity and neighbor views must use an explicit selection.</small>{/if}</fieldset>
         <label>Destination workspace<select disabled={transferLoading || !!transferResult} bind:value={transferDestination} on:change={()=>transferPreview=null}><option value="">Create a new workspace below</option>{#each workspaces.filter(workspace=>workspace.workspace_id!==dataset?.workspace_id&&workspace.dataset_type===dataset?.dataset_type) as workspace}<option value={workspace.workspace_id}>{workspace.title||workspace.name} · {workspace.item_count.toLocaleString()} ROIs</option>{/each}</select></label>
         {/if}
-        {#if !transferDestination}<div class="transfer-new"><label>Name<input disabled={transferLoading || !!transferResult} bind:value={transferNewName} placeholder="New workspace name" /></label><label>Title (optional)<input disabled={transferLoading || !!transferResult} bind:value={transferNewTitle} placeholder="Display title" /></label>{#if !dataset}<label>Dataset type<select disabled={transferLoading || !!transferResult} bind:value={transferNewDatasetType}><option value="classification">Classification</option><option value="mask_refinement">Mask refinement</option></select></label>{/if}</div>{/if}
+        {#if !transferDestination}<div class="transfer-new"><label>Name<input disabled={transferLoading || uploading || !!transferResult} bind:value={transferNewName} placeholder="New workspace name" /></label><label>Title (optional)<input disabled={transferLoading || uploading || !!transferResult} bind:value={transferNewTitle} placeholder="Display title" /></label>{#if !dataset}<label>Dataset type<select disabled={transferLoading || uploading || !!transferResult} bind:value={transferNewDatasetType}><option value="classification">Classification</option><option value="mask_refinement">Mask refinement</option></select></label>{/if}</div>{/if}
         {#if transferPreview}<section class="transfer-summary"><div><strong>{transferPreview.total_items.toLocaleString()}</strong><span>ROIs selected</span></div><div><strong>{transferPreview.new_items.toLocaleString()}</strong><span>New</span></div><div><strong>{transferPreview.duplicate_count.toLocaleString()}</strong><span>Duplicates</span></div></section>{#if transferPreview.duplicate_count}<section class="duplicate-options"><div class="duplicate-heading"><div><h3>Duplicate decisions</h3><p>Matching uses ROI UUID, source key, and image content. Your selections are frozen before transfer begins.</p></div><select disabled={transferLoading || !!transferResult} aria-label="Default duplicate action" bind:value={transferDuplicatePolicy}><option value="skip">Skip</option><option value="overwrite">Overwrite destination</option>{#if transferMode==='move'}<option value="keep_destination_remove_source">Keep destination and remove source</option>{/if}</select></div><div class="duplicate-list">{#each transferPreview.duplicates as duplicate}<div class="duplicate-row"><div><strong>{duplicate.source_key||duplicate.source_item_id}</strong><code>{duplicate.source_item_id}</code><span>{#if duplicate.conflicts?.length}<b>Conflicts: {duplicate.conflicts.join(', ')}</b>{/if}{#if duplicate.metadata_conflicts?.length}<b>Metadata: {duplicate.metadata_conflicts.join(', ')}</b>{/if}{#each duplicate.reasons as reason}<em>{reason}</em>{/each}{#if duplicate.matching_item_ids && duplicate.matching_item_ids.length>1}<b>{duplicate.matching_item_ids.length} matching destinations</b>{/if}{#if duplicate.roi_hash && duplicate.target_roi_hash && duplicate.roi_hash!==duplicate.target_roi_hash}<b>content conflict</b>{/if}</span></div><span class="duplicate-arrow">→</span><code title={(duplicate.matching_item_ids||[duplicate.target_item_id]).join(', ')}>{duplicate.target_item_id}</code><select disabled={transferLoading || !!transferResult} aria-label={`Duplicate action for ${duplicate.source_item_id}`} value={transferDuplicateActions[duplicate.source_item_id]||''} on:change={(event)=>setTransferDuplicate(duplicate.source_item_id,event)}><option value="">Use default ({transferDuplicatePolicy.replaceAll('_', ' ')})</option><option value="skip">Skip</option><option value="overwrite">Overwrite</option>{#if transferMode==='move'}<option value="keep_destination_remove_source">Keep destination; remove source</option>{/if}</select></div>{/each}</div></section>{/if}{/if}
         {#if transferResult}<section class="import-result"><h3>Transfer complete</h3><div><span><strong>{transferResult.copied_items.toLocaleString()}</strong> new destination ROIs</span><span><strong>{transferResult.moved_items.toLocaleString()}</strong> moved</span><span><strong>{transferResult.overwritten_items.toLocaleString()}</strong> overwritten</span><span><strong>{transferResult.skipped_items.toLocaleString()}</strong> skipped</span>{#if transferResult.removed_source_duplicates}<span><strong>{transferResult.removed_source_duplicates.toLocaleString()}</strong> source duplicates removed</span>{/if}</div></section>{/if}
       </div>
-      <div class="preferences-footer">{#if transferResult}<button class="primary" on:click={closeTransfer}>Done</button>{:else if transferPreview}<button on:click={()=>transferPreview=null} disabled={transferLoading}>Change selection</button><button class="primary" disabled={transferLoading} on:click={executeTransfer}>{transferLoading?'Transferring…':`${transferMode==='move'?'Move':'Copy'} ROIs`}</button>{:else}<button class="primary" disabled={transferLoading||(!!dataset&&(transferScope==='selected'?!selected.size:!total))} on:click={inspectTransfer}>{transferLoading?(dataset?'Preparing…':'Creating…'):(dataset?'Review transfer':'Create workspace')}</button>{/if}</div>
+      <div class="preferences-footer">{#if transferResult}<button class="primary" on:click={closeTransfer}>Done</button>{:else if transferPreview}<button on:click={()=>transferPreview=null} disabled={transferLoading}>Change selection</button><button class="primary" disabled={transferLoading} on:click={executeTransfer}>{transferLoading?'Transferring…':`${transferMode==='move'?'Move':'Copy'} ROIs`}</button>{:else}<button class="primary" disabled={uploading||transferLoading||(!!dataset&&(transferScope==='selected'?!selected.size:!total))} on:click={inspectTransfer}>{transferLoading?(dataset?'Preparing…':'Creating…'):(dataset?'Review transfer':'Create workspace')}</button>{/if}</div>
     </div>
   </div>
 {/if}
